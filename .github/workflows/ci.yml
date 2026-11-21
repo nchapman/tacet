@@ -11,9 +11,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck, test, and build React web client
+        working-directory: web
+        run: npm run check
 
       - name: Format check
         run: make fmt-check
@@ -29,5 +43,5 @@ jobs:
       - name: Test with race detector
         run: go test -race -cover ./...
 
-      - name: Build
+      - name: Build single binary
         run: go build ./cmd/tacet

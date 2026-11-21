@@ -18,14 +18,21 @@ An open-source, headless UPnP/DLNA control point server written in Go for lossle
 - **Direct Local NAS Library:**
   - Recursively scans local music directories (`.flac`, `.wav`, `.aiff`, `.m4a`/ALAC, `.dsf`, `.mp3`, `.ogg`, `.opus`), reading tags, embedded/folder cover art, and exact sample rate/bit depth/duration from audio headers.
   - Serves untouched files over plain HTTP with `Range` and DLNA streaming headers.
-- **Remote Control API + Embedded Web UI:**
-  - Clean JSON REST API + live Server-Sent Events (`/api/events`) for future native mobile/desktop remote apps.
-  - Built-in responsive web remote served at `/`.
+- **Remote Control API + Embedded React Web Client:**
+  - Clean JSON REST API + live Server-Sent Events (`/api/events`) for web and native remote apps, with a typed TypeScript client in `web/src/api/`.
+  - Built-in React + TypeScript + Vite web remote compiled and embedded directly into the single Go binary at `/`.
 
 ## Quick Start
 
 ```bash
-go run ./cmd/tacet --music-dir /path/to/music
+make build
+./tacet --music-dir /path/to/music
+```
+
+For frontend development with hot reload against a running Go server on `:8080`:
+
+```bash
+cd web && npm install && npm run dev
 ```
 
 Open `http://localhost:8080` (or `http://<your-lan-ip>:8080` from your phone/tablet).
@@ -54,6 +61,7 @@ export QOBUZ_AUTH_TOKEN="..."
 ## Build & Test
 
 ```bash
-make check   # fmt-check, go vet, golangci-lint, and race-enabled tests
-make build   # produces ./tacet
+make web-install  # install React/Vite dependencies in web/
+make check        # web typecheck + vitest + vite build, fmt-check, go vet, golangci-lint, go test -race
+make build        # compiles React UI via Vite and embeds it into ./tacet
 ```

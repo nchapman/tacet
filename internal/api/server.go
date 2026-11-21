@@ -4,9 +4,12 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
+	"path"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,7 +20,7 @@ import (
 	"tacet/internal/upnp"
 )
 
-//go:embed web/*
+//go:embed all:web/dist
 var webFS embed.FS
 
 // DiscoverFunc discovers UPnP renderers on the LAN.
@@ -79,6 +82,11 @@ func (s *Server) routes() {
 		s.gena.Handler().ServeHTTP(w, r)
 	})
 
+	// Health check
+	s.mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
 	// Renderers & settings
 	s.mux.HandleFunc("GET /api/renderers", s.handleListRenderers)
 	s.mux.HandleFunc("POST /api/renderers/discover", s.handleDiscoverRenderers)
@@ -120,11 +128,59 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/qobuz/search", s.handleQobuzSearch)
 	s.mux.HandleFunc("GET /api/qobuz/albums/{id}", s.handleQobuzAlbum)
 
-	// Embedded Web UI
-	sub, err := fs.Sub(webFS, "web")
-	if err == nil {
-		s.mux.Handle("/", http.FileServer(http.FS(sub)))
+	// Return JSON 404 for unmatched /api or /api/* routes instead of serving SPA index.html.
+	notFoundAPI := func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusNotFound, errors.New("API endpoint not found"))
 	}
+	s.mux.HandleFunc("/api", notFoundAPI)
+	s.mux.HandleFunc("/api/", notFoundAPI)
+
+	// Embedded React/Vite Web UI
+	if sub, err := fs.Sub(webFS, "web/dist"); err == nil {
+		s.mux.Handle("/", newSPAHandler(sub))
+	}
+}
+
+func newSPAHandler(dist fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(dist))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		clean := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if clean == "" {
+			clean = "index.html"
+		}
+
+		if info, err := fs.Stat(dist, clean); err == nil && !info.IsDir() {
+			if strings.HasPrefix(clean, "assets/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else if clean == "index.html" {
+				w.Header().Set("Cache-Control", "no-cache")
+			}
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		// Do not serve HTML fallback for missing static asset paths.
+		if clean == "assets" || strings.HasPrefix(clean, "assets/") {
+			http.NotFound(w, r)
+			return
+		}
+
+		indexBytes, err := fs.ReadFile(dist, "index.html")
+		if err != nil {
+			http.Error(w, "web UI not built — run `make web-build`", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = w.Write(indexBytes)
+	})
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {

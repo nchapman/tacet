@@ -1,13 +1,19 @@
 # Binaries & build artifacts
 /tacet
-dist/
+/dist/
 coverage.out
 *.exe
 *.out
 *.test
 
+# Frontend dependencies & Vite embedded output
+web/node_modules/
+internal/api/web/dist/*
+!internal/api/web/dist/.gitkeep
+
 # Local tooling / OS files
 .pi/
+.playwright-mcp/
 .DS_Store
 .env
 .env.*

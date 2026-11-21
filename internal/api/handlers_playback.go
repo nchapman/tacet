@@ -99,10 +99,18 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	snap, ok := s.manager.Snapshot(id)
 	if !ok {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"renderer":   nil,
-			"state":      "IDLE",
-			"queue":      []any{},
-			"streamMode": s.manager.StreamMode(),
+			"renderer":     nil,
+			"state":        "IDLE",
+			"positionSec":  0,
+			"durationSec":  0,
+			"volume":       0,
+			"muted":        false,
+			"hasVolume":    false,
+			"queue":        []any{},
+			"currentIndex": -1,
+			"gaplessArmed": false,
+			"eventsActive": false,
+			"streamMode":   s.manager.StreamMode(),
 		})
 		return
 	}

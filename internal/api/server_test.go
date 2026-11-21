@@ -129,8 +129,29 @@ func TestAPI_QueueTransportLibraryAndValidation(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
+	// Health endpoint and unknown /api or /api/* JSON 404.
+	resp, err := http.Get(ts.URL + "/api/health")
+	if err != nil {
+		t.Fatalf("GET /api/health: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/health status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	for _, missingPath := range []string{"/api", "/api/does-not-exist"} {
+		resp, err = http.Get(ts.URL + missingPath)
+		if err != nil {
+			t.Fatalf("GET %s: %v", missingPath, err)
+		}
+		if resp.StatusCode != http.StatusNotFound || !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+			t.Fatalf("expected JSON 404 for %s, got status=%d ct=%q", missingPath, resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+		resp.Body.Close()
+	}
+
 	// List renderers & select unknown returns 404.
-	resp, err := http.Get(ts.URL + "/api/renderers")
+	resp, err = http.Get(ts.URL + "/api/renderers")
 	if err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/renderers: err=%v status=%v", err, resp)
 	}
