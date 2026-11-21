@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>tacet — UPnP/DLNA Control Point</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1f242e;
+    --border: #2a303d;
+    --text: #e8ecf4;
+    --muted: #8b95a7;
+    --accent: #6da8ff;
+    --accent-dim: rgba(109, 168, 255, 0.14);
+    --green: #4ade80;
+    --amber: #fbbf24;
+    --red: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.4;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .brand { font-weight: 700; letter-spacing: 0.08em; font-size: 16px; text-transform: uppercase; }
+  .brand span { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 8px; text-transform: none; letter-spacing: 0; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  select, input, button {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+  button { cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  button.small { padding: 4px 8px; font-size: 12px; }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 360px 1fr;
+    gap: 16px;
+    padding: 16px 20px;
+    max-width: 1440px;
+    margin: 0 auto;
+  }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .card h2 {
+    margin: 0 0 12px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  /* Now Playing */
+  .np-art {
+    width: 100%;
+    aspect-ratio: 1;
+    background: var(--panel-2);
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 14px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .np-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .np-title { font-size: 18px; font-weight: 600; margin: 0 0 2px; }
+  .np-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .badge.hi { border-color: var(--amber); color: var(--amber); }
+  .badge.ok { border-color: var(--green); color: var(--green); }
+  .badge.err { border-color: var(--red); color: var(--red); }
+
+  .seek-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; color: var(--muted); }
+  .seek-row input[type=range] { flex: 1; padding: 0; }
+  .controls { display: flex; justify-content: center; gap: 8px; margin-bottom: 14px; }
+  .controls button { min-width: 46px; font-size: 15px; }
+  .vol-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .vol-row input[type=range] { flex: 1; padding: 0; }
+
+  /* Tabs & Browser */
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+  .tabs button.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+  .search-bar { display: flex; gap: 8px; margin-bottom: 14px; }
+  .search-bar input { flex: 1; }
+
+  .album-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+  }
+  .album-tile {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .album-tile:hover { border-color: var(--accent); }
+  .album-tile .cover {
+    width: 100%;
+    aspect-ratio: 1;
+    background: #12151c;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .album-tile img { width: 100%; height: 100%; object-fit: cover; }
+  .album-tile .meta { padding: 8px; }
+  .album-tile .t { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .album-tile .a { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .track-list { list-style: none; padding: 0; margin: 0; }
+  .track-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .track-row:hover { background: var(--panel-2); }
+  .track-row.playing { background: var(--accent-dim); }
+  .track-num { width: 24px; color: var(--muted); font-size: 12px; text-align: right; }
+  .track-info { flex: 1; min-width: 0; }
+  .track-title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .track-meta { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .track-qual { font-size: 11px; color: var(--amber); white-space: nowrap; }
+  .track-dur { font-size: 12px; color: var(--muted); width: 42px; text-align: right; }
+
+  .err-banner {
+    background: rgba(248, 113, 113, 0.12);
+    border: 1px solid var(--red);
+    color: var(--red);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    margin-bottom: 10px;
+    display: none;
+  }
+  .form-grid { display: grid; gap: 8px; max-width: 420px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">tacet <span>UPnP / DLNA Control Point</span></div>
+  <div class="toolbar">
+    <select id="rendererSelect" title="Active UPnP Renderer"></select>
+    <button onclick="discoverRenderers()">Discover</button>
+    <button onclick="promptConnect()">+ URL</button>
+    <select id="streamMode" title="Qobuz Delivery Mode" onchange="setStreamMode(this.value)">
+      <option value="direct">Qobuz: Direct (CDN → Renderer)</option>
+      <option value="relay">Qobuz: Quiet Relay (Plain HTTP)</option>
+    </select>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- Left Column: Now Playing + Queue -->
+  <div style="display:flex; flex-direction:column; gap:16px;">
+    <section class="card">
+      <h2>
+        Now Playing
+        <span id="transportState" class="badge">IDLE</span>
+      </h2>
+      <div id="errorBanner" class="err-banner"></div>
+      <div id="npArt" class="np-art">No track loaded</div>
+      <div id="npTitle" class="np-title">—</div>
+      <div id="npSub" class="np-sub">Select a track from NAS or Qobuz</div>
+      <div id="npBadges" class="badges"></div>
+
+      <div class="seek-row">
+        <span id="posLabel">0:00</span>
+        <input id="seekSlider" type="range" min="0" max="100" value="0"
+          onpointerdown="seeking=true"
+          oninput="seeking=true; document.getElementById('posLabel').textContent=fmtSec(this.value)"
+          onchange="seeking=false; seekTo(this.value)"
+          onpointerup="seeking=false" />
+        <span id="durLabel">0:00</span>
+      </div>
+
+      <div class="controls">
+        <button onclick="transport('prev')" title="Previous">⏮</button>
+        <button onclick="transport('play')" class="primary" title="Play">▶</button>
+        <button onclick="transport('pause')" title="Pause">⏸</button>
+        <button onclick="transport('stop')" title="Stop">⏹</button>
+        <button onclick="transport('next')" title="Next">⏭</button>
+      </div>
+
+      <div class="vol-row">
+        <button id="muteBtn" class="small" onclick="toggleMute()">🔊</button>
+        <input id="volSlider" type="range" min="0" max="100" value="50"
+          onpointerdown="volDragging=true"
+          oninput="volDragging=true; document.getElementById('volLabel').textContent=this.value+'%'"
+          onchange="volDragging=false; setVolume(this.value)"
+          onpointerup="volDragging=false" />
+        <span id="volLabel" style="width:32px;text-align:right;">50%</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>
+        Queue (<span id="queueCount">0</span>)
+        <button class="small" onclick="clearQueue()">Clear</button>
+      </h2>
+      <ul id="queueList" class="track-list"></ul>
+    </section>
+  </div>
+
+  <!-- Right Column: Library & Qobuz Browser -->
+  <section class="card">
+    <div class="tabs">
+      <button id="tabLocal" class="active" onclick="showTab('local')">NAS Library</button>
+      <button id="tabQobuz" onclick="showTab('qobuz')">Qobuz</button>
+    </div>
+
+    <!-- Local NAS view -->
+    <div id="viewLocal">
+      <div class="search-bar">
+        <input id="localSearch" placeholder="Search local NAS library..." onkeydown="if(event.key==='Enter') searchLocal()" />
+        <button onclick="searchLocal()">Search</button>
+        <button onclick="loadLocalAlbums()">Albums</button>
+        <button onclick="rescanLibrary()">Rescan</button>
+      </div>
+      <div id="localContent" class="muted">Loading library...</div>
+    </div>
+
+    <!-- Qobuz view -->
+    <div id="viewQobuz" style="display:none;">
+      <div id="qobuzAuthBox" style="margin-bottom:14px;"></div>
+      <div id="qobuzBrowser" style="display:none;">
+        <div class="search-bar">
+          <input id="qobuzQuery" placeholder="Search Qobuz catalog (artists, albums, tracks)..." onkeydown="if(event.key==='Enter') searchQobuz()" />
+          <button class="primary" onclick="searchQobuz()">Search</button>
+        </div>
+        <div id="qobuzContent" class="muted">Search Qobuz to browse hi-res albums and tracks.</div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+let state = null;
+let renderers = [];
+let activeId = "";
+let seeking = false;
+let volDragging = false;
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+    ...opts,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function fmtSec(s) {
+  s = Math.max(0, Math.floor(s || 0));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r < 10 ? "0" : ""}${r}`;
+}
+
+function fmtQuality(t) {
+  if (!t) return "";
+  const fmt = (t.ext || "").replace(".", "").toUpperCase() || (t.mime || "").replace("audio/", "").toUpperCase();
+  if (t.bitDepth && t.sampleRate) {
+    const khz = (t.sampleRate / 1000).toFixed(t.sampleRate % 1000 === 0 ? 0 : 1);
+    return `${fmt} ${t.bitDepth}-bit / ${khz} kHz`;
+  }
+  return fmt;
+}
+
+function esc(s) {
+  return String(s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+function showError(msg) {
+  const el = document.getElementById("errorBanner");
+  if (!msg) { el.style.display = "none"; return; }
+  el.textContent = msg;
+  el.style.display = "block";
+}
+
+function renderRendererSelect() {
+  const sel = document.getElementById("rendererSelect");
+  if (!renderers.length) {
+    sel.innerHTML = `<option value="">No renderers found</option>`;
+    return;
+  }
+  sel.innerHTML = renderers.map(r =>
+    `<option value="${esc(r.id)}" ${r.id === activeId ? "selected" : ""}>${esc(r.name)}${r.host ? " ("+esc(r.host)+")" : ""}</option>`
+  ).join("");
+  sel.onchange = async () => {
+    try {
+      activeId = sel.value;
+      const snap = await api("/api/renderers/select", { method: "POST", body: JSON.stringify({ id: activeId }) });
+      applyState(snap);
+    } catch (e) { showError(e.message); }
+  };
+}
+
+function applyState(snap) {
+  if (!snap) return;
+  state = snap;
+  if (snap.renderer && snap.renderer.id) activeId = snap.renderer.id;
+  if (snap.streamMode) document.getElementById("streamMode").value = snap.streamMode;
+  showError(snap.lastError || "");
+
+  const stEl = document.getElementById("transportState");
+  stEl.textContent = snap.state || "IDLE";
+  stEl.className = "badge " + (snap.state === "PLAYING" ? "ok" : "");
+
+  const t = snap.currentTrack;
+  const artEl = document.getElementById("npArt");
+  if (t && t.artworkUrl) {
+    artEl.innerHTML = `<img src="${esc(t.artworkUrl)}" alt="Cover art" />`;
+  } else {
+    artEl.textContent = t ? "No artwork" : "No track loaded";
+  }
+
+  document.getElementById("npTitle").textContent = t ? t.title : "—";
+  document.getElementById("npSub").textContent = t ? `${t.artist}${t.album ? " — " + t.album : ""}` : "Select a track from NAS or Qobuz";
+
+  const badges = [];
+  if (t) {
+    badges.push(`<span class="badge">${esc(t.source.toUpperCase())}</span>`);
+    const q = fmtQuality(t);
+    if (q) badges.push(`<span class="badge hi">${esc(q)}</span>`);
+    if (t.source === "qobuz") {
+      badges.push(`<span class="badge">${snap.streamMode === "relay" ? "Quiet Relay" : "Direct Handoff"}</span>`);
+    }
+  }
+  if (snap.gaplessArmed) badges.push(`<span class="badge ok">Gapless Armed</span>`);
+  document.getElementById("npBadges").innerHTML = badges.join("");
+
+  const dur = snap.durationSec || (t ? t.durationSec : 0) || 0;
+  const pos = snap.positionSec || 0;
+  document.getElementById("durLabel").textContent = fmtSec(dur);
+  if (!seeking) {
+    document.getElementById("posLabel").textContent = fmtSec(pos);
+    const sl = document.getElementById("seekSlider");
+    sl.max = Math.max(1, dur);
+    sl.value = Math.min(pos, Math.max(1, dur));
+  }
+
+  if (!volDragging) {
+    document.getElementById("volSlider").value = snap.volume ?? 50;
+    document.getElementById("volLabel").textContent = `${snap.volume ?? 50}%`;
+  }
+  document.getElementById("muteBtn").textContent = snap.muted ? "🔇" : "🔊";
+
+  const q = snap.queue || [];
+  document.getElementById("queueCount").textContent = q.length;
+  const ql = document.getElementById("queueList");
+  if (!q.length) {
+    ql.innerHTML = `<li class="muted" style="padding:8px 0;">Queue is empty</li>`;
+  } else {
+    ql.innerHTML = q.map((item, idx) => `
+      <li class="track-row ${idx === snap.currentIndex ? "playing" : ""}">
+        <span class="track-num">${idx + 1}</span>
+        <div class="track-info" style="cursor:pointer" onclick="jumpQueue(${idx})">
+          <div class="track-title">${esc(item.title)}</div>
+          <div class="track-meta">${esc(item.artist)} · ${esc(fmtQuality(item))}</div>
+        </div>
+        <button class="small" onclick="removeQueue(${idx})" title="Remove">✕</button>
+      </li>
+    `).join("");
+  }
+}
+
+async function refreshRenderers() {
+  const data = await api("/api/renderers");
+  renderers = data.renderers || [];
+  activeId = data.activeId || "";
+  if (data.streamMode) document.getElementById("streamMode").value = data.streamMode;
+  renderRendererSelect();
+}
+
+async function discoverRenderers() {
+  try {
+    showError("");
+    const data = await api("/api/renderers/discover", { method: "POST" });
+    renderers = data.renderers || [];
+    activeId = data.activeId || "";
+    renderRendererSelect();
+  } catch (e) { showError(e.message); }
+}
+
+async function promptConnect() {
+  const url = prompt("Enter UPnP device description URL (WiiM Ultra is usually http://<IP>:49152/description.xml):");
+  if (!url) return;
+  try {
+    const data = await api("/api/renderers/connect", { method: "POST", body: JSON.stringify({ url }) });
+    renderers = data.renderers || [];
+    activeId = data.activeId || "";
+    renderRendererSelect();
+  } catch (e) { showError(e.message); }
+}
+
+async function setStreamMode(mode) {
+  try {
+    await api("/api/settings/stream-mode", { method: "POST", body: JSON.stringify({ mode }) });
+  } catch (e) { showError(e.message); }
+}
+
+async function transport(action) {
+  try {
+    showError("");
+    const snap = await api(`/api/transport/${action}`, { method: "POST" });
+    applyState(snap);
+  } catch (e) { showError(e.message); }
+}
+
+async function seekTo(val) {
+  try {
+    const snap = await api("/api/transport/seek", { method: "POST", body: JSON.stringify({ positionSec: Number(val) }) });
+    applyState(snap);
+  } catch (e) { showError(e.message); }
+}
+
+async function setVolume(val) {
+  document.getElementById("volLabel").textContent = `${val}%`;
+  try {
+    const snap = await api("/api/transport/volume", { method: "POST", body: JSON.stringify({ volume: Number(val) }) });
+    applyState(snap);
+  } catch (e) { showError(e.message); }
+}
+
+async function toggleMute() {
+  const next = !(state && state.muted);
+  try {
+    const snap = await api("/api/transport/mute", { method: "POST", body: JSON.stringify({ muted: next }) });
+    applyState(snap);
+  } catch (e) { showError(e.message); }
+}
+
+async function jumpQueue(index) {
+  try { applyState(await api("/api/queue/jump", { method: "POST", body: JSON.stringify({ index }) })); }
+  catch (e) { showError(e.message); }
+}
+async function removeQueue(index) {
+  try { applyState(await api("/api/queue/remove", { method: "POST", body: JSON.stringify({ index }) })); }
+  catch (e) { showError(e.message); }
+}
+async function clearQueue() {
+  try { applyState(await api("/api/queue/clear", { method: "POST" })); }
+  catch (e) { showError(e.message); }
+}
+
+function showTab(tab) {
+  document.getElementById("tabLocal").classList.toggle("active", tab === "local");
+  document.getElementById("tabQobuz").classList.toggle("active", tab === "qobuz");
+  document.getElementById("viewLocal").style.display = tab === "local" ? "block" : "none";
+  document.getElementById("viewQobuz").style.display = tab === "qobuz" ? "block" : "none";
+  if (tab === "qobuz") loadQobuzStatus();
+}
+
+// Local NAS Library
+async function loadLocalAlbums() {
+  const el = document.getElementById("localContent");
+  try {
+    const data = await api("/api/library/albums");
+    const albums = data.albums || [];
+    if (!albums.length) {
+      el.innerHTML = `<p class="muted">No local tracks indexed yet. Start tacet with <code>--music-dir /path/to/music</code> and click Rescan.</p>`;
+      return;
+    }
+    el.innerHTML = `<div class="album-grid">${albums.map(a => `
+      <div class="album-tile" onclick="openLocalAlbum('${esc(a.id)}')">
+        <div class="cover">${a.artworkUrl ? `<img src="${esc(a.artworkUrl)}" loading="lazy" />` : "No Art"}</div>
+        <div class="meta">
+          <div class="t">${esc(a.title)}</div>
+          <div class="a">${esc(a.artist)} · ${a.trackCount} tracks</div>
+        </div>
+      </div>
+    `).join("")}</div>`;
+  } catch (e) { el.textContent = e.message; }
+}
+
+async function openLocalAlbum(id) {
+  const el = document.getElementById("localContent");
+  const alb = await api(`/api/library/albums/${encodeURIComponent(id)}`);
+  el.innerHTML = `
+    <div class="row" style="margin-bottom:12px;">
+      <button onclick="loadLocalAlbums()">← Back</button>
+      <strong style="flex:1;">${esc(alb.title)} — ${esc(alb.artist)}</strong>
+      <button class="primary" onclick="playLocalAlbum('${esc(alb.id)}', 0)">▶ Play Album</button>
+      <button onclick="enqueueLocalAlbum('${esc(alb.id)}')">+ Queue</button>
+    </div>
+    <ul class="track-list">${(alb.tracks || []).map((t, i) => `
+      <li class="track-row">
+        <span class="track-num">${t.trackNumber || i + 1}</span>
+        <div class="track-info">
+          <div class="track-title">${esc(t.title)}</div>
+          <div class="track-meta">${esc(t.artist)}</div>
+        </div>
+        <span class="track-qual">${esc(fmtQuality(t))}</span>
+        <span class="track-dur">${fmtSec(t.durationSec)}</span>
+        <button class="small primary" onclick="playLocalAlbum('${esc(alb.id)}', ${i})">▶</button>
+        <button class="small" onclick="enqueueLocalTrack('${esc(t.id)}')">+</button>
+      </li>
+    `).join("")}</ul>
+  `;
+}
+
+async function searchLocal() {
+  const q = document.getElementById("localSearch").value.trim();
+  if (!q) return loadLocalAlbums();
+  const data = await api(`/api/library/tracks?q=${encodeURIComponent(q)}`);
+  const tracks = data.tracks || [];
+  const el = document.getElementById("localContent");
+  if (!tracks.length) { el.innerHTML = `<p class="muted">No local matches for "${esc(q)}".</p>`; return; }
+  el.innerHTML = `<ul class="track-list">${tracks.map((t, i) => `
+    <li class="track-row">
+      <span class="track-num">${i + 1}</span>
+      <div class="track-info">
+        <div class="track-title">${esc(t.title)}</div>
+        <div class="track-meta">${esc(t.artist)} — ${esc(t.album)}</div>
+      </div>
+      <span class="track-qual">${esc(fmtQuality(t))}</span>
+      <button class="small primary" onclick="playLocalTrack('${esc(t.id)}')">▶</button>
+      <button class="small" onclick="enqueueLocalTrack('${esc(t.id)}')">+</button>
+    </li>
+  `).join("")}</ul>`;
+}
+
+async function rescanLibrary() {
+  await api("/api/library/rescan", { method: "POST" });
+  loadLocalAlbums();
+}
+
+async function playLocalAlbum(localAlbumId, startIndex) {
+  try { applyState(await api("/api/queue/play", { method: "POST", body: JSON.stringify({ localAlbumId, startIndex }) })); }
+  catch (e) { showError(e.message); }
+}
+async function enqueueLocalAlbum(localAlbumId) {
+  try { applyState(await api("/api/queue/enqueue", { method: "POST", body: JSON.stringify({ localAlbumId }) })); }
+  catch (e) { showError(e.message); }
+}
+async function playLocalTrack(localTrackId) {
+  try { applyState(await api("/api/queue/play", { method: "POST", body: JSON.stringify({ localTrackId }) })); }
+  catch (e) { showError(e.message); }
+}
+async function enqueueLocalTrack(localTrackId) {
+  try { applyState(await api("/api/queue/enqueue", { method: "POST", body: JSON.stringify({ localTrackId }) })); }
+  catch (e) { showError(e.message); }
+}
+
+// Qobuz
+let lastQobuzTracks = [];
+async function loadQobuzStatus() {
+  const st = await api("/api/qobuz/status");
+  const authBox = document.getElementById("qobuzAuthBox");
+  const browser = document.getElementById("qobuzBrowser");
+  if (st.authenticated) {
+    authBox.innerHTML = `<span class="badge ok">Connected to Qobuz${st.userName ? ": " + esc(st.userName) : ""}${st.subscription ? " (" + esc(st.subscription) + ")" : ""}</span>`;
+    browser.style.display = "block";
+  } else {
+    browser.style.display = "none";
+    authBox.innerHTML = `
+      <div class="form-grid">
+        <div class="muted">Qobuz requires OAuth sign-in. Click below to sign in via Qobuz (if Qobuz shows a confirmation page after login, click <strong>Back</strong> to return here).</div>
+        <button class="primary" onclick="window.location.href='/api/qobuz/oauth/start'">Sign In with Qobuz (Browser OAuth)</button>
+        <div class="muted" style="margin-top:6px;">Or paste a <code>user_auth_token</code> from a logged-in <code>play.qobuz.com</code> session:</div>
+        <input id="qbToken" type="password" placeholder="X-User-Auth-Token" />
+        <button onclick="qobuzTokenLogin()">Sign In with Token</button>
+      </div>
+    `;
+  }
+}
+
+async function qobuzTokenLogin() {
+  try {
+    showError("");
+    await api("/api/qobuz/login", {
+      method: "POST",
+      body: JSON.stringify({
+        authToken: document.getElementById("qbToken").value.trim(),
+      }),
+    });
+    loadQobuzStatus();
+  } catch (e) { showError(e.message); }
+}
+
+async function searchQobuz() {
+  const q = document.getElementById("qobuzQuery").value.trim();
+  if (!q) return;
+  const el = document.getElementById("qobuzContent");
+  el.textContent = "Searching Qobuz...";
+  try {
+    const res = await api(`/api/qobuz/search?q=${encodeURIComponent(q)}`);
+    lastQobuzTracks = res.tracks || [];
+    const albums = res.albums || [];
+    let html = "";
+    if (albums.length) {
+      html += `<h3 style="margin:0 0 8px;font-size:13px;color:var(--muted);">ALBUMS</h3>`;
+      html += `<div class="album-grid" style="margin-bottom:18px;">${albums.slice(0, 12).map(a => `
+        <div class="album-tile" onclick="openQobuzAlbum('${esc(a.id)}')">
+          <div class="cover">${a.artworkUrl ? `<img src="${esc(a.artworkUrl)}" loading="lazy" />` : "No Art"}</div>
+          <div class="meta">
+            <div class="t">${esc(a.title)}</div>
+            <div class="a">${esc(a.artist)}</div>
+          </div>
+        </div>
+      `).join("")}</div>`;
+    }
+    if (lastQobuzTracks.length) {
+      html += `<h3 style="margin:0 0 8px;font-size:13px;color:var(--muted);">TRACKS</h3>`;
+      html += `<ul class="track-list">${lastQobuzTracks.map((t, i) => `
+        <li class="track-row">
+          <span class="track-num">${i + 1}</span>
+          <div class="track-info">
+            <div class="track-title">${esc(t.title)}</div>
+            <div class="track-meta">${esc(t.artist)} — ${esc(t.album)}</div>
+          </div>
+          <span class="track-qual">${esc(fmtQuality(t))}</span>
+          <span class="track-dur">${fmtSec(t.durationSec)}</span>
+          <button class="small primary" onclick="playQobuzTrack(${i})">▶</button>
+          <button class="small" onclick="enqueueQobuzTrack(${i})">+</button>
+        </li>
+      `).join("")}</ul>`;
+    }
+    el.innerHTML = html || `<p class="muted">No Qobuz results.</p>`;
+  } catch (e) { el.textContent = e.message; }
+}
+
+async function openQobuzAlbum(id) {
+  const el = document.getElementById("qobuzContent");
+  el.textContent = "Loading album...";
+  try {
+    const alb = await api(`/api/qobuz/albums/${encodeURIComponent(id)}`);
+    lastQobuzTracks = alb.tracks || [];
+    el.innerHTML = `
+      <div class="row" style="margin-bottom:12px;">
+        <button onclick="searchQobuz()">← Back</button>
+        <strong style="flex:1;">${esc(alb.title)} — ${esc(alb.artist)}</strong>
+        <button class="primary" onclick="playQobuzAlbum('${esc(alb.id)}', 0)">▶ Play Album</button>
+        <button onclick="enqueueQobuzAlbum('${esc(alb.id)}')">+ Queue</button>
+      </div>
+      <ul class="track-list">${lastQobuzTracks.map((t, i) => `
+        <li class="track-row">
+          <span class="track-num">${t.trackNumber || i + 1}</span>
+          <div class="track-info">
+            <div class="track-title">${esc(t.title)}</div>
+            <div class="track-meta">${esc(t.artist)}</div>
+          </div>
+          <span class="track-qual">${esc(fmtQuality(t))}</span>
+          <span class="track-dur">${fmtSec(t.durationSec)}</span>
+          <button class="small primary" onclick="playQobuzAlbum('${esc(alb.id)}', ${i})">▶</button>
+          <button class="small" onclick="enqueueQobuzTrack(${i})">+</button>
+        </li>
+      `).join("")}</ul>
+    `;
+  } catch (e) { el.textContent = e.message; }
+}
+
+async function playQobuzAlbum(qobuzAlbumId, startIndex) {
+  try { applyState(await api("/api/queue/play", { method: "POST", body: JSON.stringify({ qobuzAlbumId, startIndex }) })); }
+  catch (e) { showError(e.message); }
+}
+async function enqueueQobuzAlbum(qobuzAlbumId) {
+  try { applyState(await api("/api/queue/enqueue", { method: "POST", body: JSON.stringify({ qobuzAlbumId }) })); }
+  catch (e) { showError(e.message); }
+}
+async function playQobuzTrack(idx) {
+  try { applyState(await api("/api/queue/play", { method: "POST", body: JSON.stringify({ tracks: [lastQobuzTracks[idx]], startIndex: 0 }) })); }
+  catch (e) { showError(e.message); }
+}
+async function enqueueQobuzTrack(idx) {
+  try { applyState(await api("/api/queue/enqueue", { method: "POST", body: JSON.stringify({ tracks: [lastQobuzTracks[idx]] }) })); }
+  catch (e) { showError(e.message); }
+}
+
+function connectSSE() {
+  const es = new EventSource("/api/events");
+  es.addEventListener("state", e => applyState(JSON.parse(e.data)));
+  es.addEventListener("renderers", e => {
+    renderers = JSON.parse(e.data) || [];
+    renderRendererSelect();
+  });
+}
+
+(async () => {
+  await refreshRenderers();
+  applyState(await api("/api/state"));
+  loadLocalAlbums();
+  connectSSE();
+  const tab = new URLSearchParams(window.location.search).get("tab");
+  if (tab === "qobuz") {
+    switchTab("qobuz");
+    history.replaceState(null, "", "/");
+  }
+})();
+</script>
+</body>
+</html>

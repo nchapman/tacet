@@ -1,0 +1,224 @@
+package media
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"tacet/internal/library"
+	"tacet/internal/qobuz"
+	"tacet/internal/upnp"
+)
+
+const relayReadIdleTimeout = 30 * time.Second
+
+// Handler serves local NAS audio files, cover art, and Qobuz Quiet Relay
+// streams over plain HTTP with DLNA streaming headers and Range support.
+type Handler struct {
+	catalog   *library.Catalog
+	qobuz     *qobuz.Client
+	relayHTTP *http.Client
+}
+
+// NewHandler creates a media HTTP handler.
+func NewHandler(cat *library.Catalog, qb *qobuz.Client) *Handler {
+	return &Handler{
+		catalog: cat,
+		qobuz:   qb,
+		relayHTTP: &http.Client{
+			// No total request timeout because lossless tracks stream for minutes;
+			// transport timeouts and per-read idle watchdog guard stalls.
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   10 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				ResponseHeaderTimeout: 15 * time.Second,
+				IdleConnTimeout:       60 * time.Second,
+			},
+		},
+	}
+}
+
+// Register mounts media routes onto mux.
+func (h *Handler) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/media/local/", h.serveLocal)
+	mux.HandleFunc("/media/art/", h.serveArt)
+	mux.HandleFunc("/media/qobuz/", h.serveQobuzRelay)
+}
+
+func (h *Handler) serveLocal(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	raw := strings.TrimPrefix(r.URL.Path, "/media/local/")
+	if raw == "" || strings.Contains(raw, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	id := strings.TrimSuffix(raw, filepath.Ext(raw))
+
+	track, ok := h.catalog.Track(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	f, err := os.Open(track.FilePath)
+	if err != nil {
+		http.Error(w, "audio file unavailable", http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		http.Error(w, "audio file stat failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", track.MIME)
+	w.Header().Set("transferMode.dlna.org", "Streaming")
+	w.Header().Set("contentFeatures.dlna.org", upnp.DLNAFeaturesSeekable)
+	w.Header().Set("Accept-Ranges", "bytes")
+
+	http.ServeContent(w, r, filepath.Base(track.FilePath), fi.ModTime(), f)
+}
+
+func (h *Handler) serveArt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/media/art/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	data, mimeType, ok := h.catalog.CoverArt(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(data)
+}
+
+// serveQobuzRelay terminates TLS on the NAS and forwards untouched FLAC bytes
+// over plain HTTP to the renderer ("Quiet Relay" mode), preserving Range requests.
+func (h *Handler) serveQobuzRelay(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.qobuz == nil {
+		http.Error(w, "qobuz not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	raw := strings.TrimPrefix(r.URL.Path, "/media/qobuz/")
+	raw = strings.TrimSuffix(raw, filepath.Ext(raw))
+	trackID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || trackID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	stream, err := h.qobuz.StreamURL(r.Context(), trackID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("resolve qobuz stream: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	upReq, err := http.NewRequestWithContext(r.Context(), r.Method, stream.URL, nil)
+	if err != nil {
+		http.Error(w, "bad upstream url", http.StatusBadGateway)
+		return
+	}
+	if rng := r.Header.Get("Range"); rng != "" {
+		upReq.Header.Set("Range", rng)
+	}
+
+	upResp, err := h.relayHTTP.Do(upReq)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("upstream qobuz fetch failed: %v", err), http.StatusBadGateway)
+		return
+	}
+	defer upResp.Body.Close()
+
+	if upResp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		if cr := upResp.Header.Get("Content-Range"); cr != "" {
+			w.Header().Set("Content-Range", cr)
+		}
+		http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	if upResp.StatusCode != http.StatusOK && upResp.StatusCode != http.StatusPartialContent {
+		http.Error(w, fmt.Sprintf("upstream qobuz returned HTTP %d", upResp.StatusCode), http.StatusBadGateway)
+		return
+	}
+
+	ct := stream.MIME
+	if ct == "" {
+		ct = upResp.Header.Get("Content-Type")
+	}
+	if ct == "" || ct == "audio/x-flac" {
+		ct = "audio/flac"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("transferMode.dlna.org", "Streaming")
+	w.Header().Set("contentFeatures.dlna.org", upnp.DLNAFeaturesSeekable)
+	if ar := upResp.Header.Get("Accept-Ranges"); ar != "" {
+		w.Header().Set("Accept-Ranges", ar)
+	} else {
+		w.Header().Set("Accept-Ranges", "bytes")
+	}
+	if cl := upResp.Header.Get("Content-Length"); cl != "" {
+		w.Header().Set("Content-Length", cl)
+	}
+	if cr := upResp.Header.Get("Content-Range"); cr != "" {
+		w.Header().Set("Content-Range", cr)
+	}
+
+	w.WriteHeader(upResp.StatusCode)
+	if r.Method == http.MethodHead {
+		return
+	}
+
+	body := &idleTimeoutReader{rc: upResp.Body, timeout: relayReadIdleTimeout}
+	if _, err := io.Copy(w, body); err != nil && !errors.Is(err, context.Canceled) && r.Context().Err() == nil {
+		log.Printf("qobuz relay stream %d interrupted: %v", trackID, err)
+	}
+}
+
+// idleTimeoutReader closes the underlying ReadCloser if a single Read stalls
+// longer than timeout, preventing leaked relay goroutines on dead upstreams.
+type idleTimeoutReader struct {
+	rc      io.ReadCloser
+	timeout time.Duration
+}
+
+func (r *idleTimeoutReader) Read(p []byte) (int, error) {
+	timer := time.AfterFunc(r.timeout, func() {
+		_ = r.rc.Close()
+	})
+	defer timer.Stop()
+	return r.rc.Read(p)
+}

@@ -1,0 +1,11 @@
+# Binaries & build artifacts
+/tacet
+*.exe
+*.out
+*.test
+
+# Local tooling / OS files
+.pi/
+.DS_Store
+.env
+.env.*
