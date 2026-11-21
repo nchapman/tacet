@@ -1,5 +1,40 @@
 export type TrackSource = "local" | "qobuz";
 export type StreamMode = "direct" | "relay";
+export type QobuzQuality = "mp3_320" | "flac_16_44" | "flac_24_96" | "flac_24_192";
+export type PlaybackState = "idle" | "playing" | "paused" | "buffering" | "stopped";
+export type QueuePosition = "end" | "next";
+export type TransportAction = "play" | "pause" | "stop" | "next" | "prev";
+
+export interface APIErrorBody {
+  code: string;
+  message: string;
+  retryable: boolean;
+  details?: Record<string, unknown>;
+}
+
+export interface ServerInfo {
+  name: string;
+  version: string;
+  apiVersion: number;
+  capabilities: {
+    localLibrary: boolean;
+    qobuz: boolean;
+    gena: boolean;
+  };
+}
+
+export interface Settings {
+  streamMode: StreamMode;
+  qobuzMaxQuality: QobuzQuality;
+}
+
+export interface LibraryStatus {
+  configured: boolean;
+  scanning: boolean;
+  tracks: number;
+  albums: number;
+  etag: string;
+}
 
 export interface Track {
   id: string;
@@ -20,7 +55,6 @@ export interface Track {
   ext: string;
   size?: number;
   artworkUrl?: string;
-  qobuzTrackId?: number;
 }
 
 export interface Album {
@@ -50,54 +84,52 @@ export interface RendererInfo {
   sinkProtocols?: string[];
 }
 
+export interface QueueItem {
+  itemId: string;
+  track: Track;
+}
+
 export interface ZoneSnapshot {
-  renderer: RendererInfo | null;
-  state: string;
+  zoneId: string;
+  renderer: RendererInfo;
+  revision: number;
+  state: PlaybackState;
   positionSec: number;
+  positionUpdatedAt: string;
   durationSec: number;
   volume: number;
   muted: boolean;
-  hasVolume: boolean;
-  queue: Track[];
+  queue: QueueItem[];
   currentIndex: number;
+  currentItemId?: string;
   currentTrack?: Track;
   gaplessArmed: boolean;
   eventsActive: boolean;
-  streamMode: StreamMode;
-  activeUrl?: string;
-  lastError?: string;
 }
 
-export interface RenderersResponse {
-  renderers: RendererInfo[];
-  activeId: string;
-  streamMode: StreamMode;
+export type QueueSource =
+  | { type: "album"; albumId: string }
+  | { type: "tracks"; trackIds: string[] };
+
+export interface ZonesResponse {
+  zones: ZoneSnapshot[];
 }
 
-export interface DiscoverResponse {
+export interface DiscoverZonesResponse {
   discovered: number;
-  renderers: RendererInfo[];
-  activeId: string;
+  zones: ZoneSnapshot[];
 }
 
-export interface ConnectRendererResponse {
-  renderer: RendererInfo;
-  renderers: RendererInfo[];
-  activeId: string;
+export interface ConnectZoneResponse {
+  zone: ZoneSnapshot;
+  zones: ZoneSnapshot[];
 }
 
-export interface LocalAlbumsResponse {
-  roots: string[];
-  albums: Album[];
-}
-
-export interface LocalTracksResponse {
-  tracks: Track[];
-}
-
-export interface RescanResponse {
-  tracks: number;
-  albums: number;
+export interface PagedResponse<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface QobuzStatus {
@@ -106,20 +138,12 @@ export interface QobuzStatus {
   userName?: string;
   subscription?: string;
   maxFormatId: number;
+  maxQuality: QobuzQuality;
 }
 
 export interface QobuzSearchResult {
   tracks: Track[];
   albums: Album[];
-}
-
-export interface QueueTrackRequest {
-  rendererId?: string;
-  tracks?: Track[];
-  localTrackId?: string;
-  localAlbumId?: string;
-  qobuzAlbumId?: string;
-  startIndex?: number;
 }
 
 export interface QobuzLoginRequest {
@@ -130,4 +154,51 @@ export interface QobuzLoginRequest {
   appSecret?: string;
 }
 
-export type TransportAction = "play" | "pause" | "stop" | "next" | "prev";
+// Split SSE event payloads
+export interface SnapshotEvent {
+  zones: ZoneSnapshot[];
+  settings: Settings;
+  qobuz: QobuzStatus;
+  library: LibraryStatus;
+}
+
+export interface PlaybackEvent {
+  zoneId: string;
+  revision: number;
+  state: PlaybackState;
+  positionSec: number;
+  positionUpdatedAt: string;
+  durationSec: number;
+  currentIndex: number;
+  currentItemId?: string;
+  currentTrack?: Track;
+  gaplessArmed: boolean;
+  eventsActive: boolean;
+}
+
+export interface VolumeEvent {
+  zoneId: string;
+  revision: number;
+  volume: number;
+  muted: boolean;
+}
+
+export interface QueueEvent {
+  zoneId: string;
+  revision: number;
+  currentIndex: number;
+  currentItemId?: string;
+  currentTrack?: Track;
+  items: QueueItem[];
+}
+
+export interface ZoneErrorEvent {
+  id: string;
+  zoneId: string;
+  error: APIErrorBody;
+  occurredAt: string;
+}
+
+export interface ZonesUpdatedEvent {
+  zones: ZoneSnapshot[];
+}

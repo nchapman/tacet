@@ -6,27 +6,37 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"tacet/internal/library"
+	"tacet/internal/qobuz"
 	"tacet/internal/queue"
 )
 
-func (s *Server) handleListRenderers(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleListZones(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"renderers":  s.manager.Renderers(),
-		"activeId":   s.manager.ActiveRendererID(),
-		"streamMode": s.manager.StreamMode(),
+		"zones": s.manager.Zones(),
 	})
 }
 
-func (s *Server) handleDiscoverRenderers(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetZone(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
+	snap, ok := s.manager.Zone(zoneID)
+	if !ok {
+		writeDomainError(w, fmt.Errorf("%w: %q", queue.ErrZoneNotFound, zoneID))
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *Server) handleDiscoverZones(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	found, err := s.discover(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeAPIError(w, http.StatusInternalServerError, "DISCOVERY_FAILED", err.Error(), true)
 		return
 	}
 	for _, dev := range found {
@@ -34,123 +44,104 @@ func (s *Server) handleDiscoverRenderers(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"discovered": len(found),
-		"renderers":  s.manager.Renderers(),
-		"activeId":   s.manager.ActiveRendererID(),
+		"zones":      s.manager.Zones(),
 	})
 }
 
-func (s *Server) handleConnectRenderer(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleConnectZone(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		URL string `json:"url"`
 	}
 	if err := decodeJSON(w, r, &body); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	if strings.TrimSpace(body.URL) == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "url is required", false)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	dev, err := s.connect(ctx, body.URL)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		writeAPIError(w, http.StatusBadGateway, "RENDERER_UNREACHABLE", err.Error(), true)
 		return
 	}
 	s.manager.RegisterRenderer(dev)
-	_ = s.manager.SelectRenderer(dev.Info().ID)
+	zone, _ := s.manager.Zone(dev.Info().ID)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"renderer":  dev.Info(),
-		"renderers": s.manager.Renderers(),
-		"activeId":  s.manager.ActiveRendererID(),
+		"zone":  zone,
+		"zones": s.manager.Zones(),
 	})
-}
-
-func (s *Server) handleSelectRenderer(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		ID string `json:"id"`
-	}
-	if err := decodeJSON(w, r, &body); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if err := s.manager.SelectRenderer(body.ID); err != nil {
-		writeError(w, http.StatusNotFound, err)
-		return
-	}
-	snap, _ := s.manager.Snapshot(body.ID)
-	writeJSON(w, http.StatusOK, snap)
-}
-
-func (s *Server) handleStreamMode(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Mode queue.StreamMode `json:"mode"`
-	}
-	if err := decodeJSON(w, r, &body); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if err := s.manager.SetStreamMode(body.Mode); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"streamMode": s.manager.StreamMode()})
-}
-
-func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("renderer")
-	snap, ok := s.manager.Snapshot(id)
-	if !ok {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"renderer":     nil,
-			"state":        "IDLE",
-			"positionSec":  0,
-			"durationSec":  0,
-			"volume":       0,
-			"muted":        false,
-			"hasVolume":    false,
-			"queue":        []any{},
-			"currentIndex": -1,
-			"gaplessArmed": false,
-			"eventsActive": false,
-			"streamMode":   s.manager.StreamMode(),
-		})
-		return
-	}
-	writeJSON(w, http.StatusOK, snap)
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "STREAMING_UNSUPPORTED", "SSE streaming unsupported", false)
 		return
+	}
+
+	zoneFilter := make(map[string]struct{})
+	for _, z := range r.URL.Query()["zone"] {
+		if z = strings.TrimSpace(z); z != "" {
+			zoneFilter[z] = struct{}{}
+		}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	ch, unsub := s.manager.Subscribe()
 	defer unsub()
 
-	send := func(ev queue.Event) bool {
-		data, err := json.Marshal(ev.Data)
+	sendFrame := func(id uint64, evType string, payload any) bool {
+		data, err := json.Marshal(payload)
 		if err != nil {
 			return true
 		}
-		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, data); err != nil {
-			return false
+		if id > 0 {
+			if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", id, evType, data); err != nil {
+				return false
+			}
+		} else {
+			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evType, data); err != nil {
+				return false
+			}
 		}
 		flusher.Flush()
 		return true
 	}
 
-	// Send initial snapshot right away.
-	if !send(queue.Event{Type: "renderers", Data: s.manager.Renderers()}) {
+	if _, err := fmt.Fprint(w, "retry: 3000\n\n"); err != nil {
 		return
 	}
-	if snap, ok := s.manager.Snapshot(""); ok {
-		if !send(queue.Event{Type: "state", Data: snap}) {
-			return
+	flusher.Flush()
+
+	// Send initial multi-zone snapshot right away.
+	allZones := s.manager.Zones()
+	zones := make([]queue.ZoneSnapshot, 0, len(allZones))
+	for _, z := range allZones {
+		if len(zoneFilter) > 0 {
+			if _, match := zoneFilter[z.ZoneID]; !match {
+				continue
+			}
 		}
+		zones = append(zones, z)
+	}
+	qbStatus := qobuz.Status{MaxFormatID: qobuz.FormatFLAC192, MaxQuality: qobuz.QualityLabel(qobuz.FormatFLAC192)}
+	if s.qobuz != nil {
+		qbStatus = s.qobuz.Status()
+	}
+	if !sendFrame(0, "snapshot", map[string]any{
+		"zones":    zones,
+		"settings": s.currentSettings(),
+		"qobuz":    qbStatus,
+		"library":  s.catalog.Status(),
+	}) {
+		return
 	}
 
 	keepalive := time.NewTicker(20 * time.Second)
@@ -160,8 +151,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case ev := <-ch:
-			if !send(ev) {
+		case ev, open := <-ch:
+			if !open {
+				// Subscriber lagged past channel capacity; notify client to resync cleanly.
+				_ = sendFrame(0, "resync", map[string]string{"reason": "subscriber_lagged"})
+				return
+			}
+			if ev.ZoneID != "" && len(zoneFilter) > 0 {
+				if _, match := zoneFilter[ev.ZoneID]; !match {
+					continue
+				}
+			}
+			if !sendFrame(ev.ID, ev.Type, ev.Data) {
 				return
 			}
 		case <-keepalive.C:
@@ -173,199 +174,275 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type queueTrackRequest struct {
-	RendererID   string          `json:"rendererId"`
-	Tracks       []library.Track `json:"tracks"`
-	LocalTrackID string          `json:"localTrackId"`
-	LocalAlbumID string          `json:"localAlbumId"`
-	QobuzAlbumID string          `json:"qobuzAlbumId"`
-	StartIndex   int             `json:"startIndex"`
+type queueSource struct {
+	Type     string   `json:"type"`
+	AlbumID  string   `json:"albumId,omitempty"`
+	TrackIDs []string `json:"trackIds,omitempty"`
 }
 
-func (s *Server) resolveRequestTracks(ctx context.Context, req queueTrackRequest) ([]library.Track, error) {
-	if len(req.Tracks) > 0 {
-		// Re-hydrate local track file paths from catalog when clients post JSON tracks.
-		resolved := make([]library.Track, 0, len(req.Tracks))
-		for _, t := range req.Tracks {
-			if t.Source == library.SourceLocal {
-				if catTrack, ok := s.catalog.Track(t.ID); ok {
-					resolved = append(resolved, catTrack)
-					continue
-				}
+func (s *Server) resolveSource(ctx context.Context, src queueSource) ([]library.Track, error) {
+	switch src.Type {
+	case "album":
+		id := strings.TrimSpace(src.AlbumID)
+		if id == "" {
+			return nil, fmt.Errorf("%w: source.albumId is required", queue.ErrInvalidArgument)
+		}
+		if strings.HasPrefix(id, "qobuz:") {
+			if s.qobuz == nil {
+				return nil, ErrQobuzUnavailable
 			}
-			resolved = append(resolved, t)
+			alb, err := s.qobuz.GetAlbum(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			return alb.Tracks, nil
+		}
+		alb, ok := s.catalog.Album(id)
+		if !ok {
+			return nil, fmt.Errorf("%w: %q", ErrAlbumNotFound, id)
+		}
+		return alb.Tracks, nil
+
+	case "tracks":
+		if len(src.TrackIDs) == 0 {
+			return nil, fmt.Errorf("%w: source.trackIds must not be empty", queue.ErrInvalidArgument)
+		}
+		resolved := make([]library.Track, 0, len(src.TrackIDs))
+		for _, rawID := range src.TrackIDs {
+			id := strings.TrimSpace(rawID)
+			if strings.HasPrefix(id, "qobuz:") {
+				if s.qobuz == nil {
+					return nil, ErrQobuzUnavailable
+				}
+				numID, err := strconv.ParseInt(strings.TrimPrefix(id, "qobuz:"), 10, 64)
+				if err != nil || numID <= 0 {
+					return nil, fmt.Errorf("%w: invalid qobuz trackId %q", queue.ErrInvalidArgument, id)
+				}
+				tr, err := s.qobuz.ResolveTrack(ctx, numID)
+				if err != nil {
+					return nil, err
+				}
+				resolved = append(resolved, tr)
+				continue
+			}
+			tr, ok := s.catalog.Track(id)
+			if !ok {
+				return nil, fmt.Errorf("%w: %q", ErrTrackNotFound, id)
+			}
+			resolved = append(resolved, tr)
 		}
 		return resolved, nil
+
+	default:
+		return nil, fmt.Errorf("%w: source.type must be 'album' or 'tracks'", queue.ErrInvalidArgument)
 	}
-	if req.LocalTrackID != "" {
-		t, ok := s.catalog.Track(req.LocalTrackID)
-		if !ok {
-			return nil, fmt.Errorf("local track %q not found", req.LocalTrackID)
-		}
-		return []library.Track{t}, nil
-	}
-	if req.LocalAlbumID != "" {
-		alb, ok := s.catalog.Album(req.LocalAlbumID)
-		if !ok {
-			return nil, fmt.Errorf("local album %q not found", req.LocalAlbumID)
-		}
-		return alb.Tracks, nil
-	}
-	if req.QobuzAlbumID != "" {
-		if s.qobuz == nil {
-			return nil, errors.New("qobuz is not configured")
-		}
-		rawID := strings.TrimPrefix(req.QobuzAlbumID, "qobuz:")
-		alb, err := s.qobuz.GetAlbum(ctx, rawID)
-		if err != nil {
-			return nil, err
-		}
-		return alb.Tracks, nil
-	}
-	return nil, errors.New("specify tracks, localTrackId, localAlbumId, or qobuzAlbumId")
 }
 
-func (s *Server) handleQueuePlay(w http.ResponseWriter, r *http.Request) {
-	var req queueTrackRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	tracks, err := s.resolveRequestTracks(r.Context(), req)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if err := s.manager.PlayTracks(r.Context(), req.RendererID, tracks, req.StartIndex); err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	snap, _ := s.manager.Snapshot(req.RendererID)
-	writeJSON(w, http.StatusOK, snap)
-}
-
-func (s *Server) handleQueueEnqueue(w http.ResponseWriter, r *http.Request) {
-	var req queueTrackRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	tracks, err := s.resolveRequestTracks(r.Context(), req)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if err := s.manager.Enqueue(r.Context(), req.RendererID, tracks); err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	snap, _ := s.manager.Snapshot(req.RendererID)
-	writeJSON(w, http.StatusOK, snap)
-}
-
-func (s *Server) handleQueueJump(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleReplaceQueue(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
 	var req struct {
-		RendererID string `json:"rendererId"`
-		Index      int    `json:"index"`
+		Source     queueSource `json:"source"`
+		StartIndex int         `json:"startIndex"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
-	if err := s.manager.PlayIndex(r.Context(), req.RendererID, req.Index); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	tracks, err := s.resolveSource(r.Context(), req.Source)
+	if err != nil {
+		writeDomainError(w, err)
 		return
 	}
-	snap, _ := s.manager.Snapshot(req.RendererID)
+	snap, err := s.manager.ReplaceQueue(r.Context(), zoneID, tracks, req.StartIndex)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, snap)
 }
 
-func (s *Server) handleQueueRemove(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAddQueueItems(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
 	var req struct {
-		RendererID string `json:"rendererId"`
-		Index      int    `json:"index"`
+		Source   queueSource    `json:"source"`
+		Position queue.Position `json:"position"`
+		Autoplay *bool          `json:"autoplay"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
-	if err := s.manager.RemoveAt(r.Context(), req.RendererID, req.Index); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	tracks, err := s.resolveSource(r.Context(), req.Source)
+	if err != nil {
+		writeDomainError(w, err)
 		return
 	}
-	snap, _ := s.manager.Snapshot(req.RendererID)
+	autoplay := true
+	if req.Autoplay != nil {
+		autoplay = *req.Autoplay
+	}
+	snap, err := s.manager.AddQueueItems(r.Context(), zoneID, tracks, req.Position, autoplay)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, snap)
 }
 
-func (s *Server) handleQueueClear(w http.ResponseWriter, r *http.Request) {
-	rendererID := r.URL.Query().Get("renderer")
-	if err := s.manager.ClearQueue(r.Context(), rendererID); err != nil {
-		writeError(w, http.StatusBadGateway, err)
+func (s *Server) handleJumpQueue(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
+	var req struct {
+		ItemID string `json:"itemId"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
-	snap, _ := s.manager.Snapshot(rendererID)
+	snap, err := s.manager.JumpToItem(r.Context(), zoneID, req.ItemID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, snap)
 }
 
-func (s *Server) handleTransportAction(fn func(ctx context.Context, id string) error) http.HandlerFunc {
+func (s *Server) handleRemoveQueueItem(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
+	itemID := r.PathValue("itemId")
+	snap, err := s.manager.RemoveItem(r.Context(), zoneID, itemID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *Server) handleMoveQueueItem(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
+	itemID := r.PathValue("itemId")
+	var req struct {
+		ToIndex *int `json:"toIndex"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	if req.ToIndex == nil {
+		writeDomainError(w, fmt.Errorf("%w: toIndex is required", queue.ErrInvalidArgument))
+		return
+	}
+	snap, err := s.manager.MoveItem(zoneID, itemID, *req.ToIndex)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *Server) handleClearQueue(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
+	snap, err := s.manager.ClearQueue(r.Context(), zoneID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *Server) handleZoneAction(fn func(ctx context.Context, zoneID string) (queue.ZoneSnapshot, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rendererID := r.URL.Query().Get("renderer")
-		if err := fn(r.Context(), rendererID); err != nil {
-			writeError(w, http.StatusBadGateway, err)
+		zoneID := r.PathValue("zoneId")
+		snap, err := fn(r.Context(), zoneID)
+		if err != nil {
+			writeDomainError(w, err)
 			return
 		}
-		snap, _ := s.manager.Snapshot(rendererID)
 		writeJSON(w, http.StatusOK, snap)
 	}
 }
 
 func (s *Server) handleSeek(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
 	var req struct {
-		RendererID  string `json:"rendererId"`
-		PositionSec int    `json:"positionSec"`
+		PositionSec *int `json:"positionSec"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
-	if err := s.manager.Seek(r.Context(), req.RendererID, req.PositionSec); err != nil {
-		writeError(w, http.StatusBadGateway, err)
+	if req.PositionSec == nil {
+		writeDomainError(w, fmt.Errorf("%w: positionSec is required", queue.ErrInvalidArgument))
 		return
 	}
-	snap, _ := s.manager.Snapshot(req.RendererID)
+	snap, err := s.manager.Seek(r.Context(), zoneID, *req.PositionSec)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, snap)
 }
 
 func (s *Server) handleVolume(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
 	var req struct {
-		RendererID string `json:"rendererId"`
-		Volume     int    `json:"volume"`
+		Volume *int `json:"volume"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
-	if err := s.manager.SetVolume(r.Context(), req.RendererID, req.Volume); err != nil {
-		writeError(w, http.StatusBadGateway, err)
+	if req.Volume == nil {
+		writeDomainError(w, fmt.Errorf("%w: volume is required", queue.ErrInvalidArgument))
 		return
 	}
-	snap, _ := s.manager.Snapshot(req.RendererID)
+	snap, err := s.manager.SetVolume(r.Context(), zoneID, *req.Volume)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, snap)
 }
 
 func (s *Server) handleMute(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
 	var req struct {
-		RendererID string `json:"rendererId"`
-		Muted      bool   `json:"muted"`
+		Muted *bool `json:"muted"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
-	if err := s.manager.SetMute(r.Context(), req.RendererID, req.Muted); err != nil {
-		writeError(w, http.StatusBadGateway, err)
+	if req.Muted == nil {
+		writeDomainError(w, fmt.Errorf("%w: muted is required", queue.ErrInvalidArgument))
 		return
 	}
-	snap, _ := s.manager.Snapshot(req.RendererID)
+	snap, err := s.manager.SetMute(r.Context(), zoneID, *req.Muted)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, snap)
+}
+
+func parsePageParams(r *http.Request, defaultLimit, maxLimit int) (int, int, error) {
+	limit := defaultLimit
+	offset := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			return 0, 0, errors.New("limit must be a positive integer")
+		}
+		if v > maxLimit {
+			v = maxLimit
+		}
+		limit = v
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 0 {
+			return 0, 0, errors.New("offset must be a non-negative integer")
+		}
+		offset = v
+	}
+	return limit, offset, nil
 }

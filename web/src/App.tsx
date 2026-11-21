@@ -19,29 +19,32 @@ export function App() {
   const [tab, setTab] = useState<BrowserTab>(initialTab);
   const [connectOpen, setConnectOpen] = useState(false);
 
-  // Space toggles play/pause when focus is not in an interactive text field.
+  const activeState = tacet.activeZone?.state;
+  const activeTransport = tacet.transport;
+
+  // Space toggles play/pause when focus is not in an interactive control.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code !== "Space" || e.metaKey || e.ctrlKey || e.altKey) return;
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || tag === "A") return;
       e.preventDefault();
-      void tacet.transport(tacet.snapshot.state === "PLAYING" ? "pause" : "play");
+      void activeTransport(activeState === "playing" ? "pause" : "play");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [tacet]);
+  }, [activeState, activeTransport]);
 
   return (
     <div className="app-shell">
       <Header
-        renderers={tacet.renderers}
-        activeId={tacet.activeId}
-        streamMode={tacet.streamMode}
+        zones={tacet.zones}
+        activeZoneId={tacet.activeZone?.zoneId ?? ""}
+        streamMode={tacet.settings.streamMode}
         connection={tacet.connection}
         discovering={tacet.discovering}
-        onSelectRenderer={(id) => void tacet.selectRenderer(id)}
-        onDiscover={() => void tacet.discoverRenderers()}
+        onSelectZone={tacet.selectZone}
+        onDiscover={() => void tacet.discoverZones()}
         onOpenConnect={() => setConnectOpen(true)}
         onStreamModeChange={(mode) => void tacet.setStreamMode(mode)}
       />
@@ -49,7 +52,9 @@ export function App() {
       <main className="layout">
         <div className="left-col">
           <NowPlaying
-            snapshot={tacet.snapshot}
+            zone={tacet.activeZone}
+            positionSec={tacet.interpolatedPositionSec}
+            streamMode={tacet.settings.streamMode}
             error={tacet.error}
             onDismissError={tacet.clearError}
             onTransport={(action) => void tacet.transport(action)}
@@ -58,10 +63,10 @@ export function App() {
             onMute={(muted) => void tacet.setMute(muted)}
           />
           <QueuePanel
-            queue={tacet.snapshot.queue ?? []}
-            currentIndex={tacet.snapshot.currentIndex}
-            onJump={(idx) => void tacet.jumpQueue(idx)}
-            onRemove={(idx) => void tacet.removeFromQueue(idx)}
+            items={tacet.activeZone?.queue ?? []}
+            currentItemId={tacet.activeZone?.currentItemId}
+            onJump={(itemId) => void tacet.jumpItem(itemId)}
+            onRemove={(itemId) => void tacet.removeItem(itemId)}
             onClear={() => void tacet.clearQueue()}
           />
         </div>
@@ -89,9 +94,18 @@ export function App() {
           </div>
 
           {tab === "local" ? (
-            <LocalBrowser onPlay={(req) => void tacet.playQueue(req)} onEnqueue={(req) => void tacet.enqueue(req)} />
+            <LocalBrowser
+              libraryStatus={tacet.libraryStatus}
+              onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+              onAdd={(src, pos) => void tacet.addSource(src, pos)}
+            />
           ) : (
-            <QobuzBrowser onPlay={(req) => void tacet.playQueue(req)} onEnqueue={(req) => void tacet.enqueue(req)} />
+            <QobuzBrowser
+              status={tacet.qobuzStatus}
+              onStatusChange={tacet.setQobuzStatus}
+              onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+              onAdd={(src, pos) => void tacet.addSource(src, pos)}
+            />
           )}
         </section>
       </main>
@@ -99,7 +113,7 @@ export function App() {
       <ConnectModal
         open={connectOpen}
         onClose={() => setConnectOpen(false)}
-        onConnect={(url) => tacet.connectRenderer(url)}
+        onConnect={(url) => tacet.connectZone(url)}
       />
     </div>
   );

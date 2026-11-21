@@ -19,8 +19,8 @@ An open-source, headless UPnP/DLNA control point server written in Go for lossle
   - Recursively scans local music directories (`.flac`, `.wav`, `.aiff`, `.m4a`/ALAC, `.dsf`, `.mp3`, `.ogg`, `.opus`), reading tags, embedded/folder cover art, and exact sample rate/bit depth/duration from audio headers.
   - Serves untouched files over plain HTTP with `Range` and DLNA streaming headers.
 - **Remote Control API + Embedded React Web Client:**
-  - Clean JSON REST API + live Server-Sent Events (`/api/events`) for web and native remote apps, with a typed TypeScript client in `web/src/api/`.
-  - Built-in React + TypeScript + Vite web remote compiled and embedded directly into the single Go binary at `/`.
+  - Versioned `/api/v1` multi-zone JSON REST API with OpenAPI 3.1 spec (`GET /api/v1/openapi.yaml`, `internal/api/openapi.yaml`), typed error envelopes, and split Server-Sent Events (`/api/v1/events`).
+  - Typed TypeScript client SDK (`web/src/api/`) and React + Vite web remote compiled and embedded directly into the single Go binary at `/`.
 
 ## Quick Start
 
@@ -46,6 +46,7 @@ Open `http://localhost:8080` (or `http://<your-lan-ip>:8080` from your phone/tab
 | `--public-url` | `TACET_PUBLIC_URL` | *(auto)* | Override base URL sent to renderers (useful in Docker) |
 | `--renderer-url` | `TACET_RENDERER_URL` | *(empty)* | Connect directly to a renderer XML URL (e.g. `http://192.168.1.50:49152/description.xml`) |
 | `--stream-mode` | `TACET_STREAM_MODE` | `direct` | Default Qobuz mode: `direct` or `relay` |
+| `--cors-origin` | `TACET_CORS_ORIGIN` | *(empty)* | Optional `Access-Control-Allow-Origin` header for external web/hybrid clients |
 
 ### Qobuz Authentication
 

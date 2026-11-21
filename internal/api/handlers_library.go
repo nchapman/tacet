@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -12,16 +13,40 @@ import (
 	"strings"
 	"time"
 
-	"tacet/internal/library"
 	"tacet/internal/qobuz"
 )
 
 const oauthStateCookieName = "tacet_qobuz_oauth"
 
+func (s *Server) handleLibraryStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.catalog.Status())
+}
+
 func (s *Server) handleLocalAlbums(w http.ResponseWriter, r *http.Request) {
+	limit, offset, err := parsePageParams(r, 200, 500)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	sortBy := strings.TrimSpace(r.URL.Query().Get("sort"))
+
+	if q == "" {
+		baseTag := strings.Trim(s.catalog.ETag(), `"`)
+		etag := fmt.Sprintf(`"%s-%s-%d-%d"`, baseTag, sortBy, limit, offset)
+		w.Header().Set("ETag", etag)
+		if match := strings.TrimSpace(r.Header.Get("If-None-Match")); match == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+
+	items, total := s.catalog.AlbumsPage(q, sortBy, limit, offset)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"roots":  s.catalog.Roots(),
-		"albums": s.catalog.Albums(),
+		"items":  items,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
 	})
 }
 
@@ -29,38 +54,60 @@ func (s *Server) handleLocalAlbum(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	alb, ok := s.catalog.Album(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, fmt.Errorf("album %q not found", id))
+		writeDomainError(w, fmt.Errorf("%w: %q", ErrAlbumNotFound, id))
 		return
 	}
 	writeJSON(w, http.StatusOK, alb)
 }
 
 func (s *Server) handleLocalTracks(w http.ResponseWriter, r *http.Request) {
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	var tracks []library.Track
-	if q != "" {
-		tracks = s.catalog.Search(q, 100)
-	} else {
-		tracks = s.catalog.Tracks()
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"tracks": tracks})
-}
-
-func (s *Server) handleLocalRescan(w http.ResponseWriter, r *http.Request) {
-	count, err := s.catalog.Scan()
+	limit, offset, err := parsePageParams(r, 100, 500)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	items, total := s.catalog.TracksPage(q, limit, offset)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tracks": count,
-		"albums": len(s.catalog.Albums()),
+		"items":  items,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
 	})
 }
 
-func (s *Server) handleQobuzStatus(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLocalRescan(w http.ResponseWriter, r *http.Request) {
+	wait := r.URL.Query().Get("wait") == "true"
+	if wait {
+		if _, err := s.catalog.Scan(); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "SCAN_FAILED", err.Error(), true)
+			return
+		}
+		st := s.catalog.Status()
+		s.manager.Publish("library.updated", st)
+		writeJSON(w, http.StatusOK, st)
+		return
+	}
+
+	go func() {
+		if _, err := s.catalog.Scan(); err != nil {
+			log.Printf("async library rescan failed: %v", err)
+			return
+		}
+		s.manager.Publish("library.updated", s.catalog.Status())
+	}()
+
+	st := s.catalog.Status()
+	st.Scanning = true
+	writeJSON(w, http.StatusAccepted, st)
+}
+
+func (s *Server) handleQobuzStatus(w http.ResponseWriter, _ *http.Request) {
 	if s.qobuz == nil {
-		writeJSON(w, http.StatusOK, qobuz.Status{})
+		writeJSON(w, http.StatusOK, qobuz.Status{
+			MaxFormatID: qobuz.FormatFLAC192,
+			MaxQuality:  qobuz.QualityLabel(qobuz.FormatFLAC192),
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, s.qobuz.Status())
@@ -69,7 +116,7 @@ func (s *Server) handleQobuzStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) resolveOAuthCallbackURL(r *http.Request) (string, error) {
 	if s.manager != nil {
 		if base := strings.TrimRight(s.manager.PublicBaseURL(), "/"); base != "" {
-			return base + "/api/qobuz/oauth/callback", nil
+			return base + "/api/v1/qobuz/oauth/callback", nil
 		}
 	}
 	hostport := strings.TrimSpace(r.Host)
@@ -91,7 +138,7 @@ func (s *Server) resolveOAuthCallbackURL(r *http.Request) (string, error) {
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	return fmt.Sprintf("%s://%s/api/qobuz/oauth/callback", scheme, hostport), nil
+	return fmt.Sprintf("%s://%s/api/v1/qobuz/oauth/callback", scheme, hostport), nil
 }
 
 func (s *Server) issueOAuthState() (string, error) {
@@ -126,33 +173,33 @@ func (s *Server) consumeOAuthState(tok string) bool {
 
 func (s *Server) handleQobuzOAuthStart(w http.ResponseWriter, r *http.Request) {
 	if s.qobuz == nil {
-		http.Error(w, "qobuz client unavailable", http.StatusServiceUnavailable)
+		writeDomainError(w, ErrQobuzUnavailable)
 		return
 	}
 	callbackURL, err := s.resolveOAuthCallbackURL(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
 	authURL, err := s.qobuz.OAuthURL(r.Context(), callbackURL)
 	if err != nil {
-		http.Error(w, "failed to prepare Qobuz OAuth: "+err.Error(), http.StatusBadGateway)
+		writeAPIError(w, http.StatusBadGateway, "UPSTREAM_ERROR", "failed to prepare Qobuz OAuth: "+err.Error(), true)
 		return
 	}
 	parsed, err := url.Parse(authURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Hostname() != "www.qobuz.com" {
-		http.Error(w, "invalid Qobuz OAuth redirect target", http.StatusBadGateway)
+		writeAPIError(w, http.StatusBadGateway, "UPSTREAM_ERROR", "invalid Qobuz OAuth redirect target", false)
 		return
 	}
 	stateTok, err := s.issueOAuthState()
 	if err != nil {
-		http.Error(w, "failed to initialize OAuth session", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to initialize OAuth session", true)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure enabled when TLS is active; LAN control point commonly runs over plain HTTP
 		Name:     oauthStateCookieName,
 		Value:    stateTok,
-		Path:     "/api/qobuz/oauth/callback",
+		Path:     "/api/v1/qobuz/oauth/callback",
 		MaxAge:   600,
 		HttpOnly: true,
 		Secure:   r.TLS != nil,
@@ -163,21 +210,21 @@ func (s *Server) handleQobuzOAuthStart(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleQobuzOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if s.qobuz == nil {
-		http.Error(w, "qobuz client unavailable", http.StatusServiceUnavailable)
+		writeDomainError(w, ErrQobuzUnavailable)
 		return
 	}
 	cookie, err := r.Cookie(oauthStateCookieName)
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure enabled when TLS is active; LAN control point commonly runs over plain HTTP
 		Name:     oauthStateCookieName,
 		Value:    "",
-		Path:     "/api/qobuz/oauth/callback",
+		Path:     "/api/v1/qobuz/oauth/callback",
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteLaxMode,
 	})
 	if err != nil || !s.consumeOAuthState(cookie.Value) {
-		http.Error(w, "missing or expired Qobuz OAuth session — start sign-in from the web remote", http.StatusForbidden)
+		writeAPIError(w, http.StatusForbidden, "OAUTH_STATE_INVALID", "missing or expired Qobuz OAuth session — start sign-in from the client", false)
 		return
 	}
 	code := strings.TrimSpace(r.URL.Query().Get("code_autorisation"))
@@ -185,19 +232,21 @@ func (s *Server) handleQobuzOAuthCallback(w http.ResponseWriter, r *http.Request
 		code = strings.TrimSpace(r.URL.Query().Get("code"))
 	}
 	if code == "" {
-		http.Error(w, "missing Qobuz OAuth code in callback URL", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "missing Qobuz OAuth code in callback URL", false)
 		return
 	}
-	if _, err := s.qobuz.ExchangeOAuthCode(r.Context(), code); err != nil {
-		http.Error(w, "Qobuz sign-in failed: "+err.Error(), http.StatusUnauthorized)
+	st, err := s.qobuz.ExchangeOAuthCode(r.Context(), code)
+	if err != nil {
+		writeAPIError(w, http.StatusUnauthorized, "QOBUZ_AUTH_FAILED", "Qobuz sign-in failed: "+err.Error(), false)
 		return
 	}
+	s.manager.Publish("qobuz.status", st)
 	http.Redirect(w, r, "/?tab=qobuz", http.StatusFound)
 }
 
 func (s *Server) handleQobuzLogin(w http.ResponseWriter, r *http.Request) {
 	if s.qobuz == nil {
-		writeError(w, http.StatusServiceUnavailable, errors.New("qobuz client unavailable"))
+		writeDomainError(w, ErrQobuzUnavailable)
 		return
 	}
 	var req struct {
@@ -208,7 +257,7 @@ func (s *Server) handleQobuzLogin(w http.ResponseWriter, r *http.Request) {
 		AuthToken string `json:"authToken"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
 
@@ -218,38 +267,59 @@ func (s *Server) handleQobuzLogin(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.AuthToken) != "" {
 		st, err := s.qobuz.LoginWithToken(r.Context(), req.AuthToken)
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, err)
+			writeAPIError(w, http.StatusUnauthorized, "QOBUZ_AUTH_FAILED", err.Error(), false)
 			return
 		}
+		s.manager.Publish("qobuz.status", st)
 		writeJSON(w, http.StatusOK, st)
 		return
 	}
 	if req.Email != "" && req.Password != "" {
 		st, err := s.qobuz.Login(r.Context(), req.Email, req.Password)
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, err)
+			writeAPIError(w, http.StatusUnauthorized, "QOBUZ_AUTH_FAILED", err.Error(), false)
 			return
 		}
+		s.manager.Publish("qobuz.status", st)
 		writeJSON(w, http.StatusOK, st)
 		return
 	}
 	st := s.qobuz.Status()
 	if !st.Authenticated {
-		writeError(w, http.StatusBadRequest, errors.New("sign in via Qobuz OAuth or provide a user_auth_token"))
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "sign in via Qobuz OAuth or provide an authToken", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
 }
 
+func (s *Server) handleQobuzLogout(w http.ResponseWriter, _ *http.Request) {
+	if s.qobuz == nil {
+		writeDomainError(w, ErrQobuzUnavailable)
+		return
+	}
+	st := s.qobuz.Logout()
+	s.manager.Publish("qobuz.status", st)
+	writeJSON(w, http.StatusOK, st)
+}
+
 func (s *Server) handleQobuzSearch(w http.ResponseWriter, r *http.Request) {
 	if s.qobuz == nil {
-		writeError(w, http.StatusServiceUnavailable, errors.New("qobuz unavailable"))
+		writeDomainError(w, ErrQobuzUnavailable)
 		return
 	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	res, err := s.qobuz.Search(r.Context(), q, 30)
+	if q == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "q query parameter is required", false)
+		return
+	}
+	limit, offset, err := parsePageParams(r, 30, 100)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	res, err := s.qobuz.Search(r.Context(), q, limit, offset)
+	if err != nil {
+		writeDomainError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
@@ -257,13 +327,13 @@ func (s *Server) handleQobuzSearch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleQobuzAlbum(w http.ResponseWriter, r *http.Request) {
 	if s.qobuz == nil {
-		writeError(w, http.StatusServiceUnavailable, errors.New("qobuz unavailable"))
+		writeDomainError(w, ErrQobuzUnavailable)
 		return
 	}
-	id := strings.TrimPrefix(r.PathValue("id"), "qobuz:")
+	id := r.PathValue("id")
 	alb, err := s.qobuz.GetAlbum(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		writeDomainError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, alb)

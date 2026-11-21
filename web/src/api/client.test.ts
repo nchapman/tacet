@@ -28,78 +28,144 @@ describe("format helpers", () => {
   });
 });
 
-describe("TacetClient", () => {
-  it("sends JSON payloads and query params to the expected endpoints", async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ streamMode: "relay" }), {
+describe("TacetClient v1", () => {
+  it("resolves server-relative media paths while preserving absolute URLs", () => {
+    const client = new TacetClient({ baseUrl: "http://nas.local:8080/" });
+    expect(client.resolveUrl("/media/art/local:abc")).toBe("http://nas.local:8080/media/art/local:abc");
+    expect(client.resolveUrl("https://static.qobuz.com/cover.jpg")).toBe("https://static.qobuz.com/cover.jpg");
+    expect(client.resolveUrl("")).toBe("");
+  });
+
+  it("uses zone facade routes and discriminated QueueSource payloads", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify({ zoneId: "uuid:wiim", revision: 2 }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
     );
     const client = new TacetClient({ baseUrl: "http://localhost:8080/", fetchImpl: fetchMock });
+    const zone = client.zone("uuid:wiim");
 
-    const res = await client.setStreamMode("relay");
-    expect(res.streamMode).toBe("relay");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://localhost:8080/api/settings/stream-mode");
-    expect(init?.method).toBe("POST");
-    expect(init?.body).toBe(JSON.stringify({ mode: "relay" }));
+    await zone.play({ type: "album", albumId: "local:abc" }, 2);
+    await zone.addItems({ type: "tracks", trackIds: ["qobuz:123"] }, { position: "next", autoplay: false });
+    await zone.removeItem("qi_9");
+    await zone.setVolume(140.4);
+    await zone.seek(-12);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/zones/uuid%3Awiim/queue");
+    expect(fetchMock.mock.calls[0][1]?.method).toBe("PUT");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      source: { type: "album", albumId: "local:abc" },
+      startIndex: 2,
+    });
+
+    expect(fetchMock.mock.calls[1][0]).toBe("http://localhost:8080/api/v1/zones/uuid%3Awiim/queue/items");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({
+      source: { type: "tracks", trackIds: ["qobuz:123"] },
+      position: "next",
+      autoplay: false,
+    });
+
+    expect(fetchMock.mock.calls[2][0]).toBe("http://localhost:8080/api/v1/zones/uuid%3Awiim/queue/items/qi_9");
+    expect(fetchMock.mock.calls[2][1]?.method).toBe("DELETE");
+
+    expect(fetchMock.mock.calls[3][0]).toBe("http://localhost:8080/api/v1/zones/uuid%3Awiim/volume");
+    expect(fetchMock.mock.calls[3][1]?.method).toBe("PUT");
+    expect(JSON.parse(String(fetchMock.mock.calls[3][1]?.body))).toEqual({ volume: 100 });
+
+    expect(fetchMock.mock.calls[4][0]).toBe("http://localhost:8080/api/v1/zones/uuid%3Awiim/transport/seek");
+    expect(JSON.parse(String(fetchMock.mock.calls[4][1]?.body))).toEqual({ positionSec: 0 });
   });
 
-  it("clamps volume and seek values before posting", async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () =>
-      new Response(JSON.stringify({ state: "PLAYING", volume: 100 }), { status: 200 }),
-    );
-    const client = new TacetClient({ fetchImpl: fetchMock });
-
-    await client.setVolume(140.4, "uuid:wiim");
-    await client.seek(-12, "uuid:wiim");
-
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ rendererId: "uuid:wiim", volume: 100 });
-    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({ rendererId: "uuid:wiim", positionSec: 0 });
-  });
-
-  it("surfaces structured API errors as TacetAPIError", async () => {
+  it("surfaces structured API error envelopes as TacetAPIError", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ error: "renderer not found" }), {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-      }),
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "END_OF_QUEUE",
+            message: "already at end of queue",
+            retryable: false,
+          },
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      ),
     );
     const client = new TacetClient({ fetchImpl: fetchMock });
 
-    await expect(client.selectRenderer("missing")).rejects.toMatchObject({
+    await expect(client.zone("uuid:wiim").transport("next")).rejects.toMatchObject({
       name: "TacetAPIError",
-      message: "renderer not found",
-      status: 404,
+      code: "END_OF_QUEUE",
+      message: "already at end of queue",
+      retryable: false,
+      status: 409,
     } satisfies Partial<TacetAPIError>);
   });
 
-  it("encodes search query params and album path segments", async () => {
+  it("encodes search query params and album path segments and forwards AbortSignal", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () =>
       new Response(JSON.stringify({ tracks: [], albums: [] }), { status: 200 }),
     );
     const client = new TacetClient({ fetchImpl: fetchMock });
+    const ac = new AbortController();
 
-    await client.qobuzSearch("miles davis & coltrane");
-    await client.getLocalAlbum("a/b");
+    await client.qobuzSearch("miles davis & coltrane", { limit: 20, offset: 40 }, { signal: ac.signal });
+    await client.getLocalAlbum("local:a/b");
 
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/qobuz/search?q=miles+davis+%26+coltrane");
-    expect(fetchMock.mock.calls[1][0]).toBe("/api/library/albums/a%2Fb");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/qobuz/search?q=miles+davis+%26+coltrane&limit=20&offset=40");
+    expect(fetchMock.mock.calls[0][1]?.signal).toBe(ac.signal);
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/library/albums/local%3Aa%2Fb");
   });
 
   it("rejects empty or non-JSON 2xx responses with TacetAPIError", async () => {
     const emptyFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response("", { status: 200 }));
-    await expect(new TacetClient({ fetchImpl: emptyFetch }).getState()).rejects.toMatchObject({
+    await expect(new TacetClient({ fetchImpl: emptyFetch }).listZones()).rejects.toMatchObject({
       name: "TacetAPIError",
+      code: "INVALID_RESPONSE",
       status: 200,
     });
 
     const htmlFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response("<html>proxy error</html>", { status: 200 }));
-    await expect(new TacetClient({ fetchImpl: htmlFetch }).getState()).rejects.toMatchObject({
+    await expect(new TacetClient({ fetchImpl: htmlFetch }).listZones()).rejects.toMatchObject({
       name: "TacetAPIError",
+      code: "INVALID_RESPONSE",
       status: 200,
     });
+  });
+
+  it("subscribes to split SSE events using injectable EventSource", () => {
+    const listeners = new Map<string, (ev: MessageEvent<string>) => void>();
+    const closeSpy = vi.fn();
+    let capturedURL = "";
+
+    class FakeEventSource {
+      onopen: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(url: string) {
+        capturedURL = url;
+      }
+      addEventListener(name: string, fn: (ev: MessageEvent<string>) => void) {
+        listeners.set(name, fn);
+      }
+      close() {
+        closeSpy();
+      }
+    }
+
+    const client = new TacetClient({
+      baseUrl: "http://localhost:8080",
+      eventSourceImpl: FakeEventSource as unknown as typeof EventSource,
+    });
+
+    const onVolume = vi.fn();
+    const unsub = client.subscribeEvents({ onVolume }, ["uuid:living", "uuid:office"]);
+    expect(capturedURL).toBe("http://localhost:8080/api/v1/events?zone=uuid%3Aliving&zone=uuid%3Aoffice");
+
+    listeners.get("zone.volume")?.({
+      data: JSON.stringify({ zoneId: "uuid:living", revision: 5, volume: 42, muted: false }),
+    } as MessageEvent<string>);
+
+    expect(onVolume).toHaveBeenCalledWith({ zoneId: "uuid:living", revision: 5, volume: 42, muted: false });
+    unsub();
+    expect(closeSpy).toHaveBeenCalledTimes(1);
   });
 });

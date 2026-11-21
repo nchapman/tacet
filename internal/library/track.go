@@ -40,7 +40,7 @@ type Track struct {
 	FilePath     string `json:"-"`
 	FolderArt    string `json:"-"`
 	HasEmbedArt  bool   `json:"-"`
-	QobuzTrackID int64  `json:"qobuzTrackId,omitempty"`
+	QobuzTrackID int64  `json:"-"`
 }
 
 // QualityLabel returns a human-readable quality badge like "FLAC 24-bit / 192 kHz".

@@ -17,47 +17,53 @@ func (m *Manager) loadAndPlay(ctx context.Context, z *zone, idx int, gen uint64)
 	m.mu.RLock()
 	if idx < 0 || idx >= len(z.queue) {
 		m.mu.RUnlock()
-		return errors.New("track index out of range")
+		return fmt.Errorf("%w: track index out of range", ErrInvalidArgument)
 	}
-	track := z.queue[idx]
+	track := z.queue[idx].Track
 	ctrl := z.ctrl
+	zoneID := ctrl.Info().ID
 	m.mu.RUnlock()
 
 	media, resolvedTrack, err := m.buildMediaItem(ctx, ctrl, track)
 	if err != nil {
-		m.recordZoneError(z, err)
+		m.emitZoneError(zoneID, err)
 		return err
 	}
 
 	if err := ctrl.SetURI(ctx, media); err != nil {
-		m.recordZoneError(z, fmt.Errorf("SetAVTransportURI: %w", err))
-		return err
+		werr := wrapRendererErr("SetAVTransportURI", err)
+		m.emitZoneError(zoneID, werr)
+		return werr
 	}
 	if err := ctrl.Play(ctx); err != nil {
-		m.recordZoneError(z, fmt.Errorf("Play: %w", err))
-		return err
+		werr := wrapRendererErr("Play", err)
+		m.emitZoneError(zoneID, werr)
+		return werr
 	}
 
 	m.mu.Lock()
 	if z.generation == gen {
 		if idx < len(z.queue) {
-			z.queue[idx] = resolvedTrack
+			z.queue[idx].Track = resolvedTrack
 		}
 		z.currentURI = media.URL
 		z.status.State = "TRANSITIONING"
 		z.status.Position = 0
 		z.status.Duration = media.Duration
 		z.status.TrackURI = media.URL
+		z.positionUpdatedAt = time.Now().UTC()
+		z.lastPlaybackEmit = z.positionUpdatedAt
 		// Do NOT mark wasPlaying=true until the renderer actually confirms PLAYING
 		// via Status() or GENA, otherwise brief STOPPED states during buffering
 		// trigger cascading auto-advances across the queue.
 		z.wasPlaying = false
 		z.loadedAt = time.Now()
-		z.lastError = ""
+		z.revision++
 	}
+	pbEv := m.playbackEventLocked(z)
 	m.mu.Unlock()
 
-	m.broadcastZone(z)
+	m.emit("zone.playback", zoneID, pbEv)
 	return nil
 }
 
@@ -95,7 +101,14 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 		if m.qobuz == nil {
 			return upnp.MediaItem{}, track, errors.New("qobuz client is not configured")
 		}
-		stream, err := m.qobuz.StreamURL(ctx, track.QobuzTrackID)
+		qID := track.QobuzTrackID
+		if qID <= 0 {
+			if parsed, err := strconv.ParseInt(strings.TrimPrefix(track.ID, "qobuz:"), 10, 64); err == nil {
+				qID = parsed
+				track.QobuzTrackID = parsed
+			}
+		}
+		stream, err := m.qobuz.StreamURL(ctx, qID)
 		if err != nil {
 			return upnp.MediaItem{}, track, fmt.Errorf("qobuz stream URL: %w", err)
 		}
@@ -114,7 +127,7 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 
 		streamURL := stream.URL
 		if m.StreamMode() == StreamModeRelay {
-			streamURL = baseURL + "/media/qobuz/" + strconv.FormatInt(track.QobuzTrackID, 10) + ".flac"
+			streamURL = baseURL + "/media/qobuz/" + strconv.FormatInt(qID, 10) + ".flac"
 		}
 
 		return upnp.MediaItem{
@@ -134,7 +147,7 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 		}, track, nil
 
 	default:
-		return upnp.MediaItem{}, track, fmt.Errorf("unsupported track source %q", track.Source)
+		return upnp.MediaItem{}, track, fmt.Errorf("%w: unsupported track source %q", ErrInvalidArgument, track.Source)
 	}
 }
 
@@ -165,19 +178,21 @@ func (m *Manager) pollLoop(ctx context.Context) {
 func (m *Manager) pollTick(ctx context.Context) {
 	now := time.Now()
 	m.mu.RLock()
-	active := m.activeID
 	gena := m.gena
 	ids := make([]string, 0, len(m.zones))
 	for id, z := range m.zones {
 		isPlaying := z.status.State == "PLAYING" || z.status.State == "TRANSITIONING"
-		if id != active && !isPlaying {
-			continue
-		}
-		// When GENA push events are active and the renderer is not actively
-		// playing, slow background polling down to every 5s to keep idle SOAP
-		// traffic minimal while still staying self-healing.
-		if !isPlaying && gena != nil && gena.IsSubscribed(id) && now.Sub(z.lastPoll) < 5*time.Second {
-			continue
+		// Idle zones with live GENA push events only need a 10s self-healing poll;
+		// idle zones without GENA poll every 5s; active/playing zones poll every 1s
+		// so gapless preload and fallback track-end triggers remain tight.
+		if !isPlaying {
+			interval := 5 * time.Second
+			if gena != nil && gena.IsSubscribed(id) {
+				interval = 10 * time.Second
+			}
+			if now.Sub(z.lastPoll) < interval {
+				continue
+			}
 		}
 		ids = append(ids, id)
 	}
@@ -188,6 +203,16 @@ func (m *Manager) pollTick(ctx context.Context) {
 		m.pollOne(pctx, id)
 		cancel()
 	}
+}
+
+type updateResult struct {
+	preloadTrack       *library.Track
+	fallbackAdvanceIdx int
+	gen                uint64
+	emitPlayback       bool
+	emitVolume         bool
+	playbackEv         PlaybackEvent
+	volumeEv           VolumeEvent
 }
 
 // HandleDeviceEvent applies a push UPnP GENA event to the matching zone,
@@ -204,20 +229,19 @@ func (m *Manager) HandleDeviceEvent(ev upnp.DeviceEvent) {
 		m.mu.Unlock()
 		return
 	}
-	gen := z.generation
-	ctrl := z.ctrl
 	runCtx := m.runCtx
 
-	if ev.HasVolume {
+	volChanged := false
+	if ev.HasVolume && ev.Volume != z.status.Volume {
 		z.status.Volume = ev.Volume
+		volChanged = true
 	}
-	if ev.HasMute {
+	if ev.HasMute && ev.Muted != z.status.Muted {
 		z.status.Muted = ev.Muted
+		volChanged = true
 	}
 
-	var preloadTrack *library.Track
-	fallbackAdvanceIdx := -1
-
+	var res updateResult
 	if ev.HasState || ev.HasTrackURI || ev.HasDuration {
 		st := upnp.TransportStatus{
 			State:       z.status.State,
@@ -233,47 +257,30 @@ func (m *Manager) HandleDeviceEvent(ev upnp.DeviceEvent) {
 		if ev.HasDuration {
 			st.Duration = ev.Duration
 		}
-		// Seq==0 is the initial state dump emitted right upon SUBSCRIBE; apply
-		// state/metadata without triggering a fallback auto-advance.
 		allowAutoAdvance := ev.Seq != 0
-		preloadTrack, fallbackAdvanceIdx, gen = m.applyTransportUpdateLocked(z, st, allowAutoAdvance)
+		res = m.applyTransportUpdateLocked(z, st, allowAutoAdvance)
+	}
+	if volChanged {
+		z.revision++
+		res.emitVolume = true
+		res.volumeEv = m.volumeEventLocked(z)
 	}
 	m.mu.Unlock()
 
-	baseCtx := runCtx
-	if baseCtx == nil {
-		baseCtx = context.Background()
-	}
-	if preloadTrack != nil {
-		pctx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
-		m.preloadNext(pctx, z, *preloadTrack, gen)
-		cancel()
-	}
-	if fallbackAdvanceIdx >= 0 {
-		actx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
-		if err := m.loadAndPlay(actx, z, fallbackAdvanceIdx, gen); err != nil {
-			log.Printf("auto-advance failed on %s: %v", ctrl.Info().Name, err)
-		}
-		cancel()
-		return
-	}
-
-	m.broadcastZone(z)
+	m.finishUpdate(runCtx, z, ev.RendererID, res)
 }
 
-// pollOne refreshes transport status for one zone and manages gapless preload
-// and auto-advance transitions.
-func (m *Manager) pollOne(ctx context.Context, id string) {
+func (m *Manager) pollOne(ctx context.Context, zoneID string) {
 	m.mu.Lock()
-	z, ok := m.zones[id]
+	z, ok := m.zones[zoneID]
 	if !ok || z.polling {
 		m.mu.Unlock()
 		return
 	}
 	z.polling = true
 	z.lastPoll = time.Now()
-	ctrl := z.ctrl
 	gen := z.generation
+	ctrl := z.ctrl
 	m.mu.Unlock()
 
 	defer func() {
@@ -292,157 +299,214 @@ func (m *Manager) pollOne(ctx context.Context, id string) {
 		m.mu.Unlock()
 		return
 	}
+	res := m.applyTransportUpdateLocked(z, st, true)
+	m.mu.Unlock()
+
+	m.finishUpdate(ctx, z, zoneID, res)
+}
+
+func (m *Manager) finishUpdate(ctx context.Context, z *zone, zoneID string, res updateResult) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if res.emitVolume {
+		m.emit("zone.volume", zoneID, res.volumeEv)
+	}
+	if res.emitPlayback {
+		m.emit("zone.playback", zoneID, res.playbackEv)
+	}
+	if res.preloadTrack != nil {
+		pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		m.preloadNext(pctx, z, *res.preloadTrack, res.gen)
+		cancel()
+	}
+	if res.fallbackAdvanceIdx >= 0 {
+		if err := m.loadAndPlay(ctx, z, res.fallbackAdvanceIdx, res.gen); err != nil {
+			log.Printf("auto-advance failed on %s: %v", z.ctrl.Info().Name, err)
+		}
+	}
+}
+
+func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, allowAutoAdvance bool) updateResult {
+	now := time.Now().UTC()
+	prevState := NormalizePlaybackState(z.status.State)
+	prevIdx := z.currentIndex
+	prevGapless := z.nextPreloaded
+	prevPos := z.status.Position
+	prevDur := z.status.Duration
+	prevVol := z.status.Volume
+	prevMute := z.status.Muted
+	prevPosUpdated := z.positionUpdatedAt
+
+	// Ignore stale track reports (URI belongs to neither the current nor preloaded track).
+	staleTrack := z.currentURI != "" && st.TrackURI != "" &&
+		st.TrackURI != z.currentURI &&
+		(z.nextURI == "" || st.TrackURI != z.nextURI)
+
+	// Preserve previous valid fields when partial status calls fail.
+	z.status.State = st.State
+	z.status.HasVolume = st.HasVolume
+	if !staleTrack {
+		if st.HasPosition {
+			z.status.Position = st.Position
+			if st.Duration > 0 {
+				z.status.Duration = st.Duration
+			}
+			if st.TrackURI != "" {
+				z.status.TrackURI = st.TrackURI
+			}
+			z.positionUpdatedAt = now
+		} else {
+			if st.Duration > 0 {
+				z.status.Duration = st.Duration
+			}
+			if st.TrackURI != "" {
+				z.status.TrackURI = st.TrackURI
+			}
+		}
+	}
 	if st.HasVolValue {
 		z.status.Volume = st.Volume
 	}
 	if st.HasMuteVal {
 		z.status.Muted = st.Muted
 	}
-	preloadTrack, fallbackAdvanceIdx, gen := m.applyTransportUpdateLocked(z, st, true)
-	m.mu.Unlock()
 
-	if preloadTrack != nil {
-		m.preloadNext(ctx, z, *preloadTrack, gen)
-	}
-	if fallbackAdvanceIdx >= 0 {
-		if err := m.loadAndPlay(ctx, z, fallbackAdvanceIdx, gen); err != nil {
-			log.Printf("auto-advance failed on %s: %v", ctrl.Info().Name, err)
-		}
-		return
+	res := updateResult{
+		fallbackAdvanceIdx: -1,
+		gen:                z.generation,
 	}
 
-	m.broadcastZone(z)
-}
-
-// applyTransportUpdateLocked merges polled or GENA-pushed transport state into
-// z and returns any follow-up preload or fallback-advance work to perform after
-// releasing m.mu.
-func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, allowAutoAdvance bool) (*library.Track, int, uint64) {
-	// Merge fields carefully so a transient GetPositionInfo failure or a stale
-	// URI from a prior track never resets UI position or duration back to zero.
-	if st.State != "" {
-		z.status.State = st.State
-	}
-	z.status.HasVolume = st.HasVolume
-
-	staleTrack := st.TrackURI != "" && z.currentURI != "" && st.TrackURI != z.currentURI && st.TrackURI != z.nextURI
-	if st.HasPosition && !staleTrack {
-		// While actively playing the same track, ignore sporadic 0:00 glitches
-		// reported by some UPnP renderers mid-track when TrackURI is blank.
-		if st.State != "PLAYING" || st.Position != 0 || st.TrackURI != "" || z.status.Position <= 0 {
-			z.status.Position = st.Position
-		}
-		if st.Duration > 0 {
-			z.status.Duration = st.Duration
-		}
-		if st.TrackURI != "" {
-			z.status.TrackURI = st.TrackURI
-		}
-	} else if !staleTrack {
-		// GENA events carry duration/TrackURI without position.
-		if st.Duration > 0 {
-			z.status.Duration = st.Duration
-		}
-		if st.TrackURI != "" {
-			z.status.TrackURI = st.TrackURI
-		}
-	}
-
-	// 1) Detect seamless gapless transition triggered by SetNextAVTransportURI.
-	if z.nextPreloaded && z.nextURI != "" && st.TrackURI == z.nextURI {
-		if z.currentIndex+1 < len(z.queue) {
-			z.currentIndex++
-		}
+	// 1. Detect gapless transition: renderer URI switched to our preloaded nextURI.
+	if z.nextPreloaded && z.nextURI != "" && z.status.TrackURI == z.nextURI {
+		z.currentIndex++
 		z.currentURI = z.nextURI
 		z.nextURI = ""
 		z.nextPreloaded = false
 		z.nextPreloading = false
 		z.nextFailed = false
-		z.status.Position = 0
-		z.wasPlaying = true
 		z.loadedAt = time.Now()
+		z.positionUpdatedAt = now
 	}
 
-	var preloadTrack *library.Track
-	fallbackAdvanceIdx := -1
-	gen := z.generation
-
-	if z.status.State == "PLAYING" {
-		// Only consider the current track confirmed PLAYING when the renderer's
-		// URI matches (or if the renderer omits TrackURI).
-		if st.TrackURI == "" || z.currentURI == "" || st.TrackURI == z.currentURI {
-			z.wasPlaying = true
-		}
-		// 2) Preload next track via SetNextAVTransportURI for gapless playback
-		// unless this renderer is known to not support SetNextAVTransportURI.
-		if z.wasPlaying && !z.setNextUnsupported && !z.nextPreloaded && !z.nextPreloading && !z.nextFailed && z.currentIndex >= 0 && z.currentIndex+1 < len(z.queue) {
-			t := z.queue[z.currentIndex+1]
-			preloadTrack = &t
+	// 2. While PLAYING, preload the next track for gapless playback (if supported).
+	if st.State == "PLAYING" {
+		z.wasPlaying = true
+		if !z.setNextUnsupported && !z.nextPreloaded && !z.nextPreloading && !z.nextFailed &&
+			z.currentIndex >= 0 && z.currentIndex+1 < len(z.queue) {
+			t := z.queue[z.currentIndex+1].Track
+			res.preloadTrack = &t
 			z.nextPreloading = true
 		}
-	} else if allowAutoAdvance && z.wasPlaying && !z.userStopped && (z.status.State == "STOPPED" || z.status.State == "NO_MEDIA_PRESENT") {
-		// 3) Fallback auto-advance if renderer finished track without gapless transition.
+	}
+
+	// 3. Fallback advance: if track finished and renderer became STOPPED/NO_MEDIA_PRESENT
+	// without advancing gaplessly, explicitly load & play the next queued track.
+	if allowAutoAdvance && (st.State == "STOPPED" || st.State == "NO_MEDIA_PRESENT") &&
+		z.wasPlaying && !z.userStopped && time.Since(z.loadedAt) > 2*time.Second {
 		z.wasPlaying = false
 		if z.currentIndex >= 0 && z.currentIndex+1 < len(z.queue) {
 			z.currentIndex++
-			z.generation++
-			gen = z.generation
 			z.nextPreloaded = false
 			z.nextPreloading = false
-			z.nextURI = ""
 			z.nextFailed = false
-			fallbackAdvanceIdx = z.currentIndex
+			z.nextURI = ""
+			z.generation++
+			res.fallbackAdvanceIdx = z.currentIndex
+			res.gen = z.generation
 		}
 	}
 
-	return preloadTrack, fallbackAdvanceIdx, gen
+	newState := NormalizePlaybackState(z.status.State)
+	volChanged := z.status.Volume != prevVol || z.status.Muted != prevMute
+
+	// Emit zone.playback on any discrete state/track/duration/gapless change,
+	// significant clock drift (>2s vs interpolated client clock), or periodic 5s sync
+	// while playing. Never resend the full queue on poll ticks!
+	discreteChange := newState != prevState ||
+		z.currentIndex != prevIdx ||
+		z.nextPreloaded != prevGapless ||
+		z.status.Duration != prevDur
+
+	driftDetected := false
+	if st.HasPosition && newState == StatePlaying && !prevPosUpdated.IsZero() {
+		expected := prevPos + now.Sub(prevPosUpdated)
+		diff := z.status.Position - expected
+		if diff < 0 {
+			diff = -diff
+		}
+		driftDetected = diff > 2*time.Second
+	} else if st.HasPosition && newState != StatePlaying && z.status.Position != prevPos {
+		driftDetected = true
+	}
+
+	periodicSync := newState == StatePlaying && now.Sub(z.lastPlaybackEmit) >= 5*time.Second
+
+	if volChanged {
+		z.revision++
+		res.emitVolume = true
+		res.volumeEv = m.volumeEventLocked(z)
+	}
+	if discreteChange || driftDetected || periodicSync {
+		z.revision++
+		z.lastPlaybackEmit = now
+		res.emitPlayback = true
+		res.playbackEv = m.playbackEventLocked(z)
+	}
+
+	return res
 }
 
-func (m *Manager) preloadNext(ctx context.Context, z *zone, nextTrack library.Track, gen uint64) {
-	defer func() {
-		m.mu.Lock()
-		z.nextPreloading = false
-		m.mu.Unlock()
-	}()
+func (m *Manager) preloadNext(ctx context.Context, z *zone, track library.Track, gen uint64) {
+	m.mu.RLock()
+	ctrl := z.ctrl
+	zoneID := ctrl.Info().ID
+	m.mu.RUnlock()
 
-	media, resolvedTrack, err := m.buildMediaItem(ctx, z.ctrl, nextTrack)
+	media, resolved, err := m.buildMediaItem(ctx, ctrl, track)
 	if err != nil {
+		log.Printf("gapless preload skipped (resolve failed): %v", err)
 		m.mu.Lock()
 		if z.generation == gen {
+			z.nextPreloading = false
 			z.nextFailed = true
 		}
 		m.mu.Unlock()
 		return
 	}
 
-	if err := z.ctrl.SetNextURI(ctx, media); err != nil {
-		permanent := upnp.IsActionUnsupported(err)
-		if permanent {
-			log.Printf("SetNextAVTransportURI unsupported on %s — caching capability and using STOPPED auto-advance", z.ctrl.Info().Name)
-		} else {
-			log.Printf("SetNextAVTransportURI failed on %s (will fall back to STOPPED advance for this track): %v", z.ctrl.Info().Name, err)
-		}
+	if err := ctrl.SetNextURI(ctx, media); err != nil {
 		m.mu.Lock()
-		if permanent {
-			z.setNextUnsupported = true
-		}
 		if z.generation == gen {
-			z.nextFailed = true
+			z.nextPreloading = false
+			if upnp.IsActionUnsupported(err) {
+				z.setNextUnsupported = true
+			} else {
+				z.nextFailed = true
+			}
 		}
 		m.mu.Unlock()
-		if permanent {
-			m.broadcast(Event{Type: "renderers", Data: m.Renderers()})
-		}
+		log.Printf("SetNextAVTransportURI unavailable on %s (will fall back to STOPPED advance): %v",
+			ctrl.Info().Name, err)
 		return
 	}
 
 	m.mu.Lock()
+	var pbEv *PlaybackEvent
 	if z.generation == gen {
-		if z.currentIndex+1 < len(z.queue) && z.queue[z.currentIndex+1].ID == resolvedTrack.ID {
-			z.queue[z.currentIndex+1] = resolvedTrack
+		if z.currentIndex+1 < len(z.queue) {
+			z.queue[z.currentIndex+1].Track = resolved
 		}
-		z.nextPreloaded = true
 		z.nextURI = media.URL
+		z.nextPreloaded = true
+		z.nextPreloading = false
+		z.revision++
+		ev := m.playbackEventLocked(z)
+		pbEv = &ev
 	}
 	m.mu.Unlock()
+
+	if pbEv != nil {
+		m.emit("zone.playback", zoneID, *pbEv)
+	}
 }

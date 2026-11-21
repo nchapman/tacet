@@ -1,25 +1,25 @@
-import type { RendererInfo, StreamMode } from "../api/types";
+import type { StreamMode, ZoneSnapshot } from "../api/types";
 import type { ConnectionStatus } from "../hooks/useTacet";
 
 interface HeaderProps {
-  renderers: RendererInfo[];
-  activeId: string;
+  zones: ZoneSnapshot[];
+  activeZoneId: string;
   streamMode: StreamMode;
   connection: ConnectionStatus;
   discovering: boolean;
-  onSelectRenderer: (id: string) => void;
+  onSelectZone: (zoneId: string) => void;
   onDiscover: () => void;
   onOpenConnect: () => void;
   onStreamModeChange: (mode: StreamMode) => void;
 }
 
 export function Header({
-  renderers,
-  activeId,
+  zones,
+  activeZoneId,
   streamMode,
   connection,
   discovering,
-  onSelectRenderer,
+  onSelectZone,
   onDiscover,
   onOpenConnect,
   onStreamModeChange,
@@ -39,17 +39,18 @@ export function Header({
       <div className="toolbar">
         <select
           aria-label="Active UPnP Renderer"
-          value={activeId}
-          onChange={(e) => onSelectRenderer(e.target.value)}
-          disabled={renderers.length === 0}
+          value={activeZoneId}
+          onChange={(e) => onSelectZone(e.target.value)}
+          disabled={zones.length === 0}
         >
-          {renderers.length === 0 ? (
+          {zones.length === 0 ? (
             <option value="">No renderers found</option>
           ) : (
-            renderers.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name}
-                {r.host ? ` (${r.host})` : ""}
+            zones.map((z) => (
+              <option key={z.zoneId} value={z.zoneId}>
+                {z.state === "playing" ? "▶ " : ""}
+                {z.renderer.name}
+                {z.renderer.host ? ` (${z.renderer.host})` : ""}
               </option>
             ))
           )}

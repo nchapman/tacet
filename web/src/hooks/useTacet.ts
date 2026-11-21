@@ -1,45 +1,75 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { tacetClient } from "../api/client";
-import type { QueueTrackRequest, RendererInfo, StreamMode, TransportAction, ZoneSnapshot } from "../api/types";
+import type {
+  LibraryStatus,
+  QobuzQuality,
+  QobuzStatus,
+  QueuePosition,
+  QueueSource,
+  Settings,
+  StreamMode,
+  TransportAction,
+  ZoneSnapshot,
+} from "../api/types";
 
 export type ConnectionStatus = "connecting" | "live" | "reconnecting";
 
-const EMPTY_SNAPSHOT: ZoneSnapshot = {
-  renderer: null,
-  state: "IDLE",
-  positionSec: 0,
-  durationSec: 0,
-  volume: 50,
-  muted: false,
-  hasVolume: false,
-  queue: [],
-  currentIndex: -1,
-  gaplessArmed: false,
-  eventsActive: false,
-  streamMode: "direct",
-};
+const SELECTED_ZONE_KEY = "tacet.selectedZoneId";
+
+function readSavedZoneId(): string {
+  try {
+    return window.localStorage.getItem(SELECTED_ZONE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveZoneId(id: string) {
+  try {
+    if (id) {
+      window.localStorage.setItem(SELECTED_ZONE_KEY, id);
+    } else {
+      window.localStorage.removeItem(SELECTED_ZONE_KEY);
+    }
+  } catch {
+    // Ignore storage unavailability (private browsing, etc.)
+  }
+}
 
 export function useTacet() {
-  const [renderers, setRenderers] = useState<RendererInfo[]>([]);
-  const [activeId, setActiveId] = useState<string>("");
-  const [streamMode, setStreamModeState] = useState<StreamMode>("direct");
-  const [snapshot, setSnapshot] = useState<ZoneSnapshot>(EMPTY_SNAPSHOT);
+  const [zones, setZones] = useState<ZoneSnapshot[]>([]);
+  const [selectedZoneId, setSelectedZoneId] = useState<string>(readSavedZoneId);
+  const [settings, setSettings] = useState<Settings>({ streamMode: "direct", qobuzMaxQuality: "flac_24_192" });
+  const [qobuzStatus, setQobuzStatus] = useState<QobuzStatus | null>(null);
+  const [libraryStatus, setLibraryStatus] = useState<LibraryStatus | null>(null);
   const [connection, setConnection] = useState<ConnectionStatus>("connecting");
   const [error, setError] = useState<string>("");
   const [discovering, setDiscovering] = useState(false);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
-  const activeIdRef = useRef(activeId);
-  activeIdRef.current = activeId;
+  const selectedZoneIdRef = useRef(selectedZoneId);
+  selectedZoneIdRef.current = selectedZoneId;
 
-  const applySnapshot = useCallback((snap: ZoneSnapshot) => {
-    setSnapshot(snap);
-    if (snap.renderer?.id) {
-      setActiveId(snap.renderer.id);
-    }
-    if (snap.streamMode) {
-      setStreamModeState(snap.streamMode);
-    }
-    setError(snap.lastError ?? "");
+  // Apply full snapshot only if its revision is >= our current zone revision.
+  const upsertZone = useCallback((incoming: ZoneSnapshot) => {
+    setZones((prev) => {
+      const idx = prev.findIndex((z) => z.zoneId === incoming.zoneId);
+      if (idx === -1) return [...prev, incoming];
+      if (incoming.revision < prev[idx].revision) return prev;
+      const next = prev.slice();
+      next[idx] = incoming;
+      return next;
+    });
+  }, []);
+
+  const replaceZones = useCallback((list: ZoneSnapshot[]) => {
+    setZones(list);
+    setSelectedZoneId((cur) => {
+      if (cur && list.some((z) => z.zoneId === cur)) return cur;
+      const fallback = list[0]?.zoneId ?? "";
+      saveZoneId(fallback);
+      return fallback;
+    });
   }, []);
 
   const runAction = useCallback(
@@ -57,157 +87,254 @@ export function useTacet() {
     [],
   );
 
+  // SSE subscription is the single live source of truth (initial `snapshot` event
+  // delivers zones, settings, qobuz, and library status immediately on connect).
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const list = await tacetClient.listRenderers();
-        if (cancelled) return;
-        setRenderers(list.renderers ?? []);
-        setActiveId(list.activeId ?? "");
-        setStreamModeState(list.streamMode ?? "direct");
-        const snap = await tacetClient.getState(list.activeId || undefined);
-        if (!cancelled) applySnapshot(snap);
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      }
-    })();
+    const resyncAll = () => {
+      void tacetClient
+        .listZones()
+        .then((res) => replaceZones(res.zones ?? []))
+        .catch(() => {});
+    };
 
     const unsubscribe = tacetClient.subscribeEvents({
       onOpen: () => setConnection("live"),
       onError: () => setConnection("reconnecting"),
-      onRenderers: (list) => {
-        setRenderers(list ?? []);
-        if (!activeIdRef.current && list.length > 0) {
-          setActiveId(list[0].id);
+      onResync: resyncAll,
+      onSnapshot: (snap) => {
+        replaceZones(snap.zones ?? []);
+        if (snap.settings) setSettings(snap.settings);
+        if (snap.qobuz) setQobuzStatus(snap.qobuz);
+        if (snap.library) setLibraryStatus(snap.library);
+      },
+      onZonesUpdated: (ev) => {
+        replaceZones(ev.zones ?? []);
+      },
+      onPlayback: (ev) => {
+        setZones((prev) =>
+          prev.map((z) => {
+            if (z.zoneId !== ev.zoneId || ev.revision < z.revision) return z;
+            return {
+              ...z,
+              revision: ev.revision,
+              state: ev.state,
+              positionSec: ev.positionSec,
+              positionUpdatedAt: ev.positionUpdatedAt,
+              durationSec: ev.durationSec,
+              currentIndex: ev.currentIndex,
+              currentItemId: ev.currentItemId,
+              currentTrack: ev.currentTrack,
+              gaplessArmed: ev.gaplessArmed,
+              eventsActive: ev.eventsActive,
+            };
+          }),
+        );
+      },
+      onVolume: (ev) => {
+        setZones((prev) =>
+          prev.map((z) => {
+            if (z.zoneId !== ev.zoneId || ev.revision < z.revision) return z;
+            return { ...z, revision: ev.revision, volume: ev.volume, muted: ev.muted };
+          }),
+        );
+      },
+      onQueue: (ev) => {
+        setZones((prev) =>
+          prev.map((z) => {
+            if (z.zoneId !== ev.zoneId || ev.revision < z.revision) return z;
+            return {
+              ...z,
+              revision: ev.revision,
+              currentIndex: ev.currentIndex,
+              currentItemId: ev.currentItemId,
+              currentTrack: ev.currentTrack,
+              queue: ev.items ?? [],
+            };
+          }),
+        );
+      },
+      onZoneError: (ev) => {
+        if (ev.zoneId === selectedZoneIdRef.current) {
+          setError(ev.error.message);
         }
       },
-      onState: (snap) => {
-        if (!activeIdRef.current || !snap.renderer || snap.renderer.id === activeIdRef.current) {
-          applySnapshot(snap);
-        }
-      },
+      onSettingsUpdated: (s) => setSettings(s),
+      onQobuzStatus: (st) => setQobuzStatus(st),
+      onLibraryUpdated: (st) => setLibraryStatus(st),
     });
 
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [applySnapshot]);
+    return unsubscribe;
+  }, [replaceZones]);
 
-  const selectRenderer = useCallback(
-    async (id: string) => {
-      await runAction(() => tacetClient.selectRenderer(id), applySnapshot);
-    },
-    [applySnapshot, runAction],
-  );
+  const activeZone = useMemo<ZoneSnapshot | null>(() => {
+    if (!zones.length) return null;
+    return zones.find((z) => z.zoneId === selectedZoneId) ?? zones[0];
+  }, [zones, selectedZoneId]);
 
-  const discoverRenderers = useCallback(async () => {
+  // Smooth client-side 1s progress interpolation while the active zone is playing,
+  // avoiding unnecessary full-queue SSE frames every second.
+  useEffect(() => {
+    if (activeZone?.state !== "playing") return;
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 500);
+    return () => window.clearInterval(id);
+  }, [activeZone?.state, activeZone?.positionUpdatedAt]);
+
+  const interpolatedPositionSec = useMemo(() => {
+    if (!activeZone) return 0;
+    const base = activeZone.positionSec ?? 0;
+    if (activeZone.state !== "playing") return base;
+    const updatedMs = Date.parse(activeZone.positionUpdatedAt);
+    if (!Number.isFinite(updatedMs)) return base;
+    const elapsed = Math.max(0, Math.floor((nowMs - updatedMs) / 1000));
+    const maxDur = activeZone.durationSec || activeZone.currentTrack?.durationSec || 0;
+    return maxDur > 0 ? Math.min(maxDur, base + elapsed) : base + elapsed;
+  }, [activeZone, nowMs]);
+
+  const selectZone = useCallback((zoneId: string) => {
+    setSelectedZoneId(zoneId);
+    saveZoneId(zoneId);
+    setError("");
+  }, []);
+
+  const discoverZones = useCallback(async () => {
     setDiscovering(true);
     try {
-      await runAction(
-        () => tacetClient.discoverRenderers(),
-        (res) => {
-          setRenderers(res.renderers ?? []);
-          setActiveId(res.activeId ?? "");
-        },
-      );
+      await runAction(() => tacetClient.discoverZones(), (res) => replaceZones(res.zones ?? []));
     } finally {
       setDiscovering(false);
     }
-  }, [runAction]);
+  }, [replaceZones, runAction]);
 
-  const connectRenderer = useCallback(
+  const connectZone = useCallback(
     async (url: string): Promise<boolean> => {
       const res = await runAction(
-        () => tacetClient.connectRenderer(url),
+        () => tacetClient.connectZone(url),
         (data) => {
-          setRenderers(data.renderers ?? []);
-          setActiveId(data.activeId ?? "");
+          replaceZones(data.zones ?? []);
+          if (data.zone?.zoneId) {
+            setSelectedZoneId(data.zone.zoneId);
+            saveZoneId(data.zone.zoneId);
+          }
         },
       );
-      if (!res) return false;
-      if (res.activeId) {
-        const snap = await runAction(() => tacetClient.getState(res.activeId), applySnapshot);
-        return Boolean(snap);
-      }
-      return true;
+      return Boolean(res);
     },
-    [applySnapshot, runAction],
+    [replaceZones, runAction],
   );
 
   const setStreamMode = useCallback(
     async (mode: StreamMode) => {
-      await runAction(
-        () => tacetClient.setStreamMode(mode),
-        (res) => setStreamModeState(res.streamMode),
-      );
+      await runAction(() => tacetClient.patchSettings({ streamMode: mode }), setSettings);
     },
     [runAction],
   );
 
-  const playQueue = useCallback(
-    (req: QueueTrackRequest) => runAction(() => tacetClient.playQueue({ rendererId: activeId || undefined, ...req }), applySnapshot),
-    [activeId, applySnapshot, runAction],
+  const setQobuzMaxQuality = useCallback(
+    async (qobuzMaxQuality: QobuzQuality) => {
+      await runAction(() => tacetClient.patchSettings({ qobuzMaxQuality }), setSettings);
+    },
+    [runAction],
   );
 
-  const enqueue = useCallback(
-    (req: QueueTrackRequest) => runAction(() => tacetClient.enqueue({ rendererId: activeId || undefined, ...req }), applySnapshot),
-    [activeId, applySnapshot, runAction],
+  const activeZoneId = activeZone?.zoneId ?? "";
+
+  const playSource = useCallback(
+    (source: QueueSource, startIndex = 0) => {
+      if (!activeZoneId) {
+        setError("No UPnP renderer selected or discovered");
+        return Promise.resolve(undefined);
+      }
+      return runAction(() => tacetClient.zone(activeZoneId).play(source, startIndex), upsertZone);
+    },
+    [activeZoneId, runAction, upsertZone],
   );
 
-  const jumpQueue = useCallback(
-    (index: number) => runAction(() => tacetClient.jumpQueue(index, activeId || undefined), applySnapshot),
-    [activeId, applySnapshot, runAction],
+  const addSource = useCallback(
+    (source: QueueSource, position: QueuePosition = "end", autoplay = true) => {
+      if (!activeZoneId) {
+        setError("No UPnP renderer selected or discovered");
+        return Promise.resolve(undefined);
+      }
+      return runAction(() => tacetClient.zone(activeZoneId).addItems(source, { position, autoplay }), upsertZone);
+    },
+    [activeZoneId, runAction, upsertZone],
   );
 
-  const removeFromQueue = useCallback(
-    (index: number) => runAction(() => tacetClient.removeFromQueue(index, activeId || undefined), applySnapshot),
-    [activeId, applySnapshot, runAction],
+  const jumpItem = useCallback(
+    (itemId: string) => {
+      if (!activeZoneId) return Promise.resolve(undefined);
+      return runAction(() => tacetClient.zone(activeZoneId).jump(itemId), upsertZone);
+    },
+    [activeZoneId, runAction, upsertZone],
   );
 
-  const clearQueue = useCallback(
-    () => runAction(() => tacetClient.clearQueue(activeId || undefined), applySnapshot),
-    [activeId, applySnapshot, runAction],
+  const removeItem = useCallback(
+    (itemId: string) => {
+      if (!activeZoneId) return Promise.resolve(undefined);
+      return runAction(() => tacetClient.zone(activeZoneId).removeItem(itemId), upsertZone);
+    },
+    [activeZoneId, runAction, upsertZone],
   );
+
+  const clearQueue = useCallback(() => {
+    if (!activeZoneId) return Promise.resolve(undefined);
+    return runAction(() => tacetClient.zone(activeZoneId).clearQueue(), upsertZone);
+  }, [activeZoneId, runAction, upsertZone]);
 
   const transport = useCallback(
-    (action: TransportAction) => runAction(() => tacetClient.transport(action, activeId || undefined), applySnapshot),
-    [activeId, applySnapshot, runAction],
+    (action: TransportAction) => {
+      if (!activeZoneId) return Promise.resolve(undefined);
+      return runAction(() => tacetClient.zone(activeZoneId).transport(action), upsertZone);
+    },
+    [activeZoneId, runAction, upsertZone],
   );
 
   const seek = useCallback(
-    (sec: number) => runAction(() => tacetClient.seek(sec, activeId || undefined), applySnapshot),
-    [activeId, applySnapshot, runAction],
+    (sec: number) => {
+      if (!activeZoneId) return Promise.resolve(undefined);
+      return runAction(() => tacetClient.zone(activeZoneId).seek(sec), upsertZone);
+    },
+    [activeZoneId, runAction, upsertZone],
   );
 
   const setVolume = useCallback(
-    (vol: number) => runAction(() => tacetClient.setVolume(vol, activeId || undefined), applySnapshot),
-    [activeId, applySnapshot, runAction],
+    (vol: number) => {
+      if (!activeZoneId) return Promise.resolve(undefined);
+      return runAction(() => tacetClient.zone(activeZoneId).setVolume(vol), upsertZone);
+    },
+    [activeZoneId, runAction, upsertZone],
   );
 
   const setMute = useCallback(
-    (muted: boolean) => runAction(() => tacetClient.setMute(muted, activeId || undefined), applySnapshot),
-    [activeId, applySnapshot, runAction],
+    (muted: boolean) => {
+      if (!activeZoneId) return Promise.resolve(undefined);
+      return runAction(() => tacetClient.zone(activeZoneId).setMute(muted), upsertZone);
+    },
+    [activeZoneId, runAction, upsertZone],
   );
 
   return {
-    renderers,
-    activeId,
-    streamMode,
-    snapshot,
+    zones,
+    activeZone,
+    interpolatedPositionSec,
+    settings,
+    qobuzStatus,
+    setQobuzStatus,
+    libraryStatus,
     connection,
     error,
     clearError: () => setError(""),
     discovering,
-    selectRenderer,
-    discoverRenderers,
-    connectRenderer,
+    selectZone,
+    discoverZones,
+    connectZone,
     setStreamMode,
-    playQueue,
-    enqueue,
-    jumpQueue,
-    removeFromQueue,
+    setQobuzMaxQuality,
+    playSource,
+    addSource,
+    jumpItem,
+    removeItem,
     clearQueue,
     transport,
     seek,

@@ -30,6 +30,43 @@ const (
 	FormatFLAC192  = 27
 )
 
+// Domain sentinel errors returned by Qobuz client operations.
+var (
+	ErrUnauthenticated = errors.New("qobuz is not authenticated")
+	ErrNotFound        = errors.New("qobuz resource not found")
+	ErrInvalidQuality  = errors.New("invalid qobuz max quality (use mp3_320, flac_16_44, flac_24_96, or flac_24_192)")
+)
+
+// QualityLabel converts a Qobuz format_id to its canonical quality string.
+func QualityLabel(formatID int) string {
+	switch formatID {
+	case FormatMP3320:
+		return "mp3_320"
+	case FormatFLAC1644:
+		return "flac_16_44"
+	case FormatFLAC2496:
+		return "flac_24_96"
+	default:
+		return "flac_24_192"
+	}
+}
+
+// ParseQuality converts a canonical quality string to its Qobuz format_id.
+func ParseQuality(q string) (int, error) {
+	switch strings.ToLower(strings.TrimSpace(q)) {
+	case "mp3_320":
+		return FormatMP3320, nil
+	case "flac_16_44":
+		return FormatFLAC1644, nil
+	case "flac_24_96":
+		return FormatFLAC2496, nil
+	case "flac_24_192":
+		return FormatFLAC192, nil
+	default:
+		return 0, ErrInvalidQuality
+	}
+}
+
 // Config configures a Qobuz API client.
 type Config struct {
 	BaseURL   string
@@ -46,6 +83,7 @@ type Status struct {
 	UserName      string `json:"userName,omitempty"`
 	Subscription  string `json:"subscription,omitempty"`
 	MaxFormatID   int    `json:"maxFormatId"`
+	MaxQuality    string `json:"maxQuality"`
 }
 
 // StreamInfo is the resolved Qobuz CDN stream URL and audio properties.
@@ -79,6 +117,7 @@ type Client struct {
 	subscription string
 	formatID     int
 	urlCache     map[int64]StreamInfo
+	trackCache   map[int64]library.Track
 }
 
 // NewClient initializes a Qobuz client.
@@ -92,13 +131,14 @@ func NewClient(cfg Config) *Client {
 		fmtID = FormatFLAC192
 	}
 	return &Client{
-		baseURL:   base,
-		http:      &http.Client{Timeout: 15 * time.Second},
-		appID:     strings.TrimSpace(cfg.AppID),
-		appSecret: strings.TrimSpace(cfg.AppSecret),
-		authToken: strings.TrimSpace(cfg.AuthToken),
-		formatID:  fmtID,
-		urlCache:  make(map[int64]StreamInfo),
+		baseURL:    base,
+		http:       &http.Client{Timeout: 15 * time.Second},
+		appID:      strings.TrimSpace(cfg.AppID),
+		appSecret:  strings.TrimSpace(cfg.AppSecret),
+		authToken:  strings.TrimSpace(cfg.AuthToken),
+		formatID:   fmtID,
+		urlCache:   make(map[int64]StreamInfo),
+		trackCache: make(map[int64]library.Track),
 	}
 }
 
@@ -112,7 +152,45 @@ func (c *Client) Status() Status {
 		UserName:      c.userName,
 		Subscription:  c.subscription,
 		MaxFormatID:   c.formatID,
+		MaxQuality:    QualityLabel(c.formatID),
 	}
+}
+
+// MaxQuality returns the configured maximum streaming quality label.
+func (c *Client) MaxQuality() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return QualityLabel(c.formatID)
+}
+
+// SetMaxQuality updates the maximum Qobuz streaming format_id and clears cached stream URLs.
+func (c *Client) SetMaxQuality(quality string) error {
+	fmtID, err := ParseQuality(quality)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.formatID = fmtID
+	clear(c.urlCache)
+	c.mu.Unlock()
+	return nil
+}
+
+// Logout clears the active user session and cached stream URLs.
+func (c *Client) Logout() Status {
+	c.mu.Lock()
+	c.authToken = ""
+	c.userName = ""
+	c.subscription = ""
+	clear(c.urlCache)
+	st := Status{
+		Configured:    c.appID != "" && c.appSecret != "",
+		Authenticated: false,
+		MaxFormatID:   c.formatID,
+		MaxQuality:    QualityLabel(c.formatID),
+	}
+	c.mu.Unlock()
+	return st
 }
 
 // SetCredentials updates explicit app credentials and/or user auth token.
@@ -132,21 +210,30 @@ func (c *Client) SetCredentials(appID, appSecret, authToken string) {
 }
 
 // Search searches Qobuz tracks and albums.
-func (c *Client) Search(ctx context.Context, query string, limit int) (SearchResult, error) {
+func (c *Client) Search(ctx context.Context, query string, limit int, offset ...int) (SearchResult, error) {
+	empty := SearchResult{
+		Tracks: make([]library.Track, 0),
+		Albums: make([]library.Album, 0),
+	}
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return SearchResult{}, nil
+		return empty, nil
 	}
 	if limit <= 0 || limit > 100 {
 		limit = 25
 	}
+	off := 0
+	if len(offset) > 0 && offset[0] > 0 {
+		off = offset[0]
+	}
 	if err := c.requireAuth(); err != nil {
-		return SearchResult{}, err
+		return empty, err
 	}
 
 	params := url.Values{
-		"query": {query},
-		"limit": {strconv.Itoa(limit)},
+		"query":  {query},
+		"limit":  {strconv.Itoa(limit)},
+		"offset": {strconv.Itoa(off)},
 	}
 
 	var resp struct {
@@ -158,7 +245,7 @@ func (c *Client) Search(ctx context.Context, query string, limit int) (SearchRes
 		} `json:"albums"`
 	}
 	if err := c.getJSON(ctx, "/catalog/search", params, true, &resp); err != nil {
-		return SearchResult{}, err
+		return empty, err
 	}
 
 	res := SearchResult{
@@ -166,7 +253,9 @@ func (c *Client) Search(ctx context.Context, query string, limit int) (SearchRes
 		Albums: make([]library.Album, 0, len(resp.Albums.Items)),
 	}
 	for _, qt := range resp.Tracks.Items {
-		res.Tracks = append(res.Tracks, qt.toLibraryTrack(nil))
+		tr := qt.toLibraryTrack(nil)
+		c.cacheTrack(tr)
+		res.Tracks = append(res.Tracks, tr)
 	}
 	for _, qa := range resp.Albums.Items {
 		res.Albums = append(res.Albums, qa.toLibraryAlbum(false))
@@ -174,20 +263,29 @@ func (c *Client) Search(ctx context.Context, query string, limit int) (SearchRes
 	return res, nil
 }
 
-// GetAlbum fetches a Qobuz album and its track listing.
+// GetAlbum fetches a Qobuz album and its track listing. Accepts bare or "qobuz:"-prefixed IDs.
 func (c *Client) GetAlbum(ctx context.Context, albumID string) (library.Album, error) {
 	if err := c.requireAuth(); err != nil {
 		return library.Album{}, err
 	}
+	rawID := strings.TrimPrefix(strings.TrimSpace(albumID), "qobuz:")
 	params := url.Values{
-		"album_id": {albumID},
+		"album_id": {rawID},
 		"limit":    {"500"},
 	}
 	var qa qAlbum
 	if err := c.getJSON(ctx, "/album/get", params, true, &qa); err != nil {
+		var ae *apiError
+		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
+			return library.Album{}, fmt.Errorf("%w: album %q", ErrNotFound, albumID)
+		}
 		return library.Album{}, err
 	}
-	return qa.toLibraryAlbum(true), nil
+	alb := qa.toLibraryAlbum(true)
+	for _, tr := range alb.Tracks {
+		c.cacheTrack(tr)
+	}
+	return alb, nil
 }
 
 // GetTrack fetches metadata for a single Qobuz track.
@@ -200,9 +298,43 @@ func (c *Client) GetTrack(ctx context.Context, trackID int64) (library.Track, er
 	}
 	var qt qTrack
 	if err := c.getJSON(ctx, "/track/get", params, true, &qt); err != nil {
+		var ae *apiError
+		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
+			return library.Track{}, fmt.Errorf("%w: track %d", ErrNotFound, trackID)
+		}
 		return library.Track{}, err
 	}
-	return qt.toLibraryTrack(nil), nil
+	tr := qt.toLibraryTrack(nil)
+	c.cacheTrack(tr)
+	return tr, nil
+}
+
+// ResolveTrack returns cached track metadata for trackID or fetches it from Qobuz on cache miss.
+func (c *Client) ResolveTrack(ctx context.Context, trackID int64) (library.Track, error) {
+	if err := c.requireAuth(); err != nil {
+		return library.Track{}, err
+	}
+	c.mu.RLock()
+	tr, ok := c.trackCache[trackID]
+	c.mu.RUnlock()
+	if ok {
+		return tr, nil
+	}
+	return c.GetTrack(ctx, trackID)
+}
+
+const maxTrackCacheEntries = 512
+
+func (c *Client) cacheTrack(tr library.Track) {
+	if tr.QobuzTrackID <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.trackCache) >= maxTrackCacheEntries {
+		clear(c.trackCache)
+	}
+	c.trackCache[tr.QobuzTrackID] = tr
 }
 
 const maxURLCacheEntries = 128
@@ -366,7 +498,7 @@ func (c *Client) requireAuth() error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.appID == "" || c.authToken == "" {
-		return errors.New("qobuz is not authenticated")
+		return ErrUnauthenticated
 	}
 	return nil
 }

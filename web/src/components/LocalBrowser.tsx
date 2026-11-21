@@ -1,41 +1,55 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { tacetClient } from "../api/client";
 import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "../api/format";
-import type { Album, QueueTrackRequest, Track } from "../api/types";
+import type { Album, LibraryStatus, QueuePosition, QueueSource, Track } from "../api/types";
 
 interface LocalBrowserProps {
-  onPlay: (req: QueueTrackRequest) => void;
-  onEnqueue: (req: QueueTrackRequest) => void;
+  libraryStatus: LibraryStatus | null;
+  onPlay: (source: QueueSource, startIndex?: number) => void;
+  onAdd: (source: QueueSource, position?: QueuePosition) => void;
 }
 
 type LocalView =
-  | { kind: "albums"; albums: Album[]; roots: string[] }
+  | { kind: "albums"; albums: Album[]; total: number }
   | { kind: "album"; album: Album }
-  | { kind: "search"; query: string; tracks: Track[] };
+  | { kind: "search"; query: string; tracks: Track[]; total: number };
 
-export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
+export function LocalBrowser({ libraryStatus, onPlay, onAdd }: LocalBrowserProps) {
   const [query, setQuery] = useState("");
-  const [view, setView] = useState<LocalView>({ kind: "albums", albums: [], roots: [] });
+  const [view, setView] = useState<LocalView>({ kind: "albums", albums: [], total: 0 });
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [errMsg, setErrMsg] = useState("");
+  const abortRef = useRef<AbortController | null>(null);
+
+  const startRequest = () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    return ctrl.signal;
+  };
 
   const loadAlbums = useCallback(async () => {
+    const signal = startRequest();
     setLoading(true);
     setErrMsg("");
     try {
-      const res = await tacetClient.listLocalAlbums();
-      setView({ kind: "albums", albums: res.albums ?? [], roots: res.roots ?? [] });
+      const res = await tacetClient.listLocalAlbums({ limit: 500 }, { signal });
+      if (signal.aborted) return;
+      setView({ kind: "albums", albums: res.items ?? [], total: res.total ?? 0 });
     } catch (err) {
+      if (signal.aborted) return;
       setErrMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }, []);
 
+  // Load initially and refresh automatically whenever SSE reports a new catalog ETag.
   useEffect(() => {
     void loadAlbums();
-  }, [loadAlbums]);
+    return () => abortRef.current?.abort();
+  }, [loadAlbums, libraryStatus?.etag]);
 
   const handleSearch = async (e: FormEvent) => {
     e.preventDefault();
@@ -44,28 +58,34 @@ export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
       void loadAlbums();
       return;
     }
+    const signal = startRequest();
     setLoading(true);
     setErrMsg("");
     try {
-      const res = await tacetClient.searchLocalTracks(trimmed);
-      setView({ kind: "search", query: trimmed, tracks: res.tracks ?? [] });
+      const res = await tacetClient.listLocalTracks({ q: trimmed, limit: 100 }, { signal });
+      if (signal.aborted) return;
+      setView({ kind: "search", query: trimmed, tracks: res.items ?? [], total: res.total ?? 0 });
     } catch (err) {
+      if (signal.aborted) return;
       setErrMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   };
 
   const openAlbum = async (id: string) => {
+    const signal = startRequest();
     setLoading(true);
     setErrMsg("");
     try {
-      const alb = await tacetClient.getLocalAlbum(id);
+      const alb = await tacetClient.getLocalAlbum(id, { signal });
+      if (signal.aborted) return;
       setView({ kind: "album", album: alb });
     } catch (err) {
+      if (signal.aborted) return;
       setErrMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   };
 
@@ -73,7 +93,7 @@ export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
     setRescanning(true);
     setErrMsg("");
     try {
-      await tacetClient.rescanLibrary();
+      await tacetClient.rescanLibrary(true);
       await loadAlbums();
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : String(err));
@@ -81,6 +101,8 @@ export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
       setRescanning(false);
     }
   };
+
+  const isScanning = rescanning || Boolean(libraryStatus?.scanning);
 
   return (
     <div>
@@ -95,8 +117,8 @@ export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
         <button type="button" onClick={() => void loadAlbums()}>
           Albums
         </button>
-        <button type="button" onClick={() => void handleRescan()} disabled={rescanning}>
-          {rescanning ? "Scanning…" : "Rescan"}
+        <button type="button" onClick={() => void handleRescan()} disabled={isScanning}>
+          {isScanning ? "Scanning…" : "Rescan"}
         </button>
       </form>
 
@@ -111,19 +133,20 @@ export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
       ) : view.kind === "albums" ? (
         view.albums.length === 0 ? (
           <p className="muted">
-            {view.roots.length === 0
+            {libraryStatus && !libraryStatus.configured
               ? "No local music directory configured. Start tacet with --music-dir /path/to/music."
-              : `No supported audio files found in ${view.roots.join(", ")}.`}
+              : "No supported audio files indexed yet."}
           </p>
         ) : (
           <div className="album-grid">
             {view.albums.map((alb) => {
               const qLabel = fmtAlbumQuality(alb);
+              const artSrc = tacetClient.resolveUrl(alb.artworkUrl);
               return (
                 <button key={alb.id} type="button" className="album-tile" onClick={() => void openAlbum(alb.id)}>
                   <div className="cover">
-                    {alb.artworkUrl ? (
-                      <img src={alb.artworkUrl} alt={alb.title} loading="lazy" />
+                    {artSrc ? (
+                      <img src={artSrc} alt={alb.title} loading="lazy" />
                     ) : (
                       <span>{alb.title.slice(0, 2).toUpperCase()}</span>
                     )}
@@ -148,7 +171,11 @@ export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
         <div className="album-detail">
           <div className="album-detail-header">
             {view.album.artworkUrl && (
-              <img className="album-detail-cover" src={view.album.artworkUrl} alt={view.album.title} />
+              <img
+                className="album-detail-cover"
+                src={tacetClient.resolveUrl(view.album.artworkUrl)}
+                alt={view.album.title}
+              />
             )}
             <div className="album-detail-info">
               <button type="button" className="small back-btn" onClick={() => void loadAlbums()}>
@@ -164,12 +191,15 @@ export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
                 <button
                   type="button"
                   className="primary"
-                  onClick={() => onPlay({ localAlbumId: view.album.id, startIndex: 0 })}
+                  onClick={() => onPlay({ type: "album", albumId: view.album.id }, 0)}
                 >
                   ▶ Play Album
                 </button>
-                <button type="button" onClick={() => onEnqueue({ localAlbumId: view.album.id })}>
-                  + Queue Album
+                <button type="button" onClick={() => onAdd({ type: "album", albumId: view.album.id }, "next")}>
+                  Play Next
+                </button>
+                <button type="button" onClick={() => onAdd({ type: "album", albumId: view.album.id }, "end")}>
+                  + Queue
                 </button>
               </div>
             </div>
@@ -182,7 +212,7 @@ export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
                 <button
                   type="button"
                   className="track-info-btn"
-                  onClick={() => onPlay({ localAlbumId: view.album.id, startIndex: idx })}
+                  onClick={() => onPlay({ type: "album", albumId: view.album.id }, idx)}
                 >
                   <div className="track-title">{t.title}</div>
                   <div className="track-meta">{t.artist}</div>
@@ -192,7 +222,7 @@ export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
                 <button
                   type="button"
                   className="small"
-                  onClick={() => onEnqueue({ localTrackId: t.id })}
+                  onClick={() => onAdd({ type: "tracks", trackIds: [t.id] }, "end")}
                   title="Add to queue"
                 >
                   +
@@ -205,7 +235,7 @@ export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
         <div>
           <div className="section-bar">
             <span className="muted">
-              {view.tracks.length} result{view.tracks.length === 1 ? "" : "s"} for “{view.query}”
+              {view.total} result{view.total === 1 ? "" : "s"} for “{view.query}”
             </span>
             <button type="button" className="small" onClick={() => void loadAlbums()}>
               Back to Albums
@@ -217,7 +247,11 @@ export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
             <ul className="track-list">
               {view.tracks.map((t) => (
                 <li key={t.id} className="track-row">
-                  <button type="button" className="track-info-btn" onClick={() => onPlay({ localTrackId: t.id })}>
+                  <button
+                    type="button"
+                    className="track-info-btn"
+                    onClick={() => onPlay({ type: "tracks", trackIds: [t.id] }, 0)}
+                  >
                     <div className="track-title">{t.title}</div>
                     <div className="track-meta">
                       {t.artist}
@@ -229,7 +263,7 @@ export function LocalBrowser({ onPlay, onEnqueue }: LocalBrowserProps) {
                   <button
                     type="button"
                     className="small"
-                    onClick={() => onEnqueue({ localTrackId: t.id })}
+                    onClick={() => onAdd({ type: "tracks", trackIds: [t.id] }, "end")}
                     title="Add to queue"
                   >
                     +

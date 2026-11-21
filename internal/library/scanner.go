@@ -24,6 +24,15 @@ var coverArtNames = []string{
 	"album.jpg", "album.png",
 }
 
+// Status describes the current local library catalog state.
+type Status struct {
+	Configured bool   `json:"configured"`
+	Scanning   bool   `json:"scanning"`
+	Tracks     int    `json:"tracks"`
+	Albums     int    `json:"albums"`
+	ETag       string `json:"etag"`
+}
+
 // Catalog holds the scanned in-memory local NAS music index.
 type Catalog struct {
 	mu      sync.RWMutex
@@ -32,6 +41,12 @@ type Catalog struct {
 	ordered []Track
 	albums  map[string]Album
 	albList []Album
+	gen     uint64
+
+	scanMu     sync.Mutex
+	scanning   bool
+	scanWaitCh chan struct{}
+	lastErr    error
 }
 
 // NewCatalog creates an empty catalog configured for the given music directories.
@@ -54,6 +69,34 @@ func NewCatalog(roots ...string) *Catalog {
 	}
 }
 
+// Status returns a summary of the library catalog and scan status.
+func (c *Catalog) Status() Status {
+	c.scanMu.Lock()
+	scanning := c.scanning
+	c.scanMu.Unlock()
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return Status{
+		Configured: len(c.roots) > 0,
+		Scanning:   scanning,
+		Tracks:     len(c.ordered),
+		Albums:     len(c.albList),
+		ETag:       c.etagLocked(),
+	}
+}
+
+// ETag returns an HTTP ETag representing the current catalog snapshot.
+func (c *Catalog) ETag() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.etagLocked()
+}
+
+func (c *Catalog) etagLocked() string {
+	return fmt.Sprintf(`"lib-%d-%d-%d"`, c.gen, len(c.ordered), len(c.albList))
+}
+
 // Roots returns the configured music root directories.
 func (c *Catalog) Roots() []string {
 	c.mu.RLock()
@@ -64,9 +107,40 @@ func (c *Catalog) Roots() []string {
 }
 
 // Scan walks all configured root directories and rebuilds the library index.
+// Concurrent Scan calls coalesce into a single in-flight disk walk.
 func (c *Catalog) Scan() (int, error) {
+	c.scanMu.Lock()
+	if c.scanning {
+		ch := c.scanWaitCh
+		c.scanMu.Unlock()
+		<-ch
+		c.scanMu.Lock()
+		err := c.lastErr
+		c.scanMu.Unlock()
+		c.mu.RLock()
+		n := len(c.ordered)
+		c.mu.RUnlock()
+		return n, err
+	}
+	ch := make(chan struct{})
+	c.scanning = true
+	c.scanWaitCh = ch
+	c.scanMu.Unlock()
+
+	n, err := c.runScan()
+
+	c.scanMu.Lock()
+	c.lastErr = err
+	c.scanning = false
+	close(ch)
+	c.scanWaitCh = nil
+	c.scanMu.Unlock()
+	return n, err
+}
+
+func (c *Catalog) runScan() (int, error) {
 	tracks := make(map[string]Track)
-	var ordered []Track
+	ordered := make([]Track, 0)
 
 	dirArtCache := make(map[string]string)
 
@@ -166,6 +240,7 @@ func (c *Catalog) Scan() (int, error) {
 	c.ordered = ordered
 	c.albums = albums
 	c.albList = albList
+	c.gen++
 	c.mu.Unlock()
 
 	return len(ordered), nil
@@ -214,30 +289,89 @@ func (c *Catalog) Album(id string) (Album, bool) {
 	return a, true
 }
 
+// AlbumsPage filters, sorts, and slices albums with total count for pagination.
+func (c *Catalog) AlbumsPage(query, sortBy string, limit, offset int) ([]Album, int) {
+	q := strings.ToLower(strings.TrimSpace(query))
+	c.mu.RLock()
+	filtered := make([]Album, 0, len(c.albList))
+	for _, a := range c.albList {
+		if q != "" && !strings.Contains(strings.ToLower(a.Title), q) && !strings.Contains(strings.ToLower(a.Artist), q) {
+			continue
+		}
+		a.Tracks = nil
+		filtered = append(filtered, a)
+	}
+	c.mu.RUnlock()
+
+	switch strings.ToLower(strings.TrimSpace(sortBy)) {
+	case "title":
+		sort.Slice(filtered, func(i, j int) bool {
+			return strings.ToLower(filtered[i].Title) < strings.ToLower(filtered[j].Title)
+		})
+	case "year":
+		sort.Slice(filtered, func(i, j int) bool {
+			if filtered[i].Year != filtered[j].Year {
+				return filtered[i].Year > filtered[j].Year
+			}
+			return strings.ToLower(filtered[i].Title) < strings.ToLower(filtered[j].Title)
+		})
+	}
+
+	total := len(filtered)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return make([]Album, 0), total
+	}
+	if limit <= 0 || offset+limit > total {
+		limit = total - offset
+	}
+	out := make([]Album, limit)
+	copy(out, filtered[offset:offset+limit])
+	return out, total
+}
+
+// TracksPage filters and slices tracks with total count for pagination.
+func (c *Catalog) TracksPage(query string, limit, offset int) ([]Track, int) {
+	q := strings.ToLower(strings.TrimSpace(query))
+	c.mu.RLock()
+	filtered := make([]Track, 0, len(c.ordered))
+	for _, t := range c.ordered {
+		if q == "" ||
+			strings.Contains(strings.ToLower(t.Title), q) ||
+			strings.Contains(strings.ToLower(t.Artist), q) ||
+			strings.Contains(strings.ToLower(t.Album), q) {
+			filtered = append(filtered, t)
+		}
+	}
+	c.mu.RUnlock()
+
+	total := len(filtered)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return make([]Track, 0), total
+	}
+	if limit <= 0 || offset+limit > total {
+		limit = total - offset
+	}
+	out := make([]Track, limit)
+	copy(out, filtered[offset:offset+limit])
+	return out, total
+}
+
 // Search performs a case-insensitive substring search across title, artist, and album.
 func (c *Catalog) Search(query string, limit int) []Track {
-	q := strings.ToLower(strings.TrimSpace(query))
-	if q == "" {
-		return nil
+	if strings.TrimSpace(query) == "" {
+		return make([]Track, 0)
 	}
 	if limit <= 0 {
 		limit = 50
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	var results []Track
-	for _, t := range c.ordered {
-		if strings.Contains(strings.ToLower(t.Title), q) ||
-			strings.Contains(strings.ToLower(t.Artist), q) ||
-			strings.Contains(strings.ToLower(t.Album), q) {
-			results = append(results, t)
-			if len(results) >= limit {
-				break
-			}
-		}
-	}
-	return results
+	items, _ := c.TracksPage(query, limit, 0)
+	return items
 }
 
 const maxCoverArtBytes = 10 << 20 // 10 MiB safety cap
@@ -290,7 +424,7 @@ func scanFile(path string, dirArtCache map[string]string) (Track, bool) {
 
 	// Hash the full cleaned path so identically named files across multiple
 	// configured roots never collide.
-	id := shortHash("local:" + filepath.Clean(path))
+	id := "local:" + shortHash("local:"+filepath.Clean(path))
 
 	dir := filepath.Dir(path)
 	folderArt, cached := dirArtCache[dir]
@@ -353,7 +487,7 @@ func scanFile(path string, dirArtCache map[string]string) (Track, bool) {
 	if albArtist == "" {
 		albArtist = t.Artist
 	}
-	t.AlbumID = shortHash("album:" + strings.ToLower(albArtist) + "\x00" + strings.ToLower(t.Album))
+	t.AlbumID = "local:" + shortHash("album:"+strings.ToLower(albArtist)+"\x00"+strings.ToLower(t.Album))
 
 	if t.HasEmbedArt || t.FolderArt != "" {
 		t.ArtworkURL = "/media/art/" + t.ID

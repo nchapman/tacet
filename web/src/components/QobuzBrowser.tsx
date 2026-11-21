@@ -1,11 +1,13 @@
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { tacetClient } from "../api/client";
 import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "../api/format";
-import type { Album, QobuzSearchResult, QobuzStatus, QueueTrackRequest, Track } from "../api/types";
+import type { Album, QobuzSearchResult, QobuzStatus, QueuePosition, QueueSource } from "../api/types";
 
 interface QobuzBrowserProps {
-  onPlay: (req: QueueTrackRequest) => void;
-  onEnqueue: (req: QueueTrackRequest) => void;
+  status: QobuzStatus | null;
+  onStatusChange: (status: QobuzStatus) => void;
+  onPlay: (source: QueueSource, startIndex?: number) => void;
+  onAdd: (source: QueueSource, position?: QueuePosition) => void;
 }
 
 type QobuzView =
@@ -13,8 +15,7 @@ type QobuzView =
   | { kind: "results"; query: string; data: QobuzSearchResult }
   | { kind: "album"; album: Album; previous?: { query: string; data: QobuzSearchResult } };
 
-export function QobuzBrowser({ onPlay, onEnqueue }: QobuzBrowserProps) {
-  const [status, setStatus] = useState<QobuzStatus | null>(null);
+export function QobuzBrowser({ status, onStatusChange, onPlay, onAdd }: QobuzBrowserProps) {
   const [authToken, setAuthToken] = useState("");
   const [appId, setAppId] = useState("");
   const [appSecret, setAppSecret] = useState("");
@@ -25,20 +26,28 @@ export function QobuzBrowser({ onPlay, onEnqueue }: QobuzBrowserProps) {
   const [view, setView] = useState<QobuzView>({ kind: "empty" });
   const [searching, setSearching] = useState(false);
   const [errMsg, setErrMsg] = useState("");
-  const reqSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const loadStatus = useCallback(async () => {
-    try {
-      const st = await tacetClient.qobuzStatus();
-      setStatus(st);
-    } catch (err) {
-      setErrMsg(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
+  const startRequest = () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    return ctrl.signal;
+  };
 
   useEffect(() => {
-    void loadStatus();
-  }, [loadStatus]);
+    if (status !== null) return;
+    const ctrl = new AbortController();
+    void tacetClient
+      .qobuzStatus({ signal: ctrl.signal })
+      .then(onStatusChange)
+      .catch((err) => {
+        if (!ctrl.signal.aborted) setErrMsg(err instanceof Error ? err.message : String(err));
+      });
+    return () => ctrl.abort();
+  }, [status, onStatusChange]);
+
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const handleTokenLogin = async (e: FormEvent) => {
     e.preventDefault();
@@ -50,7 +59,7 @@ export function QobuzBrowser({ onPlay, onEnqueue }: QobuzBrowserProps) {
         appId: appId.trim() || undefined,
         appSecret: appSecret.trim() || undefined,
       });
-      setStatus(st);
+      onStatusChange(st);
       setAuthToken("");
       setAppId("");
       setAppSecret("");
@@ -61,53 +70,56 @@ export function QobuzBrowser({ onPlay, onEnqueue }: QobuzBrowserProps) {
     }
   };
 
+  const handleLogout = async () => {
+    setErrMsg("");
+    try {
+      const st = await tacetClient.qobuzLogout();
+      onStatusChange(st);
+      setView({ kind: "empty" });
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const handleSearch = async (e: FormEvent) => {
     e.preventDefault();
     const trimmed = query.trim();
     if (!trimmed) return;
-    const seq = ++reqSeqRef.current;
+    const signal = startRequest();
     setSearching(true);
     setErrMsg("");
     try {
-      const raw = await tacetClient.qobuzSearch(trimmed);
-      if (reqSeqRef.current !== seq) return;
+      const raw = await tacetClient.qobuzSearch(trimmed, { limit: 30 }, { signal });
+      if (signal.aborted) return;
       const data: QobuzSearchResult = {
         albums: Array.isArray(raw?.albums) ? raw.albums : [],
         tracks: Array.isArray(raw?.tracks) ? raw.tracks : [],
       };
       setView({ kind: "results", query: trimmed, data });
     } catch (err) {
-      if (reqSeqRef.current !== seq) return;
+      if (signal.aborted) return;
       setErrMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      if (reqSeqRef.current === seq) {
-        setSearching(false);
-      }
+      if (!signal.aborted) setSearching(false);
     }
   };
 
   const openAlbum = async (albumId: string) => {
     const previous = view.kind === "results" ? { query: view.query, data: view.data } : undefined;
-    const seq = ++reqSeqRef.current;
+    const signal = startRequest();
     setSearching(true);
     setErrMsg("");
     try {
-      const rawId = albumId.replace(/^qobuz:/, "");
-      const album = await tacetClient.qobuzAlbum(rawId);
-      if (reqSeqRef.current !== seq) return;
+      const album = await tacetClient.qobuzAlbum(albumId, { signal });
+      if (signal.aborted) return;
       setView({ kind: "album", album, previous });
     } catch (err) {
-      if (reqSeqRef.current !== seq) return;
+      if (signal.aborted) return;
       setErrMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      if (reqSeqRef.current === seq) {
-        setSearching(false);
-      }
+      if (!signal.aborted) setSearching(false);
     }
   };
-
-  const playTracks = (tracks: Track[], startIndex = 0) => onPlay({ tracks, startIndex });
-  const enqueueTracks = (tracks: Track[]) => onEnqueue({ tracks });
 
   return (
     <div>
@@ -139,6 +151,7 @@ export function QobuzBrowser({ onPlay, onEnqueue }: QobuzBrowserProps) {
             <form className="form-stack advanced-form" onSubmit={handleTokenLogin}>
               <input
                 type="password"
+                autoComplete="off"
                 placeholder="Qobuz user_auth_token"
                 value={authToken}
                 onChange={(e) => setAuthToken(e.target.value)}
@@ -168,11 +181,14 @@ export function QobuzBrowser({ onPlay, onEnqueue }: QobuzBrowserProps) {
         </div>
       ) : (
         <div>
-          <div className="qobuz-bar">
+          <div className="section-bar qobuz-bar">
             <span className="badge badge-ok">
               Qobuz Connected: {status.userName || "Account"}
               {status.subscription ? ` (${status.subscription})` : ""}
             </span>
+            <button type="button" className="small" onClick={() => void handleLogout()}>
+              Sign Out
+            </button>
           </div>
 
           <form className="search-bar" onSubmit={handleSearch}>
@@ -195,7 +211,11 @@ export function QobuzBrowser({ onPlay, onEnqueue }: QobuzBrowserProps) {
             <div className="album-detail">
               <div className="album-detail-header">
                 {view.album.artworkUrl && (
-                  <img className="album-detail-cover" src={view.album.artworkUrl} alt={view.album.title} />
+                  <img
+                    className="album-detail-cover"
+                    src={tacetClient.resolveUrl(view.album.artworkUrl)}
+                    alt={view.album.title}
+                  />
                 )}
                 <div className="album-detail-info">
                   {view.previous && (
@@ -217,12 +237,15 @@ export function QobuzBrowser({ onPlay, onEnqueue }: QobuzBrowserProps) {
                     <button
                       type="button"
                       className="primary"
-                      onClick={() => playTracks(view.album.tracks ?? [], 0)}
+                      onClick={() => onPlay({ type: "album", albumId: view.album.id }, 0)}
                     >
                       ▶ Play Album
                     </button>
-                    <button type="button" onClick={() => enqueueTracks(view.album.tracks ?? [])}>
-                      + Queue Album
+                    <button type="button" onClick={() => onAdd({ type: "album", albumId: view.album.id }, "next")}>
+                      Play Next
+                    </button>
+                    <button type="button" onClick={() => onAdd({ type: "album", albumId: view.album.id }, "end")}>
+                      + Queue
                     </button>
                   </div>
                 </div>
@@ -235,14 +258,19 @@ export function QobuzBrowser({ onPlay, onEnqueue }: QobuzBrowserProps) {
                     <button
                       type="button"
                       className="track-info-btn"
-                      onClick={() => playTracks(view.album.tracks ?? [], idx)}
+                      onClick={() => onPlay({ type: "album", albumId: view.album.id }, idx)}
                     >
                       <div className="track-title">{t.title}</div>
                       <div className="track-meta">{t.artist}</div>
                     </button>
                     <span className={`track-qual ${isHiRes(t.bitDepth, t.sampleRate) ? "hi" : ""}`}>{fmtQuality(t)}</span>
                     <span className="track-dur mono">{fmtDuration(t.durationSec)}</span>
-                    <button type="button" className="small" onClick={() => enqueueTracks([t])} title="Add to queue">
+                    <button
+                      type="button"
+                      className="small"
+                      onClick={() => onAdd({ type: "tracks", trackIds: [t.id] }, "end")}
+                      title="Add to queue"
+                    >
                       +
                     </button>
                   </li>
@@ -257,11 +285,12 @@ export function QobuzBrowser({ onPlay, onEnqueue }: QobuzBrowserProps) {
                   <div className="album-grid">
                     {view.data.albums.map((alb) => {
                       const qLabel = fmtAlbumQuality(alb);
+                      const artSrc = tacetClient.resolveUrl(alb.artworkUrl);
                       return (
                         <button key={alb.id} type="button" className="album-tile" onClick={() => void openAlbum(alb.id)}>
                           <div className="cover">
-                            {alb.artworkUrl ? (
-                              <img src={alb.artworkUrl} alt={alb.title} loading="lazy" />
+                            {artSrc ? (
+                              <img src={artSrc} alt={alb.title} loading="lazy" />
                             ) : (
                               <span>{alb.title.slice(0, 2).toUpperCase()}</span>
                             )}
@@ -290,7 +319,11 @@ export function QobuzBrowser({ onPlay, onEnqueue }: QobuzBrowserProps) {
                   <ul className="track-list">
                     {view.data.tracks.map((t) => (
                       <li key={t.id} className="track-row">
-                        <button type="button" className="track-info-btn" onClick={() => playTracks([t], 0)}>
+                        <button
+                          type="button"
+                          className="track-info-btn"
+                          onClick={() => onPlay({ type: "tracks", trackIds: [t.id] }, 0)}
+                        >
                           <div className="track-title">{t.title}</div>
                           <div className="track-meta">
                             {t.artist}
@@ -301,7 +334,12 @@ export function QobuzBrowser({ onPlay, onEnqueue }: QobuzBrowserProps) {
                           {fmtQuality(t)}
                         </span>
                         <span className="track-dur mono">{fmtDuration(t.durationSec)}</span>
-                        <button type="button" className="small" onClick={() => enqueueTracks([t])} title="Add to queue">
+                        <button
+                          type="button"
+                          className="small"
+                          onClick={() => onAdd({ type: "tracks", trackIds: [t.id] }, "end")}
+                          title="Add to queue"
+                        >
                           +
                         </button>
                       </li>
