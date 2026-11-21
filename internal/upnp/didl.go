@@ -18,20 +18,20 @@ const DLNAFeaturesStreaming = "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700
 
 // MediaItem describes an audio resource to hand to a UPnP/DLNA renderer.
 type MediaItem struct {
-	ID            string
-	URL           string
-	Title         string
-	Artist        string
-	Album         string
-	AlbumArtURL   string
-	TrackNumber   int
-	MIME          string
-	Duration      time.Duration
-	Size          int64
-	SampleRate    int
-	BitDepth      int
-	Channels      int
-	Seekable      bool
+	ID          string
+	URL         string
+	Title       string
+	Artist      string
+	Album       string
+	AlbumArtURL string
+	TrackNumber int
+	MIME        string
+	Duration    time.Duration
+	Size        int64
+	SampleRate  int
+	BitDepth    int
+	Channels    int
+	Seekable    bool
 }
 
 // NegotiateMIME picks the MIME type spelling a renderer actually advertises in

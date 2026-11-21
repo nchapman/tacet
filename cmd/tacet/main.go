@@ -22,6 +22,13 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Printf("fatal: %v", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	port := flag.Int("port", envInt("TACET_PORT", 8080), "HTTP port for media serving, API, and web remote")
 	musicDir := flag.String("music-dir", os.Getenv("TACET_MUSIC_DIR"), "Comma-separated local music directories to index")
 	publicURL := flag.String("public-url", os.Getenv("TACET_PUBLIC_URL"), "Optional base URL override for renderers (e.g. http://192.168.1.10:8080)")
@@ -50,7 +57,7 @@ func main() {
 		}
 	}
 
-	// 2. Qobuz client (optional credentials from env or web UI login).
+	// 2. Qobuz client (optional credentials from env or web UI OAuth/token login).
 	qb := qobuz.NewClient(qobuz.Config{
 		AppID:     os.Getenv("QOBUZ_APP_ID"),
 		AppSecret: os.Getenv("QOBUZ_APP_SECRET"),
@@ -70,7 +77,7 @@ func main() {
 	// 3. Queue / playback manager + UPnP GENA event subscriber.
 	mgr := queue.NewManager(*port, *publicURL, qb)
 	if err := mgr.SetStreamMode(queue.StreamMode(*streamMode)); err != nil {
-		log.Fatalf("invalid --stream-mode: %v", err)
+		return fmt.Errorf("invalid --stream-mode: %w", err)
 	}
 	gena := upnp.NewGENAClient(mgr.HandleDeviceEvent)
 	mgr.SetGENA(gena)
@@ -84,9 +91,10 @@ func main() {
 		Handler:           apiServer.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	ln, err := net.Listen("tcp", httpSrv.Addr)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", httpSrv.Addr)
 	if err != nil {
-		log.Fatalf("listen %s: %v", httpSrv.Addr, err)
+		return fmt.Errorf("listen %s: %w", httpSrv.Addr, err)
 	}
 
 	mgr.Start(ctx)
@@ -132,11 +140,12 @@ func main() {
 		_ = httpSrv.Shutdown(shCtx)
 	}()
 
-	lanIP := detectLANIP()
+	lanIP := detectLANIP(ctx)
 	log.Printf("tacet listening on http://%s:%d (local: http://localhost:%d)", lanIP, *port, *port)
 	if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("http server error: %v", err)
+		return fmt.Errorf("http server error: %w", err)
 	}
+	return nil
 }
 
 func envDefault(key, fallback string) string {
@@ -158,10 +167,11 @@ func envInt(key string, fallback int) int {
 	return n
 }
 
-func detectLANIP() string {
-	conn, err := net.DialTimeout("udp4", "1.1.1.1:80", 300*time.Millisecond)
+func detectLANIP(ctx context.Context) string {
+	d := net.Dialer{Timeout: 300 * time.Millisecond}
+	conn, err := d.DialContext(ctx, "udp4", "1.1.1.1:80")
 	if err == nil {
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok && addr.IP != nil {
 			return addr.IP.String()
 		}

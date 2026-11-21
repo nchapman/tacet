@@ -81,6 +81,10 @@ func TestDurationRoundTrip(t *testing.T) {
 		{"0:03:45", 3*time.Minute + 45*time.Second},
 		{"01:02:03.500", time.Hour + 2*time.Minute + 3*time.Second + 500*time.Millisecond},
 		{"00:03:45.abc", 0},
+		{"9999999999:00:00", 0},
+		{"0:99:00", 0},
+		{"0:00:99", 0},
+		{"-1:00:00", 0},
 		{"NOT_IMPLEMENTED", 0},
 		{"", 0},
 	}

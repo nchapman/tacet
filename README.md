@@ -54,6 +54,6 @@ export QOBUZ_AUTH_TOKEN="..."
 ## Build & Test
 
 ```bash
-go test -race ./...
-go build -o tacet ./cmd/tacet
+make check   # fmt-check, go vet, golangci-lint, and race-enabled tests
+make build   # produces ./tacet
 ```

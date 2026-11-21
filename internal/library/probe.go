@@ -21,11 +21,11 @@ type AudioProps struct {
 // ProbeAudio reads stream-level audio properties (sample rate, bit depth,
 // channels, duration) directly from file headers without decoding audio frames.
 func ProbeAudio(path string) AudioProps {
-	f, err := os.Open(path)
+	f, err := os.Open(filepath.Clean(path)) //nolint:gosec // local library path from configured music root
 	if err != nil {
 		return AudioProps{}
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".flac":

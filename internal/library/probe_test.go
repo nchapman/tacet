@@ -145,3 +145,83 @@ func TestCatalogScan_MultipleRootsNoIDCollision(t *testing.T) {
 		t.Fatalf("track IDs collided across roots: %q", tracks[0].ID)
 	}
 }
+
+func TestProbeAudio_AIFFAndDSF(t *testing.T) {
+	dir := t.TempDir()
+
+	// Synthetic AIFF: 2ch, 96000 frames (1s), 24-bit, 96000 Hz IEEE-80 extended.
+	// 96000 = 1.46484375 * 2^16 -> exp = 16383 + 16 = 16399 (0x400F), mantissa = 96000 << (63-16) = 0xBB80000000000000.
+	aiff := make([]byte, 38)
+	copy(aiff[0:4], "FORM")
+	binary.BigEndian.PutUint32(aiff[4:8], 30)
+	copy(aiff[8:12], "AIFF")
+	copy(aiff[12:16], "COMM")
+	binary.BigEndian.PutUint32(aiff[16:20], 18)
+	binary.BigEndian.PutUint16(aiff[20:22], 2)     // channels
+	binary.BigEndian.PutUint32(aiff[22:26], 96000) // frames
+	binary.BigEndian.PutUint16(aiff[26:28], 24)    // bit depth
+	binary.BigEndian.PutUint16(aiff[28:30], 0x400F)
+	binary.BigEndian.PutUint64(aiff[30:38], 0xBB80000000000000)
+	aiffPath := filepath.Join(dir, "test.aiff")
+	if err := os.WriteFile(aiffPath, aiff, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ap := ProbeAudio(aiffPath)
+	if ap.SampleRate != 96000 || ap.BitDepth != 24 || ap.Channels != 2 || ap.Duration != time.Second {
+		t.Fatalf("unexpected AIFF props: %+v", ap)
+	}
+
+	// Synthetic DSF (DSD64): 28-byte DSD chunk + 52-byte fmt chunk.
+	dsf := make([]byte, 80)
+	copy(dsf[0:4], "DSD ")
+	binary.LittleEndian.PutUint64(dsf[4:12], 28)
+	copy(dsf[28:32], "fmt ")
+	binary.LittleEndian.PutUint64(dsf[32:40], 52)
+	binary.LittleEndian.PutUint32(dsf[52:56], 2)       // channels
+	binary.LittleEndian.PutUint32(dsf[56:60], 2822400) // DSD64 sample rate
+	binary.LittleEndian.PutUint32(dsf[60:64], 1)       // 1-bit
+	binary.LittleEndian.PutUint64(dsf[64:72], 2822400*10)
+	dsfPath := filepath.Join(dir, "test.dsf")
+	if err := os.WriteFile(dsfPath, dsf, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dp := ProbeAudio(dsfPath)
+	if dp.SampleRate != 2822400 || dp.BitDepth != 1 || dp.Channels != 2 || dp.Duration != 10*time.Second {
+		t.Fatalf("unexpected DSF props: %+v", dp)
+	}
+}
+
+func TestCatalog_SearchLookupAndMissingRootError(t *testing.T) {
+	missing := NewCatalog(filepath.Join(t.TempDir(), "does-not-exist"))
+	if _, err := missing.Scan(); err == nil {
+		t.Fatal("expected Scan to fail on missing root directory")
+	}
+
+	root := t.TempDir()
+	hiddenDir := filepath.Join(root, ".hidden")
+	if err := os.MkdirAll(hiddenDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hiddenDir, "secret.flac"), buildSyntheticFLAC(44100, 2, 16, 44100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Blue in Green.flac"), buildSyntheticFLAC(96000, 2, 24, 96000*60), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cat := NewCatalog(root)
+	n, err := cat.Scan()
+	if err != nil || n != 1 {
+		t.Fatalf("expected 1 visible track (hidden skipped), got n=%d err=%v", n, err)
+	}
+	hits := cat.Search("blue", 10)
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 search hit, got %d", len(hits))
+	}
+	if _, ok := cat.Track(hits[0].ID); !ok {
+		t.Fatal("expected Track lookup to succeed")
+	}
+	if _, ok := cat.Album(hits[0].AlbumID); !ok {
+		t.Fatal("expected Album lookup to succeed")
+	}
+}

@@ -12,21 +12,21 @@ import (
 )
 
 type fakeRenderer struct {
-	mu            sync.Mutex
-	info          upnp.RendererInfo
-	localIP       string
-	state         string
-	currentURI    string
-	nextURI       string
-	setNextErr    error
-	position      time.Duration
-	duration      time.Duration
-	volume        int
-	muted         bool
-	setURICalls   []string
-	setNextCalls  []string
-	playCalls     int
-	stopCalls     int
+	mu           sync.Mutex
+	info         upnp.RendererInfo
+	localIP      string
+	state        string
+	currentURI   string
+	nextURI      string
+	setNextErr   error
+	position     time.Duration
+	duration     time.Duration
+	volume       int
+	muted        bool
+	setURICalls  []string
+	setNextCalls []string
+	playCalls    int
+	stopCalls    int
 }
 
 func newFakeRenderer(id, name string) *fakeRenderer {
@@ -351,5 +351,156 @@ func TestManager_HandleDeviceEvent_InstantGaplessAndVolume(t *testing.T) {
 	}
 	if !snap.GaplessArmed || len(r.setNextCalls) != 2 {
 		t.Fatalf("expected track 3 preloaded immediately, setNextCalls=%v", r.setNextCalls)
+	}
+}
+
+func TestManager_QueueMutationsAndTransportControls(t *testing.T) {
+	r := newFakeRenderer("uuid:wiim-ops", "Living Room Wiim")
+	mgr := NewManager(8080, "", nil)
+	mgr.RegisterRenderer(r)
+
+	ch, unsub := mgr.Subscribe()
+	defer unsub()
+
+	tracks := []library.Track{
+		{ID: "t1", Source: library.SourceLocal, Title: "Track 1", MIME: "audio/flac", Ext: ".flac", DurationSec: 180},
+		{ID: "t2", Source: library.SourceLocal, Title: "Track 2", MIME: "audio/flac", Ext: ".flac", DurationSec: 200},
+		{ID: "t3", Source: library.SourceLocal, Title: "Track 3", MIME: "audio/flac", Ext: ".flac", DurationSec: 220},
+	}
+	ctx := context.Background()
+
+	// Enqueue on empty queue starts playback immediately.
+	if err := mgr.Enqueue(ctx, "", tracks[:2]); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ := mgr.Snapshot("")
+	if snap.CurrentIndex != 0 || len(snap.Queue) != 2 {
+		t.Fatalf("expected idx=0 len=2, got idx=%d len=%d", snap.CurrentIndex, len(snap.Queue))
+	}
+
+	// Enqueue while playing appends without restarting.
+	if err := mgr.Enqueue(ctx, "", tracks[2:]); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ = mgr.Snapshot("")
+	if len(snap.Queue) != 3 {
+		t.Fatalf("expected len=3 after enqueue, got %d", len(snap.Queue))
+	}
+
+	// Next advances to t2; Prev when position > 5s seeks to 0 instead of going back.
+	if err := mgr.Next(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Seek(ctx, "", 15); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Prev(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ = mgr.Snapshot("")
+	if snap.CurrentIndex != 1 {
+		t.Fatalf("expected Prev at >5s to stay on idx=1, got %d", snap.CurrentIndex)
+	}
+
+	// Seek to 0, then Prev goes back to t1.
+	if err := mgr.Seek(ctx, "", -10); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Prev(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ = mgr.Snapshot("")
+	if snap.CurrentIndex != 0 {
+		t.Fatalf("expected Prev at 0s to go to idx=0, got %d", snap.CurrentIndex)
+	}
+
+	// RemoveAt before current index shifts currentIndex down.
+	if err := mgr.PlayIndex(ctx, "", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.RemoveAt(ctx, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ = mgr.Snapshot("")
+	if snap.CurrentIndex != 1 || len(snap.Queue) != 2 {
+		t.Fatalf("expected idx=1 len=2 after removing before current, got idx=%d len=%d", snap.CurrentIndex, len(snap.Queue))
+	}
+
+	// Volume clamping, mute, pause, stop, resume, clear.
+	if err := mgr.SetVolume(ctx, "", 150); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SetMute(ctx, "", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Pause(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Stop(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Play(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ = mgr.Snapshot("")
+	if snap.Volume != 100 || !snap.Muted {
+		t.Fatalf("expected clamped vol=100 muted=true, got vol=%d muted=%v", snap.Volume, snap.Muted)
+	}
+
+	if err := mgr.ClearQueue(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ = mgr.Snapshot("")
+	if len(snap.Queue) != 0 || snap.CurrentIndex != -1 {
+		t.Fatalf("expected empty queue after ClearQueue, got len=%d idx=%d", len(snap.Queue), snap.CurrentIndex)
+	}
+
+	// Verify SSE subscriber received at least one state event.
+	select {
+	case ev := <-ch:
+		if ev.Type == "" {
+			t.Fatal("expected non-empty event type")
+		}
+	default:
+		t.Fatal("expected queued SSE event on subscriber channel")
+	}
+}
+
+func TestManager_PartialStatusFailurePreservesPositionAndVolume(t *testing.T) {
+	r := newFakeRenderer("uuid:flaky", "Flaky Renderer")
+	mgr := NewManager(8080, "", nil)
+	mgr.RegisterRenderer(r)
+
+	tracks := []library.Track{
+		{ID: "t1", Source: library.SourceLocal, Title: "Track 1", MIME: "audio/flac", Ext: ".flac", DurationSec: 200},
+	}
+	ctx := context.Background()
+	if err := mgr.PlayTracks(ctx, "", tracks, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	r.mu.Lock()
+	r.position = 42 * time.Second
+	r.duration = 200 * time.Second
+	r.volume = 64
+	r.muted = true
+	r.mu.Unlock()
+	mgr.pollOne(ctx, "uuid:flaky")
+
+	// Simulate a poll where GetPositionInfo and GetVolume failed (HasPosition=false, HasVolValue=false).
+	mgr.mu.Lock()
+	z := mgr.zones["uuid:flaky"]
+	mgr.applyTransportUpdateLocked(z, upnp.TransportStatus{
+		State:       "PLAYING",
+		HasPosition: false,
+		HasVolValue: false,
+		HasMuteVal:  false,
+		HasVolume:   true,
+	}, true)
+	mgr.mu.Unlock()
+
+	snap, _ := mgr.Snapshot("uuid:flaky")
+	if snap.PositionSec != 42 || snap.DurationSec != 200 || snap.Volume != 64 || !snap.Muted {
+		t.Fatalf("expected previous pos/dur/vol/mute preserved, got %+v", snap)
 	}
 }

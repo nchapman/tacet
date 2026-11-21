@@ -1,5 +1,7 @@
 # Binaries & build artifacts
 /tacet
+dist/
+coverage.out
 *.exe
 *.out
 *.test

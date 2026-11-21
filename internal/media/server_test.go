@@ -143,3 +143,67 @@ func TestServeQobuzRelay_RejectsUpstreamErrors(t *testing.T) {
 		t.Fatal("expected no DLNA streaming header on upstream error")
 	}
 }
+
+func TestServeCoverArt_HeadersAndErrors(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "song.flac"), []byte("fLaC1234"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pngBytes := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if err := os.WriteFile(filepath.Join(root, "cover.png"), pngBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cat := library.NewCatalog(root)
+	if _, err := cat.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	tr := cat.Tracks()[0]
+
+	mux := http.NewServeMux()
+	NewHandler(cat, nil).Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/media/art/" + tr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "image/png" || resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("unexpected art response: status=%d ct=%q nosniff=%q", resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("X-Content-Type-Options"))
+	}
+	if string(body) != string(pngBytes) {
+		t.Fatalf("unexpected art body len=%d", len(body))
+	}
+
+	// HEAD returns headers with empty body.
+	headResp, err := http.Head(srv.URL + "/media/art/" + tr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headBody, _ := io.ReadAll(headResp.Body)
+	headResp.Body.Close()
+	if headResp.StatusCode != http.StatusOK || len(headBody) != 0 {
+		t.Fatalf("expected 200 empty HEAD body, got status=%d len=%d", headResp.StatusCode, len(headBody))
+	}
+
+	// Unknown art / unknown local / unconfigured Qobuz / bad Qobuz ID.
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{"/media/art/missing", http.StatusNotFound},
+		{"/media/local/missing.flac", http.StatusNotFound},
+		{"/media/qobuz/123.flac", http.StatusServiceUnavailable},
+	} {
+		r, err := http.Get(srv.URL + tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != tc.want {
+			t.Fatalf("GET %s: got %d, want %d", tc.path, r.StatusCode, tc.want)
+		}
+	}
+}

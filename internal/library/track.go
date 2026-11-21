@@ -9,6 +9,7 @@ import (
 // Source identifies where an audio track originates.
 type Source string
 
+// Track sources supported by tacet.
 const (
 	SourceLocal Source = "local"
 	SourceQobuz Source = "qobuz"

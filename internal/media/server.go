@@ -80,7 +80,7 @@ func (h *Handler) serveLocal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "audio file unavailable", http.StatusNotFound)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	fi, err := f.Stat()
 	if err != nil {
@@ -112,13 +112,29 @@ func (h *Handler) serveArt(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Type", safeImageMIME(mimeType))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write(data)
+	_, _ = w.Write(data) //nolint:gosec // binary cover image with strict image/* Content-Type + nosniff
+}
+
+func safeImageMIME(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "image/jpeg", "image/jpg":
+		return "image/jpeg"
+	case "image/png":
+		return "image/png"
+	case "image/webp":
+		return "image/webp"
+	case "image/gif":
+		return "image/gif"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 // serveQobuzRelay terminates TLS on the NAS and forwards untouched FLAC bytes
@@ -161,7 +177,7 @@ func (h *Handler) serveQobuzRelay(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("upstream qobuz fetch failed: %v", err), http.StatusBadGateway)
 		return
 	}
-	defer upResp.Body.Close()
+	defer func() { _ = upResp.Body.Close() }()
 
 	if upResp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 		if cr := upResp.Header.Get("Content-Range"); cr != "" {

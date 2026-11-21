@@ -89,8 +89,8 @@ type EventSource interface {
 	EventURLs() (avTransportURL, renderingControlURL string)
 }
 
-// UPnPRenderer wraps huin/goupnp AV1 service clients for a single device.
-type UPnPRenderer struct {
+// Renderer wraps huin/goupnp AV1 service clients for a single UPnP/DLNA device.
+type Renderer struct {
 	capMu           sync.RWMutex
 	info            RendererInfo
 	supportsSetNext bool
@@ -135,7 +135,7 @@ func isTransientConnErr(err error) bool {
 	return strings.Contains(msg, "EOF") || strings.Contains(msg, "connection reset by peer")
 }
 
-func (r *UPnPRenderer) withSOAP(ctx context.Context, fn func() error) error {
+func (r *Renderer) withSOAP(ctx context.Context, fn func() error) error {
 	r.soapMu.Lock()
 	defer r.soapMu.Unlock()
 
@@ -152,7 +152,7 @@ func (r *UPnPRenderer) withSOAP(ctx context.Context, fn func() error) error {
 }
 
 // Info returns metadata and learned capabilities for this renderer.
-func (r *UPnPRenderer) Info() RendererInfo {
+func (r *Renderer) Info() RendererInfo {
 	r.capMu.RLock()
 	info := r.info
 	info.SupportsSetNext = r.supportsSetNext
@@ -163,17 +163,17 @@ func (r *UPnPRenderer) Info() RendererInfo {
 
 // EventURLs returns the validated GENA subscription URLs for AVTransport and
 // RenderingControl (empty string if unavailable).
-func (r *UPnPRenderer) EventURLs() (string, string) {
+func (r *Renderer) EventURLs() (string, string) {
 	return r.avEventURL, r.rcEventURL
 }
 
 // LocalIP returns the local LAN IP address on the interface that reaches this renderer.
-func (r *UPnPRenderer) LocalIP() string {
+func (r *Renderer) LocalIP() string {
 	return r.localIP
 }
 
 // SetURI calls AVTransport.SetAVTransportURI with negotiated DIDL-Lite metadata.
-func (r *UPnPRenderer) SetURI(ctx context.Context, item MediaItem) error {
+func (r *Renderer) SetURI(ctx context.Context, item MediaItem) error {
 	meta := BuildDIDL(item, r.info.SinkProtocols)
 	return r.withSOAP(ctx, func() error {
 		return r.av.SetAVTransportURICtx(ctx, 0, item.URL, meta)
@@ -183,7 +183,7 @@ func (r *UPnPRenderer) SetURI(ctx context.Context, item MediaItem) error {
 // SetNextURI calls AVTransport.SetNextAVTransportURI for gapless track preloading.
 // If the renderer's SCPD or a prior 401/602 SOAP fault indicates SetNextAVTransportURI
 // is unsupported, it returns ErrActionUnsupported immediately without a network call.
-func (r *UPnPRenderer) SetNextURI(ctx context.Context, item MediaItem) error {
+func (r *Renderer) SetNextURI(ctx context.Context, item MediaItem) error {
 	r.capMu.RLock()
 	supported := r.supportsSetNext
 	r.capMu.RUnlock()
@@ -199,34 +199,34 @@ func (r *UPnPRenderer) SetNextURI(ctx context.Context, item MediaItem) error {
 		r.capMu.Lock()
 		r.supportsSetNext = false
 		r.capMu.Unlock()
-		return fmt.Errorf("%w: %v", ErrActionUnsupported, err)
+		return fmt.Errorf("%w: %w", ErrActionUnsupported, err)
 	}
 	return err
 }
 
 // Play starts or resumes playback at 1x speed.
-func (r *UPnPRenderer) Play(ctx context.Context) error {
+func (r *Renderer) Play(ctx context.Context) error {
 	return r.withSOAP(ctx, func() error {
 		return r.av.PlayCtx(ctx, 0, "1")
 	})
 }
 
 // Pause pauses playback.
-func (r *UPnPRenderer) Pause(ctx context.Context) error {
+func (r *Renderer) Pause(ctx context.Context) error {
 	return r.withSOAP(ctx, func() error {
 		return r.av.PauseCtx(ctx, 0)
 	})
 }
 
 // Stop stops playback.
-func (r *UPnPRenderer) Stop(ctx context.Context) error {
+func (r *Renderer) Stop(ctx context.Context) error {
 	return r.withSOAP(ctx, func() error {
 		return r.av.StopCtx(ctx, 0)
 	})
 }
 
 // Seek seeks to an absolute position within the current track via REL_TIME.
-func (r *UPnPRenderer) Seek(ctx context.Context, pos time.Duration) error {
+func (r *Renderer) Seek(ctx context.Context, pos time.Duration) error {
 	target := FormatUPnPDuration(pos)
 	return r.withSOAP(ctx, func() error {
 		return r.av.SeekCtx(ctx, 0, "REL_TIME", target)
@@ -234,7 +234,7 @@ func (r *UPnPRenderer) Seek(ctx context.Context, pos time.Duration) error {
 }
 
 // Status fetches transport state, track position/duration/URI, and volume/mute.
-func (r *UPnPRenderer) Status(ctx context.Context) (TransportStatus, error) {
+func (r *Renderer) Status(ctx context.Context) (TransportStatus, error) {
 	r.soapMu.Lock()
 	defer r.soapMu.Unlock()
 
@@ -271,23 +271,28 @@ func (r *UPnPRenderer) Status(ctx context.Context) (TransportStatus, error) {
 }
 
 // SetVolume sets Master volume clamped to 0..100.
-func (r *UPnPRenderer) SetVolume(ctx context.Context, vol int) error {
+func (r *Renderer) SetVolume(ctx context.Context, vol int) error {
 	if r.rc == nil {
 		return errors.New("renderer does not expose RenderingControl")
 	}
-	if vol < 0 {
-		vol = 0
-	}
-	if vol > 100 {
-		vol = 100
-	}
+	clamped := clampVolumeUint16(vol)
 	return r.withSOAP(ctx, func() error {
-		return r.rc.SetVolumeCtx(ctx, 0, "Master", uint16(vol))
+		return r.rc.SetVolumeCtx(ctx, 0, "Master", clamped)
 	})
 }
 
+func clampVolumeUint16(vol int) uint16 {
+	if vol <= 0 {
+		return 0
+	}
+	if vol >= 100 {
+		return 100
+	}
+	return uint16(vol)
+}
+
 // SetMute sets Master mute state.
-func (r *UPnPRenderer) SetMute(ctx context.Context, muted bool) error {
+func (r *Renderer) SetMute(ctx context.Context, muted bool) error {
 	if r.rc == nil {
 		return errors.New("renderer does not expose RenderingControl")
 	}
@@ -298,15 +303,16 @@ func (r *UPnPRenderer) SetMute(ctx context.Context, muted bool) error {
 
 // outboundIPForHost asks the OS routing table which local IP routes to targetHost
 // without transmitting packets.
-func outboundIPForHost(loc *url.URL, fallback net.IP) string {
+func outboundIPForHost(ctx context.Context, loc *url.URL, fallback net.IP) string {
 	if loc != nil && loc.Host != "" {
 		host := loc.Hostname()
 		port := loc.Port()
 		if port == "" {
 			port = "80"
 		}
-		if conn, err := net.DialTimeout("udp4", net.JoinHostPort(host, port), 500*time.Millisecond); err == nil {
-			defer conn.Close()
+		d := net.Dialer{Timeout: 500 * time.Millisecond}
+		if conn, err := d.DialContext(ctx, "udp4", net.JoinHostPort(host, port)); err == nil {
+			defer func() { _ = conn.Close() }()
 			if udpAddr, ok := conn.LocalAddr().(*net.UDPAddr); ok && udpAddr.IP != nil {
 				if ip4 := udpAddr.IP.To4(); ip4 != nil && !ip4.IsLoopback() {
 					return ip4.String()

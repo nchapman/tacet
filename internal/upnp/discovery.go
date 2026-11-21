@@ -15,13 +15,13 @@ import (
 
 // Discover scans the local network via SSDP for UPnP/DLNA MediaRenderers
 // exposing AVTransport:1.
-func Discover(ctx context.Context) ([]*UPnPRenderer, error) {
+func Discover(ctx context.Context) ([]*Renderer, error) {
 	maybeDevices, err := goupnp.DiscoverDevicesCtx(ctx, av1.URN_AVTransport_1)
 	if err != nil {
 		return nil, fmt.Errorf("SSDP discovery failed: %w", err)
 	}
 
-	byID := make(map[string]*UPnPRenderer)
+	byID := make(map[string]*Renderer)
 	for _, d := range maybeDevices {
 		if d.Err != nil || d.Root == nil || d.Location == nil {
 			continue
@@ -33,7 +33,7 @@ func Discover(ctx context.Context) ([]*UPnPRenderer, error) {
 		byID[r.info.ID] = r
 	}
 
-	out := make([]*UPnPRenderer, 0, len(byID))
+	out := make([]*Renderer, 0, len(byID))
 	for _, r := range byID {
 		out = append(out, r)
 	}
@@ -47,7 +47,7 @@ func Discover(ctx context.Context) ([]*UPnPRenderer, error) {
 // (e.g. "http://192.168.1.50:49152/description.xml" for a WiiM Ultra).
 // Only private LAN HTTP/HTTPS targets are allowed to prevent SSRF to loopback,
 // cloud metadata, or external hosts.
-func ConnectByURL(ctx context.Context, rawURL string) (*UPnPRenderer, error) {
+func ConnectByURL(ctx context.Context, rawURL string) (*Renderer, error) {
 	loc, err := validateRendererURL(ctx, rawURL)
 	if err != nil {
 		return nil, err
@@ -102,7 +102,7 @@ func validateRendererURL(ctx context.Context, rawURL string) (*url.URL, error) {
 	return &pinned, nil
 }
 
-func buildRenderer(ctx context.Context, root *goupnp.RootDevice, loc *url.URL, localAddr net.IP) (*UPnPRenderer, error) {
+func buildRenderer(ctx context.Context, root *goupnp.RootDevice, loc *url.URL, localAddr net.IP) (*Renderer, error) {
 	avClients, err := av1.NewAVTransport1ClientsFromRootDevice(root, loc)
 	if err != nil || len(avClients) == 0 {
 		return nil, fmt.Errorf("device %q has no AVTransport:1 service", root.Device.FriendlyName)
@@ -187,7 +187,7 @@ func buildRenderer(ctx context.Context, root *goupnp.RootDevice, loc *url.URL, l
 		name = loc.Hostname()
 	}
 
-	return &UPnPRenderer{
+	return &Renderer{
 		info: RendererInfo{
 			ID:              id,
 			Name:            name,
@@ -203,7 +203,7 @@ func buildRenderer(ctx context.Context, root *goupnp.RootDevice, loc *url.URL, l
 		},
 		supportsSetNext: supportsSetNext,
 		supportsSeek:    supportsSeek,
-		localIP:         outboundIPForHost(loc, localAddr),
+		localIP:         outboundIPForHost(ctx, loc, localAddr),
 		avEventURL:      avEventURL,
 		rcEventURL:      rcEventURL,
 		av:              avClients[0],

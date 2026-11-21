@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"mime"
 	"os"
 	"path/filepath"
@@ -79,7 +80,8 @@ func (c *Catalog) Scan() (int, error) {
 		}
 		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
-				return nil
+				log.Printf("library scan skipping unreadable path %s: %v", path, walkErr)
+				return nil //nolint:nilerr // continue indexing remaining library files when one entry is unreadable
 			}
 			if d.IsDir() {
 				if strings.HasPrefix(d.Name(), ".") && path != root {
@@ -91,7 +93,7 @@ func (c *Catalog) Scan() (int, error) {
 				return nil
 			}
 
-			t, ok := scanFile(root, path, dirArtCache)
+			t, ok := scanFile(path, dirArtCache)
 			if !ok {
 				return nil
 			}
@@ -153,7 +155,7 @@ func (c *Catalog) Scan() (int, error) {
 		albList = append(albList, alb)
 	}
 	sort.Slice(albList, func(i, j int) bool {
-		if strings.ToLower(albList[i].Artist) != strings.ToLower(albList[j].Artist) {
+		if !strings.EqualFold(albList[i].Artist, albList[j].Artist) {
 			return strings.ToLower(albList[i].Artist) < strings.ToLower(albList[j].Artist)
 		}
 		return strings.ToLower(albList[i].Title) < strings.ToLower(albList[j].Title)
@@ -248,7 +250,7 @@ func (c *Catalog) CoverArt(trackID string) ([]byte, string, bool) {
 	}
 	if t.HasEmbedArt {
 		if f, err := os.Open(t.FilePath); err == nil {
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			if m, err := tag.ReadFrom(f); err == nil && m.Picture() != nil && len(m.Picture().Data) > 0 && len(m.Picture().Data) <= maxCoverArtBytes {
 				mimeType := m.Picture().MIMEType
 				if mimeType == "" {
@@ -260,7 +262,7 @@ func (c *Catalog) CoverArt(trackID string) ([]byte, string, bool) {
 	}
 	if t.FolderArt != "" {
 		if f, err := os.Open(t.FolderArt); err == nil {
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			if fi, err := f.Stat(); err == nil && fi.Size() > 0 && fi.Size() <= maxCoverArtBytes {
 				if data, err := io.ReadAll(io.LimitReader(f, maxCoverArtBytes)); err == nil && len(data) > 0 {
 					mimeType := mime.TypeByExtension(filepath.Ext(t.FolderArt))
@@ -275,7 +277,7 @@ func (c *Catalog) CoverArt(trackID string) ([]byte, string, bool) {
 	return nil, "", false
 }
 
-func scanFile(root, path string, dirArtCache map[string]string) (Track, bool) {
+func scanFile(path string, dirArtCache map[string]string) (Track, bool) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		return Track{}, false
@@ -317,7 +319,7 @@ func scanFile(root, path string, dirArtCache map[string]string) (Track, bool) {
 		FolderArt:   folderArt,
 	}
 
-	if f, err := os.Open(path); err == nil {
+	if f, err := os.Open(filepath.Clean(path)); err == nil { //nolint:gosec // local library path from configured music root
 		if m, err := tag.ReadFrom(f); err == nil {
 			if s := strings.TrimSpace(m.Title()); s != "" {
 				t.Title = s
@@ -344,7 +346,7 @@ func scanFile(root, path string, dirArtCache map[string]string) (Track, bool) {
 				t.HasEmbedArt = true
 			}
 		}
-		f.Close()
+		_ = f.Close()
 	}
 
 	albArtist := t.AlbumArtist

@@ -140,3 +140,96 @@ func TestClient_OAuthExchangeAndTokenLogin(t *testing.T) {
 		t.Fatalf("unexpected status after OAuth: %+v", st)
 	}
 }
+
+func TestClient_SecretFailoverCacheAndGetAlbum(t *testing.T) {
+	fileURLCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/track/getFileUrl":
+			fileURLCalls++
+			// Reject first secret with 400 Invalid Request Signature; accept second secret.
+			ts := r.URL.Query().Get("request_ts")
+			var tsInt int64
+			for _, ch := range ts {
+				tsInt = tsInt*10 + int64(ch-'0')
+			}
+			wantSig := SignFileURL(777, FormatFLAC192, "stream", tsInt, "good-secret")
+			if r.URL.Query().Get("request_sig") != wantSig {
+				http.Error(w, `{"message":"Invalid Request Signature"}`, http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"url":           "https://cdn.example/777.flac",
+				"mime_type":     "audio/x-flac",
+				"bit_depth":     24,
+				"sampling_rate": 96.0,
+				"duration":      240,
+				"format_id":     27,
+			})
+		case "/album/get":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":                    "alb-1",
+				"title":                 "A Love Supreme",
+				"artist":                map[string]any{"name": "John Coltrane"},
+				"image":                 map[string]any{"large": "https://img/coltrane.jpg"},
+				"tracks_count":          1,
+				"release_date_original": "1965-01-01",
+				"maximum_bit_depth":     24,
+				"maximum_sampling_rate": 192.0,
+				"tracks": map[string]any{
+					"items": []map[string]any{
+						{
+							"id":                    777,
+							"title":                 "Acknowledgement",
+							"track_number":          1,
+							"media_number":          1,
+							"duration":              462,
+							"maximum_bit_depth":     24,
+							"maximum_sampling_rate": 192.0,
+							"performer":             map[string]any{"name": "John Coltrane"},
+						},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{
+		BaseURL:   srv.URL,
+		AppID:     "app1",
+		AppSecret: "bad-secret",
+		AuthToken: "tok1",
+	})
+	c.altSecrets = []string{"bad-secret", "good-secret"}
+
+	info, err := c.StreamURL(context.Background(), 777)
+	if err != nil {
+		t.Fatalf("StreamURL with secret failover failed: %v", err)
+	}
+	if info.MIME != "audio/flac" || info.SampleRate != 96000 || info.BitDepth != 24 {
+		t.Fatalf("unexpected StreamInfo: %+v", info)
+	}
+	if fileURLCalls != 2 {
+		t.Fatalf("expected 2 calls (bad then good secret), got %d", fileURLCalls)
+	}
+
+	// Second call should hit cache without hitting HTTP server.
+	if _, err = c.StreamURL(context.Background(), 777); err != nil {
+		t.Fatalf("cached StreamURL failed: %v", err)
+	}
+	if fileURLCalls != 2 {
+		t.Fatalf("expected cached call not to hit server, got %d calls", fileURLCalls)
+	}
+
+	// GetAlbum should map album and track metadata accurately.
+	alb, err := c.GetAlbum(context.Background(), "alb-1")
+	if err != nil {
+		t.Fatalf("GetAlbum failed: %v", err)
+	}
+	if alb.Title != "A Love Supreme" || alb.Year != 1965 || len(alb.Tracks) != 1 || alb.Tracks[0].SampleRate != 192000 {
+		t.Fatalf("unexpected GetAlbum result: %+v", alb)
+	}
+}

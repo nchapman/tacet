@@ -223,3 +223,29 @@ func TestGENAClient_SubscribeNotifyAndUnsubscribe(t *testing.T) {
 		t.Fatal("expected UNSUBSCRIBE to be sent")
 	}
 }
+
+func TestParseNotifyBody_DirectPropertyFallbackAndInstanceFilter(t *testing.T) {
+	direct := `<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+  <e:property><TransportState>STOPPED</TransportState></e:property>
+  <e:property><CurrentTrackURI>http://192.168.1.5:8080/t1.flac</CurrentTrackURI></e:property>
+</e:propertyset>`
+	ev, err := ParseNotifyBody(ServiceAVTransport, strings.NewReader(direct))
+	if err != nil {
+		t.Fatalf("ParseNotifyBody direct fallback failed: %v", err)
+	}
+	if !ev.HasState || ev.State != "STOPPED" || ev.TrackURI != "http://192.168.1.5:8080/t1.flac" {
+		t.Fatalf("unexpected direct event: %+v", ev)
+	}
+
+	// Non-zero InstanceID attributes should be ignored.
+	otherInst := `<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+  <e:property><LastChange>&lt;Event&gt;&lt;InstanceID val="1"&gt;&lt;TransportState val="STOPPED"/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property>
+</e:propertyset>`
+	ev2, err := ParseNotifyBody(ServiceAVTransport, strings.NewReader(otherInst))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev2.HasAnyUpdate() {
+		t.Fatalf("expected non-zero InstanceID to be ignored, got %+v", ev2)
+	}
+}
