@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -31,6 +32,8 @@ func main() {
 func run() error {
 	port := flag.Int("port", envInt("TACET_PORT", 8080), "HTTP port for media serving, API, and web remote")
 	musicDir := flag.String("music-dir", os.Getenv("TACET_MUSIC_DIR"), "Comma-separated local music directories to index")
+	dataDir := flag.String("data-dir", envDefault("TACET_DATA_DIR", defaultDataDir()), "Persistent data directory for the SQLite unified library")
+	missingDays := flag.Int("missing-retention-days", envNonNegInt("TACET_MISSING_RETENTION_DAYS", 30), "Days to retain soft-deleted missing music before purging on scan (0 = never purge)")
 	publicURL := flag.String("public-url", os.Getenv("TACET_PUBLIC_URL"), "Optional base URL override for renderers (e.g. http://192.168.1.10:8080)")
 	rendererURL := flag.String("renderer-url", os.Getenv("TACET_RENDERER_URL"), "Optional UPnP description XML URL to connect directly (e.g. http://<wiim-ip>:49152/description.xml)")
 	streamMode := flag.String("stream-mode", envDefault("TACET_STREAM_MODE", "direct"), "Default Qobuz delivery mode: direct or relay")
@@ -40,22 +43,31 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 1. Local NAS library catalog.
+	// 1. Unified SQLite library catalog (local NAS + registered remote sources).
 	var roots []string
 	for _, r := range strings.Split(*musicDir, ",") {
 		if r = strings.TrimSpace(r); r != "" {
 			roots = append(roots, r)
 		}
 	}
-	cat := library.NewCatalog(roots...)
-	if len(roots) > 0 {
-		log.Printf("scanning local music directories: %v", roots)
-		n, err := cat.Scan()
-		if err != nil {
-			log.Printf("warning: library scan error: %v", err)
-		} else {
-			log.Printf("indexed %d local tracks across %d albums", n, len(cat.Albums()))
-		}
+	dbPath := ":memory:"
+	if dir := strings.TrimSpace(*dataDir); dir != "" {
+		dbPath = filepath.Join(dir, "library.db")
+	}
+	cat, err := library.NewCatalogWithDB(dbPath, roots...)
+	if err != nil {
+		return fmt.Errorf("open library database: %w", err)
+	}
+	defer func() { _ = cat.Close() }()
+	if *missingDays >= 0 {
+		cat.SetMissingRetention(time.Duration(*missingDays) * 24 * time.Hour)
+	}
+	if dbPath != ":memory:" {
+		log.Printf("unified library database: %s", dbPath)
+	}
+	initStatus := cat.Status()
+	if initStatus.Tracks > 0 {
+		log.Printf("loaded %d cached tracks across %d albums from SQLite", initStatus.Tracks, initStatus.Albums)
 	}
 
 	// 2. Qobuz client (optional credentials from env or web UI OAuth/token login).
@@ -65,26 +77,19 @@ func run() error {
 		AuthToken: os.Getenv("QOBUZ_AUTH_TOKEN"),
 		FormatID:  qobuz.FormatFLAC192,
 	})
-	if email, pass := os.Getenv("QOBUZ_EMAIL"), os.Getenv("QOBUZ_PASSWORD"); email != "" && pass != "" && !qb.Status().Authenticated {
-		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		if st, err := qb.Login(lctx, email, pass); err != nil {
-			log.Printf("warning: Qobuz env login failed: %v", err)
-		} else {
-			log.Printf("Qobuz authenticated as %s (%s)", st.UserName, st.Subscription)
-		}
-		cancel()
-	}
+	cat.RegisterRemoteSource(qb.AsRemoteSource())
 
 	// 3. Queue / playback manager + UPnP GENA event subscriber.
 	mgr := queue.NewManager(*port, *publicURL, qb)
-	if err := mgr.SetStreamMode(queue.StreamMode(*streamMode)); err != nil {
+	if err = mgr.SetStreamMode(queue.StreamMode(*streamMode)); err != nil {
 		return fmt.Errorf("invalid --stream-mode: %w", err)
 	}
+	mgr.SetOnTrackPlayed(cat.RecordPlay)
 	gena := upnp.NewGENAClient(mgr.HandleDeviceEvent)
 	mgr.SetGENA(gena)
 
-	// 4. Bind HTTP server first so UPnP GENA NOTIFY callbacks are immediately
-	// reachable the moment discovery subscribes to renderers.
+	// 4. Bind HTTP server first so the API, web UI, and UPnP GENA NOTIFY callbacks
+	// are immediately reachable without waiting for disk scans or remote syncs.
 	apiServer := api.NewServer(cat, qb, mgr)
 	apiServer.SetGENA(gena)
 	if *corsOrigin != "" {
@@ -105,6 +110,44 @@ func run() error {
 	defer func() {
 		apiServer.Close()
 		mgr.Close()
+	}()
+
+	// 5. Background non-blocking library imports (local incremental scan + Qobuz favorites).
+	if len(roots) > 0 {
+		go func() {
+			start := time.Now()
+			log.Printf("background scan started for local music directories: %v", roots)
+			n, scanErr := cat.ScanContext(ctx)
+			if scanErr != nil && !errors.Is(scanErr, context.Canceled) {
+				log.Printf("warning: library scan error: %v", scanErr)
+				return
+			}
+			if scanErr == nil {
+				st := cat.Status()
+				log.Printf("indexed %d local tracks across %d albums in %s", n, st.LocalAlbums, time.Since(start).Round(time.Millisecond))
+			}
+		}()
+	}
+	go func() {
+		if email, pass := os.Getenv("QOBUZ_EMAIL"), os.Getenv("QOBUZ_PASSWORD"); email != "" && pass != "" && !qb.Status().Authenticated {
+			lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			if st, loginErr := qb.Login(lctx, email, pass); loginErr != nil {
+				log.Printf("warning: Qobuz env login failed: %v", loginErr)
+			} else {
+				log.Printf("Qobuz authenticated as %s (%s)", st.UserName, st.Subscription)
+				mgr.Publish("qobuz.status", st)
+			}
+			cancel()
+		}
+		if qb.IsConnected() {
+			sctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			if n, syncErr := cat.SyncRemote(sctx, "qobuz"); syncErr != nil {
+				log.Printf("warning: initial Qobuz favorites sync failed: %v", syncErr)
+			} else {
+				log.Printf("synced %d Qobuz library tracks from favorites", n)
+			}
+		}
 	}()
 
 	// 5. Initial UPnP renderer discovery (plus optional explicit URL).
@@ -158,6 +201,13 @@ func run() error {
 	return nil
 }
 
+func defaultDataDir() string {
+	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
+		return filepath.Join(dir, "tacet")
+	}
+	return ""
+}
+
 func envDefault(key, fallback string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
@@ -172,6 +222,18 @@ func envInt(key string, fallback int) int {
 	}
 	var n int
 	if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
+func envNonNegInt(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	var n int
+	if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n < 0 {
 		return fallback
 	}
 	return n

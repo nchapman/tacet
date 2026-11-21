@@ -630,10 +630,15 @@ type qArtist struct {
 	Name string `json:"name"`
 }
 
+type qGenre struct {
+	Name string `json:"name"`
+}
+
 type qAlbum struct {
 	ID                  string  `json:"id"`
 	Title               string  `json:"title"`
 	Artist              qArtist `json:"artist"`
+	Genre               qGenre  `json:"genre"`
 	Image               qImage  `json:"image"`
 	TracksCount         int     `json:"tracks_count"`
 	ReleaseDateOriginal string  `json:"release_date_original"`
@@ -663,20 +668,28 @@ func (qa qAlbum) toLibraryAlbum(includeTracks bool) library.Album {
 		year, _ = strconv.Atoi(qa.ReleaseDateOriginal[:4])
 	}
 	alb := library.Album{
-		ID:         "qobuz:" + qa.ID,
-		Source:     library.SourceQobuz,
-		Title:      qa.Title,
-		Artist:     qa.Artist.Name,
-		Year:       year,
-		TrackCount: qa.TracksCount,
-		ArtworkURL: qa.Image.best(),
-		MaxBit:     qa.MaximumBitDepth,
-		MaxRate:    normalizeSampleRateHz(qa.MaximumSamplingRate),
+		ID:            "qobuz:" + qa.ID,
+		Source:        library.SourceQobuz,
+		SourceType:    library.SourceTypeRemote,
+		Provider:      string(library.SourceQobuz),
+		ExternalID:    qa.ID,
+		Title:         qa.Title,
+		Artist:        qa.Artist.Name,
+		Genre:         strings.TrimSpace(qa.Genre.Name),
+		Year:          year,
+		TrackCount:    qa.TracksCount,
+		ArtworkURL:    qa.Image.best(),
+		PrimaryFormat: "FLAC",
+		MaxBit:        qa.MaximumBitDepth,
+		MaxRate:       normalizeSampleRateHz(qa.MaximumSamplingRate),
+		Available:     true,
 	}
 	if includeTracks {
 		alb.Tracks = make([]library.Track, 0, len(qa.Tracks.Items))
 		for _, qt := range qa.Tracks.Items {
-			alb.Tracks = append(alb.Tracks, qt.toLibraryTrack(&qa))
+			tr := qt.toLibraryTrack(&qa)
+			alb.Tracks = append(alb.Tracks, tr)
+			alb.DurationSec += tr.DurationSec
 		}
 		if alb.TrackCount == 0 {
 			alb.TrackCount = len(alb.Tracks)
@@ -695,11 +708,17 @@ func (qt qTrack) toLibraryTrack(parentAlbum *qAlbum) library.Track {
 		title = title + " (" + qt.Version + ")"
 	}
 	artist := qt.Performer.Name
-	var albumTitle, albumID, artURL string
+	var albumArtist, albumTitle, albumID, artURL, genre string
+	var year int
 	if alb != nil {
 		albumTitle = alb.Title
+		albumArtist = alb.Artist.Name
 		albumID = "qobuz:" + alb.ID
 		artURL = alb.Image.best()
+		genre = strings.TrimSpace(alb.Genre.Name)
+		if len(alb.ReleaseDateOriginal) >= 4 {
+			year, _ = strconv.Atoi(alb.ReleaseDateOriginal[:4])
+		}
 		if artist == "" {
 			artist = alb.Artist.Name
 		}
@@ -707,10 +726,16 @@ func (qt qTrack) toLibraryTrack(parentAlbum *qAlbum) library.Track {
 	return library.Track{
 		ID:           fmt.Sprintf("qobuz:%d", qt.ID),
 		Source:       library.SourceQobuz,
+		SourceType:   library.SourceTypeRemote,
+		Provider:     string(library.SourceQobuz),
+		ExternalID:   strconv.FormatInt(qt.ID, 10),
 		Title:        title,
 		Artist:       artist,
+		AlbumArtist:  albumArtist,
 		Album:        albumTitle,
 		AlbumID:      albumID,
+		Genre:        genre,
+		Year:         year,
 		TrackNumber:  qt.TrackNumber,
 		DiscNumber:   qt.MediaNumber,
 		DurationSec:  qt.Duration,
@@ -720,6 +745,7 @@ func (qt qTrack) toLibraryTrack(parentAlbum *qAlbum) library.Track {
 		MIME:         "audio/flac",
 		Ext:          ".flac",
 		ArtworkURL:   artURL,
+		Available:    true,
 		QobuzTrackID: qt.ID,
 	}
 }

@@ -159,6 +159,7 @@ type zone struct {
 	wasPlaying         bool
 	userStopped        bool
 	loadedAt           time.Time
+	playRecordedItemID string
 	generation         uint64
 }
 
@@ -178,6 +179,7 @@ type Manager struct {
 	qobuz           *qobuz.Client
 	gena            *upnp.GENAClient
 	errorClassifier ErrorClassifier
+	onTrackPlayed   func(library.Track)
 	runCtx          context.Context
 
 	itemSeq  atomic.Uint64
@@ -259,6 +261,14 @@ func (m *Manager) Start(ctx context.Context) {
 func (m *Manager) SetErrorClassifier(fn ErrorClassifier) {
 	m.mu.Lock()
 	m.errorClassifier = fn
+	m.mu.Unlock()
+}
+
+// SetOnTrackPlayed installs a hook invoked once per queue item after the track
+// has actively played past the scrobble threshold (30s or 50% duration).
+func (m *Manager) SetOnTrackPlayed(fn func(library.Track)) {
+	m.mu.Lock()
+	m.onTrackPlayed = fn
 	m.mu.Unlock()
 }
 

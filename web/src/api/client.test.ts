@@ -168,4 +168,35 @@ describe("TacetClient v1", () => {
     unsub();
     expect(closeSpy).toHaveBeenCalledTimes(1);
   });
+
+  it("encodes unified library filters, version controls, and remote sync calls", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify({ items: [], total: 0 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const client = new TacetClient({ baseUrl: "http://localhost:8080/", fetchImpl: fetchMock });
+
+    await client.listLibraryAlbums({ q: "miles", source: "remote", sort: "plays", groupVersions: true, limit: 50 });
+    await client.listLibraryTracks({ genre: "Jazz", artist: "Miles Davis", sort: "quality", dir: "desc" });
+    await client.getHeavyRotation(30, 12);
+    await client.addRemoteAlbum("qobuz", "alb-99");
+    await client.setPrimaryVersion("local:abc");
+    await client.syncLibrary("qobuz", true);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://localhost:8080/api/v1/library/albums?q=miles&source=remote&sort=plays&groupVersions=true&limit=50",
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "http://localhost:8080/api/v1/library/tracks?artist=Miles+Davis&genre=Jazz&sort=quality&dir=desc",
+    );
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      "http://localhost:8080/api/v1/library/heavy-rotation?days=30&limit=12",
+    );
+    expect(fetchMock.mock.calls[3][0]).toBe("http://localhost:8080/api/v1/library/remote/albums");
+    expect(JSON.parse(String(fetchMock.mock.calls[3][1]?.body))).toEqual({ provider: "qobuz", externalId: "alb-99" });
+    expect(fetchMock.mock.calls[4][0]).toBe("http://localhost:8080/api/v1/library/albums/local%3Aabc/primary");
+    expect(fetchMock.mock.calls[5][0]).toBe("http://localhost:8080/api/v1/library/sync?provider=qobuz&wait=true");
+  });
 });

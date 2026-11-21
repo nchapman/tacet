@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 
+	"tacet/internal/library"
 	"tacet/internal/player"
 	"tacet/internal/qobuz"
 	"tacet/internal/queue"
@@ -52,15 +53,19 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		writeAPIError(w, http.StatusNotFound, "QUEUE_ITEM_NOT_FOUND", err.Error(), false)
 	case errors.Is(err, ErrTrackNotFound):
 		writeAPIError(w, http.StatusNotFound, "TRACK_NOT_FOUND", err.Error(), false)
-	case errors.Is(err, ErrAlbumNotFound):
+	case errors.Is(err, ErrAlbumNotFound), errors.Is(err, library.ErrNotFound):
 		writeAPIError(w, http.StatusNotFound, "ALBUM_NOT_FOUND", err.Error(), false)
+	case errors.Is(err, library.ErrProviderNotFound):
+		writeAPIError(w, http.StatusNotFound, "PROVIDER_NOT_FOUND", err.Error(), false)
+	case errors.Is(err, library.ErrProviderOffline):
+		writeAPIError(w, http.StatusUnauthorized, "PROVIDER_OFFLINE", err.Error(), false)
 	case errors.Is(err, qobuz.ErrNotFound):
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", err.Error(), false)
 	case errors.Is(err, queue.ErrQueueEmpty):
 		writeAPIError(w, http.StatusConflict, "QUEUE_EMPTY", err.Error(), false)
 	case errors.Is(err, queue.ErrEndOfQueue):
 		writeAPIError(w, http.StatusConflict, "END_OF_QUEUE", err.Error(), false)
-	case errors.Is(err, queue.ErrInvalidArgument), errors.Is(err, qobuz.ErrInvalidQuality), errors.Is(err, upnp.ErrInvalidRendererURL):
+	case errors.Is(err, queue.ErrInvalidArgument), errors.Is(err, library.ErrInvalidArgument), errors.Is(err, qobuz.ErrInvalidQuality), errors.Is(err, upnp.ErrInvalidRendererURL):
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 	case errors.Is(err, queue.ErrCapabilityUnsupported):
 		writeAPIError(w, http.StatusUnprocessableEntity, "CAPABILITY_UNSUPPORTED", err.Error(), false)

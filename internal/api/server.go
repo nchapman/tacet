@@ -93,6 +93,10 @@ func NewServer(cat *library.Catalog, qb *qobuz.Client, mgr *queue.Manager) *Serv
 		}
 	})
 
+	cat.SetOnChange(func(st library.Status) {
+		mgr.Publish("library.updated", st)
+	})
+
 	s.routes()
 	return s
 }
@@ -226,12 +230,23 @@ func (s *Server) routes() {
 	s.apiMux.HandleFunc("POST /api/v1/players/{zoneId}/state", s.handlePlayerState)
 	s.apiMux.HandleFunc("DELETE /api/v1/players/{zoneId}", s.handleUnregisterPlayer)
 
-	// Local NAS library
+	// Unified multi-source library (local NAS + synced remote sources)
 	s.apiMux.HandleFunc("GET /api/v1/library/status", s.handleLibraryStatus)
-	s.apiMux.HandleFunc("GET /api/v1/library/albums", s.handleLocalAlbums)
-	s.apiMux.HandleFunc("GET /api/v1/library/albums/{id}", s.handleLocalAlbum)
-	s.apiMux.HandleFunc("GET /api/v1/library/tracks", s.handleLocalTracks)
-	s.apiMux.HandleFunc("POST /api/v1/library/rescan", s.handleLocalRescan)
+	s.apiMux.HandleFunc("GET /api/v1/library/albums", s.handleLibraryAlbums)
+	s.apiMux.HandleFunc("GET /api/v1/library/albums/{id}", s.handleLibraryAlbum)
+	s.apiMux.HandleFunc("POST /api/v1/library/albums/{id}/primary", s.handleSetPrimaryVersion)
+	s.apiMux.HandleFunc("DELETE /api/v1/library/albums/{id}/version-group", s.handleUngroupVersion)
+	s.apiMux.HandleFunc("POST /api/v1/library/versions/group", s.handleGroupVersions)
+	s.apiMux.HandleFunc("GET /api/v1/library/tracks", s.handleLibraryTracks)
+	s.apiMux.HandleFunc("GET /api/v1/library/artists", s.handleLibraryArtists)
+	s.apiMux.HandleFunc("GET /api/v1/library/genres", s.handleLibraryGenres)
+	s.apiMux.HandleFunc("GET /api/v1/library/heavy-rotation", s.handleHeavyRotation)
+	s.apiMux.HandleFunc("POST /api/v1/library/rescan", s.handleLibraryRescan)
+	s.apiMux.HandleFunc("POST /api/v1/library/sync", s.handleLibrarySync)
+	s.apiMux.HandleFunc("POST /api/v1/library/remote/albums", s.handleAddRemoteAlbum)
+	s.apiMux.HandleFunc("DELETE /api/v1/library/remote/albums/{id}", s.handleRemoveRemoteAlbum)
+	s.apiMux.HandleFunc("POST /api/v1/library/remote/tracks", s.handleAddRemoteTrack)
+	s.apiMux.HandleFunc("DELETE /api/v1/library/remote/tracks/{id}", s.handleRemoveRemoteTrack)
 
 	// Qobuz
 	s.apiMux.HandleFunc("GET /api/v1/qobuz/status", s.handleQobuzStatus)

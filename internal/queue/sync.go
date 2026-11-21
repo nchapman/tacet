@@ -304,6 +304,7 @@ func (m *Manager) pollTick(ctx context.Context) {
 
 type updateResult struct {
 	preloadTrack       *library.Track
+	playedTrack        *library.Track
 	fallbackAdvanceIdx int
 	gen                uint64
 	emitPlayback       bool
@@ -413,6 +414,14 @@ func (m *Manager) finishUpdate(ctx context.Context, z *zone, zoneID string, res 
 	if res.emitPlayback {
 		m.emit("zone.playback", zoneID, res.playbackEv)
 	}
+	if res.playedTrack != nil {
+		m.mu.RLock()
+		onPlayed := m.onTrackPlayed
+		m.mu.RUnlock()
+		if onPlayed != nil {
+			go onPlayed(*res.playedTrack)
+		}
+	}
 	if res.preloadTrack != nil {
 		pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		m.preloadNext(pctx, z, *res.preloadTrack, res.gen)
@@ -487,9 +496,31 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		z.positionUpdatedAt = now
 	}
 
-	// 2. While PLAYING, preload the next track for gapless playback (if supported).
+	// 2. While PLAYING, preload the next track for gapless playback (if supported)
+	// and record a library play event once the track passes the scrobble threshold.
 	if st.State == "PLAYING" {
 		z.wasPlaying = true
+		if z.currentIndex >= 0 && z.currentIndex < len(z.queue) {
+			curItem := z.queue[z.currentIndex]
+			if curItem.ItemID != "" && z.playRecordedItemID != curItem.ItemID {
+				dur := z.status.Duration
+				if dur <= 0 && curItem.Track.DurationSec > 0 {
+					dur = time.Duration(curItem.Track.DurationSec) * time.Second
+				}
+				threshold := 30 * time.Second
+				if dur > 0 && dur/2 < threshold {
+					threshold = dur / 2
+				}
+				if threshold < 5*time.Second {
+					threshold = 5 * time.Second
+				}
+				if z.status.Position >= threshold {
+					z.playRecordedItemID = curItem.ItemID
+					tr := curItem.Track
+					res.playedTrack = &tr
+				}
+			}
+		}
 		if !z.setNextUnsupported && !z.nextPreloaded && !z.nextPreloading && !z.nextFailed &&
 			z.currentIndex >= 0 && z.currentIndex+1 < len(z.queue) {
 			t := z.queue[z.currentIndex+1].Track

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -10,9 +11,11 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	"tacet/internal/library"
 	"tacet/internal/qobuz"
 )
 
@@ -22,18 +25,25 @@ func (s *Server) handleLibraryStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.catalog.Status())
 }
 
-func (s *Server) handleLocalAlbums(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLibraryAlbums(w http.ResponseWriter, r *http.Request) {
 	limit, offset, err := parsePageParams(r, 200, 500)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	sortBy := strings.TrimSpace(r.URL.Query().Get("sort"))
+	qv := r.URL.Query()
+	q := strings.TrimSpace(qv.Get("q"))
+	sortBy := strings.TrimSpace(qv.Get("sort"))
+	sourceType := strings.TrimSpace(qv.Get("source"))
+	provider := strings.TrimSpace(qv.Get("provider"))
+	artist := strings.TrimSpace(qv.Get("artist"))
+	genre := strings.TrimSpace(qv.Get("genre"))
+	groupVersions := qv.Get("groupVersions") == "true"
+	includeUnavailable := qv.Get("includeUnavailable") == "true"
 
-	if q == "" {
+	if q == "" && artist == "" && genre == "" {
 		baseTag := strings.Trim(s.catalog.ETag(), `"`)
-		etag := fmt.Sprintf(`"%s-%s-%d-%d"`, baseTag, sortBy, limit, offset)
+		etag := fmt.Sprintf(`"%s-%s-%s-%s-%v-%v-%d-%d"`, baseTag, sortBy, sourceType, provider, groupVersions, includeUnavailable, limit, offset)
 		w.Header().Set("ETag", etag)
 		if match := strings.TrimSpace(r.Header.Get("If-None-Match")); match == etag {
 			w.WriteHeader(http.StatusNotModified)
@@ -41,7 +51,22 @@ func (s *Server) handleLocalAlbums(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	items, total := s.catalog.AlbumsPage(q, sortBy, limit, offset)
+	items, total, err := s.catalog.QueryAlbums(library.AlbumFilter{
+		Query:              q,
+		SourceType:         sourceType,
+		Provider:           provider,
+		Artist:             artist,
+		Genre:              genre,
+		Sort:               sortBy,
+		GroupVersions:      groupVersions,
+		IncludeUnavailable: includeUnavailable,
+		Limit:              limit,
+		Offset:             offset,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "LIBRARY_ERROR", err.Error(), true)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":  items,
 		"total":  total,
@@ -50,7 +75,7 @@ func (s *Server) handleLocalAlbums(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleLocalAlbum(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLibraryAlbum(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	alb, ok := s.catalog.Album(id)
 	if !ok {
@@ -60,14 +85,31 @@ func (s *Server) handleLocalAlbum(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, alb)
 }
 
-func (s *Server) handleLocalTracks(w http.ResponseWriter, r *http.Request) {
-	limit, offset, err := parsePageParams(r, 100, 500)
+func (s *Server) handleLibraryTracks(w http.ResponseWriter, r *http.Request) {
+	limit, offset, err := parsePageParams(r, 200, 1000)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	items, total := s.catalog.TracksPage(q, limit, offset)
+	qv := r.URL.Query()
+	items, total, err := s.catalog.QueryTracks(library.TrackFilter{
+		Query:              strings.TrimSpace(qv.Get("q")),
+		SourceType:         strings.TrimSpace(qv.Get("source")),
+		Provider:           strings.TrimSpace(qv.Get("provider")),
+		Artist:             strings.TrimSpace(qv.Get("artist")),
+		AlbumID:            strings.TrimSpace(qv.Get("albumId")),
+		Album:              strings.TrimSpace(qv.Get("album")),
+		Genre:              strings.TrimSpace(qv.Get("genre")),
+		Sort:               strings.TrimSpace(qv.Get("sort")),
+		SortDir:            strings.TrimSpace(qv.Get("dir")),
+		IncludeUnavailable: qv.Get("includeUnavailable") == "true",
+		Limit:              limit,
+		Offset:             offset,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "LIBRARY_ERROR", err.Error(), true)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":  items,
 		"total":  total,
@@ -76,7 +118,75 @@ func (s *Server) handleLocalTracks(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleLocalRescan(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLibraryArtists(w http.ResponseWriter, r *http.Request) {
+	limit, offset, err := parsePageParams(r, 500, 1000)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	qv := r.URL.Query()
+	items, total, err := s.catalog.ListArtists(library.FacetFilter{
+		Query:              strings.TrimSpace(qv.Get("q")),
+		SourceType:         strings.TrimSpace(qv.Get("source")),
+		Provider:           strings.TrimSpace(qv.Get("provider")),
+		Genre:              strings.TrimSpace(qv.Get("genre")),
+		IncludeUnavailable: qv.Get("includeUnavailable") == "true",
+		Limit:              limit,
+		Offset:             offset,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "LIBRARY_ERROR", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  items,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
+}
+
+func (s *Server) handleLibraryGenres(w http.ResponseWriter, r *http.Request) {
+	qv := r.URL.Query()
+	items, err := s.catalog.ListGenres(library.FacetFilter{
+		SourceType:         strings.TrimSpace(qv.Get("source")),
+		Provider:           strings.TrimSpace(qv.Get("provider")),
+		IncludeUnavailable: qv.Get("includeUnavailable") == "true",
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "LIBRARY_ERROR", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+	})
+}
+
+func (s *Server) handleHeavyRotation(w http.ResponseWriter, r *http.Request) {
+	days := 30
+	if raw := strings.TrimSpace(r.URL.Query().Get("days")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 && v <= 365 {
+			days = v
+		}
+	}
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 && v <= 100 {
+			limit = v
+		}
+	}
+	items, err := s.catalog.HeavyRotation(days, limit)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "LIBRARY_ERROR", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"days":  days,
+		"items": items,
+	})
+}
+
+func (s *Server) handleLibraryRescan(w http.ResponseWriter, r *http.Request) {
 	wait := r.URL.Query().Get("wait") == "true"
 	if wait {
 		if _, err := s.catalog.Scan(); err != nil {
@@ -101,6 +211,161 @@ func (s *Server) handleLocalRescan(w http.ResponseWriter, r *http.Request) {
 	st := s.catalog.Status()
 	st.Scanning = true
 	writeJSON(w, http.StatusAccepted, st)
+}
+
+func (s *Server) handleLibrarySync(w http.ResponseWriter, r *http.Request) {
+	provider := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("provider")))
+	wait := r.URL.Query().Get("wait") == "true"
+
+	runSync := func(ctx context.Context) error {
+		if provider == "" || provider == "all" || provider == "local" {
+			if len(s.catalog.Roots()) > 0 {
+				if _, err := s.catalog.ScanContext(ctx); err != nil && provider == "local" {
+					return err
+				}
+			}
+		}
+		if provider == "" || provider == "all" || provider == "qobuz" {
+			if s.qobuz != nil && s.qobuz.IsConnected() {
+				if _, err := s.catalog.SyncRemote(ctx, "qobuz"); err != nil && provider == "qobuz" {
+					return err
+				}
+			} else if provider == "qobuz" {
+				return library.ErrProviderOffline
+			}
+		} else if provider != "local" {
+			if _, err := s.catalog.SyncRemote(ctx, provider); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if wait {
+		if err := runSync(r.Context()); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.catalog.Status())
+		return
+	}
+
+	go func() {
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Minute)
+		defer cancel()
+		if err := runSync(sctx); err != nil {
+			log.Printf("async library sync (%s) warning: %v", provider, err)
+		}
+		s.manager.Publish("library.updated", s.catalog.Status())
+	}()
+
+	st := s.catalog.Status()
+	st.Scanning = true
+	writeJSON(w, http.StatusAccepted, st)
+}
+
+func (s *Server) handleAddRemoteAlbum(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider   string `json:"provider"`
+		ExternalID string `json:"externalId"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	if strings.TrimSpace(req.Provider) == "" {
+		req.Provider = "qobuz"
+	}
+	alb, err := s.catalog.AddRemoteAlbum(r.Context(), req.Provider, req.ExternalID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, alb)
+}
+
+func (s *Server) handleRemoveRemoteAlbum(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.catalog.RemoveRemoteAlbum(r.Context(), id); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"removed": true, "id": id})
+}
+
+func (s *Server) handleAddRemoteTrack(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider   string `json:"provider"`
+		ExternalID string `json:"externalId"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	if strings.TrimSpace(req.Provider) == "" {
+		req.Provider = "qobuz"
+	}
+	tr, err := s.catalog.AddRemoteTrack(r.Context(), req.Provider, req.ExternalID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tr)
+}
+
+func (s *Server) handleRemoveRemoteTrack(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.catalog.RemoveRemoteTrack(r.Context(), id); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"removed": true, "id": id})
+}
+
+func (s *Server) handleSetPrimaryVersion(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	alb, err := s.catalog.SetPrimaryVersion(id)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, alb)
+}
+
+func (s *Server) handleGroupVersions(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AlbumIDs []string `json:"albumIds"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	gid, err := s.catalog.GroupVersions(req.AlbumIDs)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"versionGroupId": gid})
+}
+
+func (s *Server) handleUngroupVersion(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	alb, err := s.catalog.UngroupVersion(id)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, alb)
+}
+
+func (s *Server) triggerQobuzLibrarySyncAsync() {
+	go func() {
+		sctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if _, err := s.catalog.SyncRemote(sctx, "qobuz"); err != nil {
+			log.Printf("auto Qobuz favorites sync warning: %v", err)
+		}
+	}()
 }
 
 func (s *Server) handleQobuzStatus(w http.ResponseWriter, _ *http.Request) {
@@ -242,7 +507,8 @@ func (s *Server) handleQobuzOAuthCallback(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.manager.Publish("qobuz.status", st)
-	http.Redirect(w, r, "/?tab=qobuz", http.StatusFound)
+	s.triggerQobuzLibrarySyncAsync()
+	http.Redirect(w, r, "/?tab=explore", http.StatusFound)
 }
 
 func (s *Server) handleQobuzLogin(w http.ResponseWriter, r *http.Request) {
@@ -272,6 +538,7 @@ func (s *Server) handleQobuzLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.manager.Publish("qobuz.status", st)
+		s.triggerQobuzLibrarySyncAsync()
 		writeJSON(w, http.StatusOK, st)
 		return
 	}
@@ -282,6 +549,7 @@ func (s *Server) handleQobuzLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.manager.Publish("qobuz.status", st)
+		s.triggerQobuzLibrarySyncAsync()
 		writeJSON(w, http.StatusOK, st)
 		return
 	}
@@ -293,12 +561,13 @@ func (s *Server) handleQobuzLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
-func (s *Server) handleQobuzLogout(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleQobuzLogout(w http.ResponseWriter, r *http.Request) {
 	if s.qobuz == nil {
 		writeDomainError(w, ErrQobuzUnavailable)
 		return
 	}
 	st := s.qobuz.Logout()
+	_ = s.catalog.SetProviderAvailable(r.Context(), "qobuz", false)
 	s.manager.Publish("qobuz.status", st)
 	writeJSON(w, http.StatusOK, st)
 }
@@ -323,6 +592,13 @@ func (s *Server) handleQobuzSearch(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
+	for i := range res.Albums {
+		res.Albums[i].InLibrary = s.catalog.HasAlbum(res.Albums[i].ID)
+	}
+	for i := range res.Tracks {
+		_, inLib := s.catalog.Track(res.Tracks[i].ID)
+		res.Tracks[i].InLibrary = inLib
+	}
 	writeJSON(w, http.StatusOK, res)
 }
 
@@ -336,6 +612,24 @@ func (s *Server) handleQobuzAlbum(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeDomainError(w, err)
 		return
+	}
+	// Enrich with library membership and sibling versions so the unified Album
+	// Landing Page renders identically for in-library and out-of-library albums.
+	if libAlb, ok := s.catalog.Album(alb.ID); ok {
+		alb.InLibrary = true
+		alb.VersionGroupID = libAlb.VersionGroupID
+		alb.VersionCount = libAlb.VersionCount
+		alb.IsPrimary = libAlb.IsPrimary
+		alb.Versions = libAlb.Versions
+		alb.PlayCount = libAlb.PlayCount
+		alb.AddedAt = libAlb.AddedAt
+	}
+	for i := range alb.Tracks {
+		if libTr, ok := s.catalog.Track(alb.Tracks[i].ID); ok {
+			alb.Tracks[i].InLibrary = true
+			alb.Tracks[i].PlayCount = libTr.PlayCount
+			alb.Tracks[i].LastPlayedAt = libTr.LastPlayedAt
+		}
 	}
 	writeJSON(w, http.StatusOK, alb)
 }

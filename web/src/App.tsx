@@ -1,18 +1,18 @@
 import { useEffect, useState } from "react";
 import { ConnectModal } from "./components/ConnectModal";
 import { Header } from "./components/Header";
-import { LocalBrowser } from "./components/LocalBrowser";
+import { LibraryBrowser } from "./components/LibraryBrowser";
 import { NowPlaying } from "./components/NowPlaying";
 import { QobuzBrowser } from "./components/QobuzBrowser";
 import { QueuePanel } from "./components/QueuePanel";
 import { useBrowserPlayer } from "./hooks/useBrowserPlayer";
 import { useTacet } from "./hooks/useTacet";
 
-type BrowserTab = "local" | "qobuz";
+type BrowserTab = "library" | "qobuz";
 
 function initialTab(): BrowserTab {
   const params = new URLSearchParams(window.location.search);
-  return params.get("tab") === "qobuz" ? "qobuz" : "local";
+  return params.get("tab") === "qobuz" ? "qobuz" : "library";
 }
 
 export function App() {
@@ -88,11 +88,11 @@ export function App() {
             <button
               type="button"
               role="tab"
-              aria-selected={tab === "local"}
-              className={tab === "local" ? "active" : ""}
-              onClick={() => setTab("local")}
+              aria-selected={tab === "library"}
+              className={tab === "library" ? "active" : ""}
+              onClick={() => setTab("library")}
             >
-              NAS Library
+              Library
             </button>
             <button
               type="button"
@@ -101,12 +101,12 @@ export function App() {
               className={tab === "qobuz" ? "active" : ""}
               onClick={() => setTab("qobuz")}
             >
-              Qobuz
+              Qobuz Explore
             </button>
           </div>
 
-          {tab === "local" ? (
-            <LocalBrowser
+          {tab === "library" ? (
+            <LibraryBrowser
               libraryStatus={tacet.libraryStatus}
               onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
               onAdd={(src, pos) => void tacet.addSource(src, pos)}

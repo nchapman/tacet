@@ -1,9 +1,15 @@
 import type {
   APIErrorBody,
   Album,
+  ArtistSummary,
   ConnectZoneResponse,
   DiscoverZonesResponse,
+  GenreSummary,
+  HeavyRotationAlbum,
+  LibraryAlbumsQuery,
+  LibraryArtistsQuery,
   LibraryStatus,
+  LibraryTracksQuery,
   PagedResponse,
   PlaybackEvent,
   PlayerCommand,
@@ -476,25 +482,149 @@ export class TacetClient {
     return () => es.close();
   }
 
-  // Local NAS library
+  // Unified multi-source library (local NAS + remote providers)
   libraryStatus(opts?: RequestOptions): Promise<LibraryStatus> {
     return this.request("/api/v1/library/status", {}, undefined, opts);
+  }
+
+  listLibraryAlbums(query: LibraryAlbumsQuery = {}, opts?: RequestOptions): Promise<PagedResponse<Album>> {
+    const params: Record<string, string | number | undefined> = {
+      q: query.q,
+      source: query.source && query.source !== "all" ? query.source : undefined,
+      provider: query.provider,
+      artist: query.artist,
+      genre: query.genre,
+      sort: query.sort,
+      groupVersions: query.groupVersions ? "true" : undefined,
+      limit: query.limit,
+      offset: query.offset,
+    };
+    return this.request("/api/v1/library/albums", {}, params, opts);
   }
 
   listLocalAlbums(query: PageQuery = {}, opts?: RequestOptions): Promise<PagedResponse<Album>> {
     return this.request("/api/v1/library/albums", {}, { ...query }, opts);
   }
 
-  getLocalAlbum(id: string, opts?: RequestOptions): Promise<Album> {
+  getLibraryAlbum(id: string, opts?: RequestOptions): Promise<Album> {
     return this.request(`/api/v1/library/albums/${encodeURIComponent(id)}`, {}, undefined, opts);
+  }
+
+  getLocalAlbum(id: string, opts?: RequestOptions): Promise<Album> {
+    return this.getLibraryAlbum(id, opts);
+  }
+
+  listLibraryTracks(query: LibraryTracksQuery = {}, opts?: RequestOptions): Promise<PagedResponse<Track>> {
+    const params: Record<string, string | number | undefined> = {
+      q: query.q,
+      source: query.source && query.source !== "all" ? query.source : undefined,
+      provider: query.provider,
+      artist: query.artist,
+      albumId: query.albumId,
+      album: query.album,
+      genre: query.genre,
+      sort: query.sort,
+      dir: query.dir,
+      limit: query.limit,
+      offset: query.offset,
+    };
+    return this.request("/api/v1/library/tracks", {}, params, opts);
   }
 
   listLocalTracks(query: Pick<PageQuery, "q" | "limit" | "offset"> = {}, opts?: RequestOptions): Promise<PagedResponse<Track>> {
     return this.request("/api/v1/library/tracks", {}, { ...query }, opts);
   }
 
+  listLibraryArtists(query: LibraryArtistsQuery = {}, opts?: RequestOptions): Promise<PagedResponse<ArtistSummary>> {
+    const params: Record<string, string | number | undefined> = {
+      q: query.q,
+      source: query.source && query.source !== "all" ? query.source : undefined,
+      provider: query.provider,
+      genre: query.genre,
+      limit: query.limit,
+      offset: query.offset,
+    };
+    return this.request("/api/v1/library/artists", {}, params, opts);
+  }
+
+  listLibraryGenres(
+    query: Pick<LibraryArtistsQuery, "source" | "provider"> = {},
+    opts?: RequestOptions,
+  ): Promise<{ items: GenreSummary[] }> {
+    const params: Record<string, string | number | undefined> = {
+      source: query.source && query.source !== "all" ? query.source : undefined,
+      provider: query.provider,
+    };
+    return this.request("/api/v1/library/genres", {}, params, opts);
+  }
+
+  getHeavyRotation(
+    days = 30,
+    limit = 20,
+    opts?: RequestOptions,
+  ): Promise<{ days: number; items: HeavyRotationAlbum[] }> {
+    return this.request("/api/v1/library/heavy-rotation", {}, { days, limit }, opts);
+  }
+
   rescanLibrary(wait = false, opts?: RequestOptions): Promise<LibraryStatus> {
     return this.request("/api/v1/library/rescan", { method: "POST" }, wait ? { wait: "true" } : undefined, opts);
+  }
+
+  syncLibrary(provider = "all", wait = false, opts?: RequestOptions): Promise<LibraryStatus> {
+    return this.request(
+      "/api/v1/library/sync",
+      { method: "POST" },
+      { provider, ...(wait ? { wait: "true" } : {}) },
+      opts,
+    );
+  }
+
+  addRemoteAlbum(provider: string, externalId: string, opts?: RequestOptions): Promise<Album> {
+    return this.request(
+      "/api/v1/library/remote/albums",
+      { method: "POST", body: JSON.stringify({ provider, externalId }) },
+      undefined,
+      opts,
+    );
+  }
+
+  removeRemoteAlbum(id: string, opts?: RequestOptions): Promise<{ removed: boolean; id: string }> {
+    return this.request(`/api/v1/library/remote/albums/${encodeURIComponent(id)}`, { method: "DELETE" }, undefined, opts);
+  }
+
+  addRemoteTrack(provider: string, externalId: string, opts?: RequestOptions): Promise<Track> {
+    return this.request(
+      "/api/v1/library/remote/tracks",
+      { method: "POST", body: JSON.stringify({ provider, externalId }) },
+      undefined,
+      opts,
+    );
+  }
+
+  removeRemoteTrack(id: string, opts?: RequestOptions): Promise<{ removed: boolean; id: string }> {
+    return this.request(`/api/v1/library/remote/tracks/${encodeURIComponent(id)}`, { method: "DELETE" }, undefined, opts);
+  }
+
+  setPrimaryVersion(albumId: string, opts?: RequestOptions): Promise<Album> {
+    return this.request(`/api/v1/library/albums/${encodeURIComponent(albumId)}/primary`, { method: "POST" }, undefined, opts);
+  }
+
+  groupVersions(albumIds: string[], opts?: RequestOptions): Promise<{ versionGroupId: string }> {
+    return this.request(
+      "/api/v1/library/versions/group",
+      { method: "POST", body: JSON.stringify({ albumIds }) },
+      undefined,
+      opts,
+    );
+  }
+
+  ungroupVersion(albumId: string, opts?: RequestOptions): Promise<Album> {
+    return this.request(
+      `/api/v1/library/albums/${encodeURIComponent(albumId)}/version-group`,
+      { method: "DELETE" },
+      undefined,
+      opts,
+    );
   }
 
   // Qobuz

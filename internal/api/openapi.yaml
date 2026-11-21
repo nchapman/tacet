@@ -429,7 +429,7 @@ paths:
         "422": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/library/status:
     get:
-      summary: Local NAS library scan status and counts
+      summary: Unified library counts, missing counts, and per-provider sync status
       responses:
         "200":
           description: Library status
@@ -438,17 +438,32 @@ paths:
               schema: { $ref: "#/components/schemas/LibraryStatus" }
   /api/v1/library/albums:
     get:
-      summary: List or search local albums (paginated, supports ETag / If-None-Match)
+      summary: List, filter, or search unified library albums across local and remote sources
       parameters:
         - name: q
           in: query
           schema: { type: string }
+        - name: source
+          in: query
+          schema: { type: string, enum: [all, local, remote] }
+        - name: provider
+          in: query
+          schema: { type: string }
+        - name: artist
+          in: query
+          schema: { type: string }
+        - name: genre
+          in: query
+          schema: { type: string }
         - name: sort
           in: query
-          schema: { type: string, enum: [artist, title, year] }
+          schema: { type: string, enum: [artist, title, year, added, plays] }
+        - name: groupVersions
+          in: query
+          schema: { type: boolean, default: false }
         - name: limit
           in: query
-          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+          schema: { type: integer, minimum: 1, maximum: 500, default: 200 }
         - name: offset
           in: query
           schema: { type: integer, minimum: 0, default: 0 }
@@ -470,7 +485,7 @@ paths:
         "304": { description: Not Modified }
   /api/v1/library/albums/{id}:
     get:
-      summary: Fetch a single local album with ordered tracks
+      summary: Fetch a library album with ordered tracks and alternate versions
       parameters:
         - name: id
           in: path
@@ -478,21 +493,102 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Album with tracks
+          description: Album with tracks and versions
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Album" }
         "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/library/albums/{id}/primary:
+    post:
+      summary: Pin an album as the Primary Version of its version group
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated album
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Album" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/library/albums/{id}/version-group:
+    delete:
+      summary: Exclude an album from automatic/manual version grouping
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated album
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Album" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/library/versions/group:
+    post:
+      summary: Manually group two or more albums as alternate versions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [albumIds]
+              properties:
+                albumIds:
+                  type: array
+                  minItems: 2
+                  items: { type: string }
+      responses:
+        "200":
+          description: Created version group ID
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versionGroupId]
+                properties:
+                  versionGroupId: { type: string }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/library/tracks:
     get:
-      summary: List or search local tracks (paginated)
+      summary: List, filter, sort, or search unified library tracks
       parameters:
         - name: q
           in: query
           schema: { type: string }
+        - name: source
+          in: query
+          schema: { type: string, enum: [all, local, remote] }
+        - name: provider
+          in: query
+          schema: { type: string }
+        - name: artist
+          in: query
+          schema: { type: string }
+        - name: albumId
+          in: query
+          schema: { type: string }
+        - name: album
+          in: query
+          schema: { type: string }
+        - name: genre
+          in: query
+          schema: { type: string }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [album, title, artist, year, added, plays, duration, quality] }
+        - name: dir
+          in: query
+          schema: { type: string, enum: [asc, desc] }
         - name: limit
           in: query
-          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
         - name: offset
           in: query
           schema: { type: integer, minimum: 0, default: 0 }
@@ -511,9 +607,91 @@ paths:
                   total: { type: integer }
                   limit: { type: integer }
                   offset: { type: integer }
+  /api/v1/library/artists:
+    get:
+      summary: List unified album artists across local and remote sources
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: source
+          in: query
+          schema: { type: string, enum: [all, local, remote] }
+        - name: provider
+          in: query
+          schema: { type: string }
+        - name: genre
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 500 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: Paginated artists
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ArtistSummary" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+  /api/v1/library/genres:
+    get:
+      summary: List distinct genres across the unified library
+      parameters:
+        - name: source
+          in: query
+          schema: { type: string, enum: [all, local, remote] }
+        - name: provider
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Genres list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/GenreSummary" }
+  /api/v1/library/heavy-rotation:
+    get:
+      summary: Most-played library albums over the last N days (Rdio-style Heavy Rotation)
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: Heavy rotation albums
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [days, items]
+                properties:
+                  days: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/HeavyRotationAlbum" }
   /api/v1/library/rescan:
     post:
-      summary: Trigger local library rescan (async 202 by default, sync 200 with ?wait=true)
+      summary: Trigger incremental local NAS library rescan (async 202 by default, sync 200 with ?wait=true)
       parameters:
         - name: wait
           in: query
@@ -529,6 +707,109 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/LibraryStatus" }
+  /api/v1/library/sync:
+    post:
+      summary: Trigger local scan and/or remote provider favorites sync
+      parameters:
+        - name: provider
+          in: query
+          schema: { type: string, default: all }
+        - name: wait
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Completed sync status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LibraryStatus" }
+        "202":
+          description: Background sync started
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LibraryStatus" }
+  /api/v1/library/remote/albums:
+    post:
+      summary: Add a remote album to the unified library and mirror two-way to remote favorites
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [externalId]
+              properties:
+                provider: { type: string, default: qobuz }
+                externalId: { type: string }
+      responses:
+        "200":
+          description: Added library album
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Album" }
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/library/remote/albums/{id}:
+    delete:
+      summary: Remove a remote album from the unified library and unfavorite two-way
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Removed confirmation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [removed, id]
+                properties:
+                  removed: { type: boolean }
+                  id: { type: string }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/library/remote/tracks:
+    post:
+      summary: Add a single remote track to the unified library and mirror two-way to remote favorites
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [externalId]
+              properties:
+                provider: { type: string, default: qobuz }
+                externalId: { type: string }
+      responses:
+        "200":
+          description: Added library track
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Track" }
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/library/remote/tracks/{id}:
+    delete:
+      summary: Remove a remote track from the unified library and unfavorite two-way
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Removed confirmation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [removed, id]
+                properties:
+                  removed: { type: boolean }
+                  id: { type: string }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/qobuz/status:
     get:
       summary: Get Qobuz authentication and quality status
@@ -786,15 +1067,19 @@ components:
             gena: { type: boolean }
     Track:
       type: object
-      required: [id, source, title, artist, album, trackNumber, discNumber, durationSec, mime, ext]
+      required: [id, source, title, artist, album, durationSec, mime, ext, available, inLibrary]
       properties:
-        id: { type: string, description: "Opaque source-prefixed ID (local:... or qobuz:...)" }
-        source: { type: string, enum: [local, qobuz] }
+        id: { type: string, description: "Opaque provider-prefixed ID (local:... or qobuz:...)" }
+        source: { type: string }
+        sourceType: { type: string, enum: [local, remote] }
+        provider: { type: string }
+        externalId: { type: string }
         title: { type: string }
         artist: { type: string }
         albumArtist: { type: string }
         album: { type: string }
         albumId: { type: string }
+        genre: { type: string }
         trackNumber: { type: integer }
         discNumber: { type: integer }
         year: { type: integer }
@@ -806,23 +1091,61 @@ components:
         bitDepth: { type: integer }
         channels: { type: integer }
         artworkUrl: { type: string }
-        qobuzTrackId: { type: integer }
-    Album:
+        playCount: { type: integer }
+        lastPlayedAt: { type: string, format: date-time }
+        addedAt: { type: string, format: date-time }
+        loved: { type: boolean }
+        available: { type: boolean }
+        inLibrary: { type: boolean }
+    AlbumVersion:
       type: object
-      required: [id, source, title, artist, trackCount]
+      required: [id, source, sourceType, provider, title, trackCount, isPrimary, available]
       properties:
         id: { type: string }
-        source: { type: string, enum: [local, qobuz] }
+        source: { type: string }
+        sourceType: { type: string, enum: [local, remote] }
+        provider: { type: string }
+        title: { type: string }
+        year: { type: integer }
+        trackCount: { type: integer }
+        primaryFormat: { type: string }
+        maxBitDepth: { type: integer }
+        maxSampleRate: { type: integer }
+        isPrimary: { type: boolean }
+        available: { type: boolean }
+    Album:
+      type: object
+      required: [id, source, title, artist, trackCount, isPrimary, available, inLibrary]
+      properties:
+        id: { type: string }
+        source: { type: string }
+        sourceType: { type: string, enum: [local, remote] }
+        provider: { type: string }
+        externalId: { type: string }
         title: { type: string }
         artist: { type: string }
+        genre: { type: string }
         year: { type: integer }
         artworkUrl: { type: string }
         trackCount: { type: integer }
+        durationSec: { type: integer }
+        primaryFormat: { type: string }
         maxBitDepth: { type: integer }
         maxSampleRate: { type: integer }
+        versionGroupId: { type: string }
+        versionCount: { type: integer }
+        isPrimary: { type: boolean }
+        isPartial: { type: boolean }
+        playCount: { type: integer }
+        addedAt: { type: string, format: date-time }
+        available: { type: boolean }
+        inLibrary: { type: boolean }
         tracks:
           type: array
           items: { $ref: "#/components/schemas/Track" }
+        versions:
+          type: array
+          items: { $ref: "#/components/schemas/AlbumVersion" }
     RendererInfo:
       type: object
       required: [id, name, location, host, hasVolume, supportsSetNext, supportsSeek, supportsEvents]
@@ -841,14 +1164,62 @@ components:
         sinkProtocols:
           type: array
           items: { type: string }
+    ArtistSummary:
+      type: object
+      required: [name, albumCount, trackCount, providers]
+      properties:
+        name: { type: string }
+        albumCount: { type: integer }
+        trackCount: { type: integer }
+        artworkUrl: { type: string }
+        providers:
+          type: array
+          items: { type: string }
+    GenreSummary:
+      type: object
+      required: [name, albumCount, trackCount]
+      properties:
+        name: { type: string }
+        albumCount: { type: integer }
+        trackCount: { type: integer }
+    HeavyRotationAlbum:
+      allOf:
+        - $ref: "#/components/schemas/Album"
+        - type: object
+          required: [recentPlays]
+          properties:
+            recentPlays: { type: integer }
+            lastPlayed: { type: string, format: date-time }
+    ProviderSyncStatus:
+      type: object
+      required: [provider, sourceType, connected, syncing, albums, tracks]
+      properties:
+        provider: { type: string }
+        sourceType: { type: string, enum: [local, remote] }
+        connected: { type: boolean }
+        syncing: { type: boolean }
+        albums: { type: integer }
+        tracks: { type: integer }
+        lastSyncAt: { type: string, format: date-time }
+        lastError: { type: string }
     LibraryStatus:
       type: object
-      required: [scanning, trackCount, albumCount]
+      required: [configured, scanning, tracks, albums, localTracks, localAlbums, remoteTracks, remoteAlbums, etag]
       properties:
+        configured: { type: boolean }
         scanning: { type: boolean }
-        trackCount: { type: integer }
-        albumCount: { type: integer }
-        lastScan: { type: string, format: date-time }
+        tracks: { type: integer }
+        albums: { type: integer }
+        localTracks: { type: integer }
+        localAlbums: { type: integer }
+        remoteTracks: { type: integer }
+        remoteAlbums: { type: integer }
+        missingTracks: { type: integer }
+        missingAlbums: { type: integer }
+        providers:
+          type: array
+          items: { $ref: "#/components/schemas/ProviderSyncStatus" }
+        etag: { type: string }
     QobuzStatus:
       type: object
       required: [configured, authenticated, maxFormatId, maxQuality]

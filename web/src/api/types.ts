@@ -1,4 +1,5 @@
-export type TrackSource = "local" | "qobuz";
+export type TrackSource = "local" | "qobuz" | (string & {});
+export type SourceType = "local" | "remote";
 export type StreamMode = "direct" | "relay";
 export type QobuzQuality = "mp3_320" | "flac_16_44" | "flac_24_96" | "flac_24_192";
 export type PlaybackState = "idle" | "playing" | "paused" | "buffering" | "stopped";
@@ -28,22 +29,44 @@ export interface Settings {
   qobuzMaxQuality: QobuzQuality;
 }
 
+export interface ProviderSyncStatus {
+  provider: string;
+  sourceType: SourceType;
+  connected: boolean;
+  syncing: boolean;
+  albums: number;
+  tracks: number;
+  lastSyncAt?: string;
+  lastError?: string;
+}
+
 export interface LibraryStatus {
   configured: boolean;
   scanning: boolean;
   tracks: number;
   albums: number;
+  localTracks?: number;
+  localAlbums?: number;
+  remoteTracks?: number;
+  remoteAlbums?: number;
+  missingTracks?: number;
+  missingAlbums?: number;
+  providers?: ProviderSyncStatus[];
   etag: string;
 }
 
 export interface Track {
   id: string;
   source: TrackSource;
+  sourceType?: SourceType;
+  provider?: string;
+  externalId?: string;
   title: string;
   artist: string;
   albumArtist?: string;
   album: string;
   albumId?: string;
+  genre?: string;
   trackNumber?: number;
   discNumber?: number;
   year?: number;
@@ -55,19 +78,109 @@ export interface Track {
   ext: string;
   size?: number;
   artworkUrl?: string;
+  playCount?: number;
+  lastPlayedAt?: string;
+  addedAt?: string;
+  loved?: boolean;
+  available?: boolean;
+  inLibrary?: boolean;
+}
+
+export interface AlbumVersion {
+  id: string;
+  source: TrackSource;
+  sourceType: SourceType;
+  provider: string;
+  title: string;
+  year?: number;
+  trackCount: number;
+  primaryFormat?: string;
+  maxSampleRate?: number;
+  maxBitDepth?: number;
+  isPrimary: boolean;
+  available: boolean;
 }
 
 export interface Album {
   id: string;
   source: TrackSource;
+  sourceType?: SourceType;
+  provider?: string;
+  externalId?: string;
   title: string;
   artist: string;
+  genre?: string;
   year?: number;
   trackCount: number;
+  durationSec?: number;
   artworkUrl?: string;
+  primaryFormat?: string;
   maxSampleRate?: number;
   maxBitDepth?: number;
+  versionGroupId?: string;
+  versionCount?: number;
+  isPrimary?: boolean;
+  isPartial?: boolean;
+  playCount?: number;
+  addedAt?: string;
+  available?: boolean;
+  inLibrary?: boolean;
   tracks?: Track[];
+  versions?: AlbumVersion[];
+}
+
+export interface ArtistSummary {
+  name: string;
+  albumCount: number;
+  trackCount: number;
+  artworkUrl?: string;
+  providers: string[];
+}
+
+export interface GenreSummary {
+  name: string;
+  albumCount: number;
+  trackCount: number;
+}
+
+export interface HeavyRotationAlbum extends Album {
+  recentPlays: number;
+  lastPlayed?: string;
+}
+
+export interface LibraryAlbumsQuery {
+  q?: string;
+  source?: "all" | "local" | "remote";
+  provider?: string;
+  artist?: string;
+  genre?: string;
+  sort?: "artist" | "title" | "year" | "added" | "plays";
+  groupVersions?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface LibraryTracksQuery {
+  q?: string;
+  source?: "all" | "local" | "remote";
+  provider?: string;
+  artist?: string;
+  albumId?: string;
+  album?: string;
+  genre?: string;
+  sort?: "album" | "title" | "artist" | "year" | "added" | "plays" | "duration" | "quality";
+  dir?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+}
+
+export interface LibraryArtistsQuery {
+  q?: string;
+  source?: "all" | "local" | "remote";
+  provider?: string;
+  genre?: string;
+  limit?: number;
+  offset?: number;
 }
 
 export interface RendererInfo {

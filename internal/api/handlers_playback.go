@@ -222,6 +222,9 @@ func (s *Server) resolveSource(ctx context.Context, src queueSource) ([]library.
 		if id == "" {
 			return nil, fmt.Errorf("%w: source.albumId is required", queue.ErrInvalidArgument)
 		}
+		if alb, ok := s.catalog.Album(id); ok && len(alb.Tracks) > 0 && !alb.IsPartial {
+			return alb.Tracks, nil
+		}
 		if strings.HasPrefix(id, "qobuz:") {
 			if s.qobuz == nil {
 				return nil, ErrQobuzUnavailable
@@ -249,6 +252,10 @@ func (s *Server) resolveSource(ctx context.Context, src queueSource) ([]library.
 		resolved := make([]library.Track, 0, len(src.TrackIDs))
 		for _, rawID := range src.TrackIDs {
 			id := strings.TrimSpace(rawID)
+			if tr, ok := s.catalog.Track(id); ok {
+				resolved = append(resolved, tr)
+				continue
+			}
 			if strings.HasPrefix(id, "qobuz:") {
 				if s.qobuz == nil {
 					return nil, ErrQobuzUnavailable
@@ -264,11 +271,7 @@ func (s *Server) resolveSource(ctx context.Context, src queueSource) ([]library.
 				resolved = append(resolved, tr)
 				continue
 			}
-			tr, ok := s.catalog.Track(id)
-			if !ok {
-				return nil, fmt.Errorf("%w: %q", ErrTrackNotFound, id)
-			}
-			resolved = append(resolved, tr)
+			return nil, fmt.Errorf("%w: %q", ErrTrackNotFound, id)
 		}
 		return resolved, nil
 

@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import { tacetClient } from "../api/client";
 import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "../api/format";
 import type { Album, QobuzSearchResult, QobuzStatus, QueuePosition, QueueSource } from "../api/types";
+import { AlbumView } from "./AlbumView";
 
 interface QobuzBrowserProps {
   status: QobuzStatus | null;
@@ -25,6 +26,8 @@ export function QobuzBrowser({ status, onStatusChange, onPlay, onAdd }: QobuzBro
   const [query, setQuery] = useState("");
   const [view, setView] = useState<QobuzView>({ kind: "empty" });
   const [searching, setSearching] = useState(false);
+  const [syncingFavs, setSyncingFavs] = useState(false);
+  const [addedTrackIds, setAddedTrackIds] = useState<Record<string, boolean>>({});
   const [errMsg, setErrMsg] = useState("");
   const abortRef = useRef<AbortController | null>(null);
 
@@ -81,6 +84,28 @@ export function QobuzBrowser({ status, onStatusChange, onPlay, onAdd }: QobuzBro
     }
   };
 
+  const handleSyncFavorites = async () => {
+    setSyncingFavs(true);
+    setErrMsg("");
+    try {
+      await tacetClient.syncLibrary("qobuz", false);
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSyncingFavs(false);
+    }
+  };
+
+  const handleAddTrack = async (trackId: string, externalId?: string) => {
+    setErrMsg("");
+    try {
+      await tacetClient.addRemoteTrack("qobuz", externalId || trackId.replace("qobuz:", ""));
+      setAddedTrackIds((prev) => ({ ...prev, [trackId]: true }));
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const handleSearch = async (e: FormEvent) => {
     e.preventDefault();
     const trimmed = query.trim();
@@ -105,12 +130,19 @@ export function QobuzBrowser({ status, onStatusChange, onPlay, onAdd }: QobuzBro
   };
 
   const openAlbum = async (albumId: string) => {
-    const previous = view.kind === "results" ? { query: view.query, data: view.data } : undefined;
+    const previous =
+      view.kind === "results"
+        ? { query: view.query, data: view.data }
+        : view.kind === "album"
+          ? view.previous
+          : undefined;
     const signal = startRequest();
     setSearching(true);
     setErrMsg("");
     try {
-      const album = await tacetClient.qobuzAlbum(albumId, { signal });
+      const album = albumId.startsWith("local:")
+        ? await tacetClient.getLibraryAlbum(albumId, { signal })
+        : await tacetClient.qobuzAlbum(albumId, { signal });
       if (signal.aborted) return;
       setView({ kind: "album", album, previous });
     } catch (err) {
@@ -186,9 +218,19 @@ export function QobuzBrowser({ status, onStatusChange, onPlay, onAdd }: QobuzBro
               Qobuz Connected: {status.userName || "Account"}
               {status.subscription ? ` (${status.subscription})` : ""}
             </span>
-            <button type="button" className="small" onClick={() => void handleLogout()}>
-              Sign Out
-            </button>
+            <div className="row">
+              <button
+                type="button"
+                className="small"
+                disabled={syncingFavs}
+                onClick={() => void handleSyncFavorites()}
+              >
+                {syncingFavs ? "Syncing…" : "Sync Favorites"}
+              </button>
+              <button type="button" className="small" onClick={() => void handleLogout()}>
+                Sign Out
+              </button>
+            </div>
           </div>
 
           <form className="search-bar" onSubmit={handleSearch}>
@@ -208,75 +250,21 @@ export function QobuzBrowser({ status, onStatusChange, onPlay, onAdd }: QobuzBro
           ) : view.kind === "empty" ? (
             <p className="muted">Search Qobuz to browse lossless & hi-res albums and tracks.</p>
           ) : view.kind === "album" ? (
-            <div className="album-detail">
-              <div className="album-detail-header">
-                {view.album.artworkUrl && (
-                  <img
-                    className="album-detail-cover"
-                    src={tacetClient.resolveUrl(view.album.artworkUrl)}
-                    alt={view.album.title}
-                  />
-                )}
-                <div className="album-detail-info">
-                  {view.previous && (
-                    <button
-                      type="button"
-                      className="small back-btn"
-                      onClick={() => setView({ kind: "results", query: view.previous!.query, data: view.previous!.data })}
-                    >
-                      ← Results
-                    </button>
-                  )}
-                  <h3>{view.album.title}</h3>
-                  <p className="muted">
-                    {view.album.artist}
-                    {view.album.year ? ` · ${view.album.year}` : ""} · {view.album.trackCount} tracks
-                    {fmtAlbumQuality(view.album) ? ` · ${fmtAlbumQuality(view.album)}` : ""}
-                  </p>
-                  <div className="row">
-                    <button
-                      type="button"
-                      className="primary"
-                      onClick={() => onPlay({ type: "album", albumId: view.album.id }, 0)}
-                    >
-                      ▶ Play Album
-                    </button>
-                    <button type="button" onClick={() => onAdd({ type: "album", albumId: view.album.id }, "next")}>
-                      Play Next
-                    </button>
-                    <button type="button" onClick={() => onAdd({ type: "album", albumId: view.album.id }, "end")}>
-                      + Queue
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <ul className="track-list">
-                {(view.album.tracks ?? []).map((t, idx) => (
-                  <li key={t.id} className="track-row">
-                    <span className="track-num mono">{t.trackNumber || idx + 1}</span>
-                    <button
-                      type="button"
-                      className="track-info-btn"
-                      onClick={() => onPlay({ type: "album", albumId: view.album.id }, idx)}
-                    >
-                      <div className="track-title">{t.title}</div>
-                      <div className="track-meta">{t.artist}</div>
-                    </button>
-                    <span className={`track-qual ${isHiRes(t.bitDepth, t.sampleRate) ? "hi" : ""}`}>{fmtQuality(t)}</span>
-                    <span className="track-dur mono">{fmtDuration(t.durationSec)}</span>
-                    <button
-                      type="button"
-                      className="small"
-                      onClick={() => onAdd({ type: "tracks", trackIds: [t.id] }, "end")}
-                      title="Add to queue"
-                    >
-                      +
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            <AlbumView
+              album={view.album}
+              backLabel={view.previous ? "Results" : "Qobuz"}
+              onBack={() =>
+                setView(
+                  view.previous
+                    ? { kind: "results", query: view.previous.query, data: view.previous.data }
+                    : { kind: "empty" },
+                )
+              }
+              onOpenAlbum={(id) => void openAlbum(id)}
+              onAlbumUpdated={(updated) => setView({ ...view, album: updated })}
+              onPlay={onPlay}
+              onAdd={onAdd}
+            />
           ) : (
             <div className="search-results">
               {view.data.albums.length > 0 && (
@@ -294,6 +282,7 @@ export function QobuzBrowser({ status, onStatusChange, onPlay, onAdd }: QobuzBro
                             ) : (
                               <span>{alb.title.slice(0, 2).toUpperCase()}</span>
                             )}
+                            {alb.inLibrary && <span className="cover-source source-qobuz">✓ Library</span>}
                             {qLabel && isHiRes(alb.maxBitDepth, alb.maxSampleRate) && (
                               <span className="cover-badge">{qLabel}</span>
                             )}
@@ -317,33 +306,46 @@ export function QobuzBrowser({ status, onStatusChange, onPlay, onAdd }: QobuzBro
                 <div>
                   <h3 className="subsection-title">Tracks</h3>
                   <ul className="track-list">
-                    {view.data.tracks.map((t) => (
-                      <li key={t.id} className="track-row">
-                        <button
-                          type="button"
-                          className="track-info-btn"
-                          onClick={() => onPlay({ type: "tracks", trackIds: [t.id] }, 0)}
-                        >
-                          <div className="track-title">{t.title}</div>
-                          <div className="track-meta">
-                            {t.artist}
-                            {t.album ? ` — ${t.album}` : ""}
-                          </div>
-                        </button>
-                        <span className={`track-qual ${isHiRes(t.bitDepth, t.sampleRate) ? "hi" : ""}`}>
-                          {fmtQuality(t)}
-                        </span>
-                        <span className="track-dur mono">{fmtDuration(t.durationSec)}</span>
-                        <button
-                          type="button"
-                          className="small"
-                          onClick={() => onAdd({ type: "tracks", trackIds: [t.id] }, "end")}
-                          title="Add to queue"
-                        >
-                          +
-                        </button>
-                      </li>
-                    ))}
+                    {view.data.tracks.map((t) => {
+                      const inLib = Boolean(t.inLibrary || addedTrackIds[t.id]);
+                      return (
+                        <li key={t.id} className="track-row">
+                          <button
+                            type="button"
+                            className="track-info-btn"
+                            onClick={() => onPlay({ type: "tracks", trackIds: [t.id] }, 0)}
+                          >
+                            <div className="track-title">{t.title}</div>
+                            <div className="track-meta">
+                              {t.artist}
+                              {t.album ? ` — ${t.album}` : ""}
+                            </div>
+                          </button>
+                          <span className={`track-qual ${isHiRes(t.bitDepth, t.sampleRate) ? "hi" : ""}`}>
+                            {fmtQuality(t)}
+                          </span>
+                          <span className="track-dur mono">{fmtDuration(t.durationSec)}</span>
+                          {!inLib && (
+                            <button
+                              type="button"
+                              className="small"
+                              title="Add to Library"
+                              onClick={() => void handleAddTrack(t.id, t.externalId)}
+                            >
+                              + Lib
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="small"
+                            onClick={() => onAdd({ type: "tracks", trackIds: [t.id] }, "end")}
+                            title="Add to queue"
+                          >
+                            +
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               )}
