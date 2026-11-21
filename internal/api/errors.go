@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 
+	"tacet/internal/player"
 	"tacet/internal/qobuz"
 	"tacet/internal/queue"
 )
@@ -66,6 +67,18 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		writeAPIError(w, http.StatusUnauthorized, "QOBUZ_UNAUTHENTICATED", err.Error(), false)
 	case errors.Is(err, ErrQobuzUnavailable):
 		writeAPIError(w, http.StatusServiceUnavailable, "QOBUZ_UNAVAILABLE", err.Error(), false)
+	case errors.Is(err, player.ErrPlaybackBlocked):
+		writeAPIError(w, http.StatusConflict, "PLAYBACK_BLOCKED", err.Error(), false)
+	case errors.Is(err, player.ErrPlayerNotFound):
+		writeAPIError(w, http.StatusNotFound, "PLAYER_NOT_FOUND", err.Error(), false)
+	case errors.Is(err, player.ErrUnauthorized):
+		writeAPIError(w, http.StatusUnauthorized, "PLAYER_UNAUTHORIZED", err.Error(), false)
+	case errors.Is(err, player.ErrInvalidPlayer):
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+	case errors.Is(err, player.ErrCommandTimeout):
+		writeAPIError(w, http.StatusGatewayTimeout, "PLAYER_TIMEOUT", "player endpoint timed out acknowledging command", true)
+	case errors.Is(err, player.ErrPlayerDisconnected):
+		writeAPIError(w, http.StatusBadGateway, "RENDERER_UNREACHABLE", "player endpoint is not connected", true)
 	case errors.Is(err, queue.ErrRendererUnreachable):
 		log.Printf("tacet: renderer unreachable: %v", err)
 		writeAPIError(w, http.StatusBadGateway, "RENDERER_UNREACHABLE", "renderer is unreachable or failed to respond", true)

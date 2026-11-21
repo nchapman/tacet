@@ -102,7 +102,10 @@ func run() error {
 	}
 
 	mgr.Start(ctx)
-	defer mgr.Close()
+	defer func() {
+		apiServer.Close()
+		mgr.Close()
+	}()
 
 	// 5. Initial UPnP renderer discovery (plus optional explicit URL).
 	if *rendererURL != "" {

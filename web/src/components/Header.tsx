@@ -1,4 +1,5 @@
 import type { StreamMode, ZoneSnapshot } from "../api/types";
+import type { BrowserPlayerController } from "../hooks/useBrowserPlayer";
 import type { ConnectionStatus } from "../hooks/useTacet";
 
 interface HeaderProps {
@@ -7,6 +8,7 @@ interface HeaderProps {
   streamMode: StreamMode;
   connection: ConnectionStatus;
   discovering: boolean;
+  browserPlayer: BrowserPlayerController;
   onSelectZone: (zoneId: string) => void;
   onDiscover: () => void;
   onOpenConnect: () => void;
@@ -19,11 +21,20 @@ export function Header({
   streamMode,
   connection,
   discovering,
+  browserPlayer,
   onSelectZone,
   onDiscover,
   onOpenConnect,
   onStreamModeChange,
 }: HeaderProps) {
+  const handleToggleBrowserPlayer = () => {
+    if (browserPlayer.enabled) {
+      void browserPlayer.disable();
+    } else {
+      void browserPlayer.enable(true);
+    }
+  };
+
   return (
     <header className="app-header">
       <div className="brand-group">
@@ -38,7 +49,7 @@ export function Header({
 
       <div className="toolbar">
         <select
-          aria-label="Active UPnP Renderer"
+          aria-label="Active Audio Zone"
           value={activeZoneId}
           onChange={(e) => onSelectZone(e.target.value)}
           disabled={zones.length === 0}
@@ -46,15 +57,37 @@ export function Header({
           {zones.length === 0 ? (
             <option value="">No renderers found</option>
           ) : (
-            zones.map((z) => (
-              <option key={z.zoneId} value={z.zoneId}>
-                {z.state === "playing" ? "▶ " : ""}
-                {z.renderer.name}
-                {z.renderer.host ? ` (${z.renderer.host})` : ""}
-              </option>
-            ))
+            zones.map((z) => {
+              const icon = z.renderer.kind === "player" ? "🎧 " : "";
+              const isSelf = browserPlayer.zoneId === z.zoneId;
+              return (
+                <option key={z.zoneId} value={z.zoneId}>
+                  {z.state === "playing" ? "▶ " : ""}
+                  {icon}
+                  {z.renderer.name}
+                  {isSelf ? " (This Device)" : z.renderer.host ? ` (${z.renderer.host})` : ""}
+                </option>
+              );
+            })
           )}
         </select>
+
+        <button
+          type="button"
+          className={`player-toggle ${browserPlayer.enabled ? "active" : ""}`}
+          onClick={handleToggleBrowserPlayer}
+          title={
+            browserPlayer.enabled
+              ? `Active browser endpoint (${browserPlayer.name}) — click to disconnect`
+              : "Register this browser as a controllable audio endpoint"
+          }
+        >
+          {browserPlayer.enabled
+            ? browserPlayer.status === "connected"
+              ? "● Listening Here"
+              : "… Connecting"
+            : "Listen Here"}
+        </button>
 
         <button type="button" onClick={onDiscover} disabled={discovering}>
           {discovering ? "Scanning…" : "Discover"}

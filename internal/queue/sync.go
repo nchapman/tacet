@@ -68,7 +68,19 @@ func (m *Manager) loadAndPlay(ctx context.Context, z *zone, idx int, gen uint64)
 }
 
 func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, track library.Track) (upnp.MediaItem, library.Track, error) {
-	baseURL := m.baseURLFor(ctrl)
+	info := ctrl.Info()
+	if err := checkEndpointFormat(info, track); err != nil {
+		return upnp.MediaItem{}, track, err
+	}
+
+	relativeMedia := false
+	if rm, ok := ctrl.(upnp.RelativeMediaController); ok && rm.PreferRelativeMedia() {
+		relativeMedia = true
+	}
+	baseURL := ""
+	if !relativeMedia {
+		baseURL = m.baseURLFor(ctrl)
+	}
 
 	switch track.Source {
 	case library.SourceLocal:
@@ -126,7 +138,7 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 		}
 
 		streamURL := stream.URL
-		if m.StreamMode() == StreamModeRelay {
+		if relativeMedia || m.StreamMode() == StreamModeRelay {
 			streamURL = baseURL + "/media/qobuz/" + strconv.FormatInt(qID, 10) + ".flac"
 		}
 
@@ -149,6 +161,29 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 	default:
 		return upnp.MediaItem{}, track, fmt.Errorf("%w: unsupported track source %q", ErrInvalidArgument, track.Source)
 	}
+}
+
+func checkEndpointFormat(info upnp.RendererInfo, track library.Track) error {
+	if info.Kind != "player" || len(info.SinkProtocols) == 0 {
+		return nil
+	}
+	mime := strings.ToLower(strings.TrimSpace(track.MIME))
+	if mime == "" {
+		return nil
+	}
+	for _, proto := range info.SinkProtocols {
+		p := strings.ToLower(proto)
+		if p == mime || strings.Contains(p, ":"+mime+":") || strings.HasPrefix(p, mime+";") {
+			return nil
+		}
+		if (mime == "audio/flac" || mime == "audio/x-flac") && (strings.Contains(p, "audio/flac") || strings.Contains(p, "audio/x-flac")) {
+			return nil
+		}
+		if (mime == "audio/mp4" || mime == "audio/x-m4a") && (strings.Contains(p, "audio/mp4") || strings.Contains(p, "audio/x-m4a") || strings.Contains(p, "audio/aac")) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: player endpoint %q does not support %s", ErrCapabilityUnsupported, info.Name, track.MIME)
 }
 
 func (m *Manager) baseURLFor(ctrl upnp.Controller) string {
@@ -187,7 +222,13 @@ func (m *Manager) pollTick(ctx context.Context) {
 		// so gapless preload and fallback track-end triggers remain tight.
 		if !isPlaying {
 			interval := 5 * time.Second
-			if gena != nil && gena.IsSubscribed(id) {
+			pushConnected := gena != nil && gena.IsSubscribed(id)
+			if !pushConnected {
+				if ps, ok := z.ctrl.(upnp.PushStatusController); ok && ps.PushConnected() {
+					pushConnected = true
+				}
+			}
+			if pushConnected {
 				interval = 10 * time.Second
 			}
 			if now.Sub(z.lastPoll) < interval {
@@ -242,11 +283,12 @@ func (m *Manager) HandleDeviceEvent(ev upnp.DeviceEvent) {
 	}
 
 	var res updateResult
-	if ev.HasState || ev.HasTrackURI || ev.HasDuration {
+	if ev.HasState || ev.HasPosition || ev.HasTrackURI || ev.HasDuration {
 		st := upnp.TransportStatus{
 			State:       z.status.State,
 			HasVolume:   z.status.HasVolume,
-			HasPosition: false,
+			HasPosition: ev.HasPosition,
+			Position:    ev.Position,
 		}
 		if ev.HasState {
 			st.State = ev.State

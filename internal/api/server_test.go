@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"tacet/internal/library"
+	"tacet/internal/player"
 	"tacet/internal/qobuz"
 	"tacet/internal/queue"
 	"tacet/internal/upnp"
@@ -413,4 +414,169 @@ func TestAPIv1_SSEMultiZoneFilterAndQobuzLifecycle(t *testing.T) {
 	if !seenRetry || !seenSnapshot || !seenVolumeID || sawR2 {
 		t.Fatalf("SSE check failed: retry=%v snapshot=%v volume=%v leakedR2=%v", seenRetry, seenSnapshot, seenVolumeID, sawR2)
 	}
+}
+
+func TestAPIv1_RemotePlayerEndpointLifecycle(t *testing.T) {
+	root := t.TempDir()
+	albDir := filepath.Join(root, "HiRes Album")
+	if err := os.MkdirAll(albDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(albDir, "01 Song.flac"), []byte("fLaC1111"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(albDir, "02 Native.dsf"), []byte("DSD 1111"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cat := library.NewCatalog(root)
+	if _, err := cat.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	var flacTrack, dsfTrack library.Track
+	for _, tr := range cat.Tracks() {
+		switch tr.Ext {
+		case ".flac":
+			flacTrack = tr
+		case ".dsf":
+			dsfTrack = tr
+		}
+	}
+
+	qb := qobuz.NewClient(qobuz.Config{})
+	mgr := queue.NewManager(8080, "", qb)
+	srv := NewServer(cat, qb, mgr)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// 1. Register remote player endpoint.
+	regResp := doReq(t, http.MethodPost, ts.URL+"/api/v1/players", `{"playerId":"laptop-1","name":"Desk Endpoint","model":"Desktop Client","codecs":["audio/flac","audio/mpeg"]}`)
+	if regResp.StatusCode != http.StatusOK {
+		t.Fatalf("register player status=%d", regResp.StatusCode)
+	}
+	var reg player.Registration
+	if err := json.NewDecoder(regResp.Body).Decode(&reg); err != nil {
+		t.Fatal(err)
+	}
+	var tokenCookie *http.Cookie
+	for _, c := range regResp.Cookies() {
+		if c.Name == playerSessionCookieName {
+			tokenCookie = c
+		}
+	}
+	regResp.Body.Close()
+
+	if reg.ZoneID != "player:laptop-1" || reg.Token == "" || reg.Info.Kind != "player" || tokenCookie == nil || !tokenCookie.HttpOnly {
+		t.Fatalf("unexpected registration: reg=%+v cookie=%+v", reg, tokenCookie)
+	}
+
+	// 2. Unauthenticated command stream is rejected with 401.
+	assertErrorCode(t, doReq(t, http.MethodGet, ts.URL+"/api/v1/players/"+reg.ZoneID+"/commands", ""), http.StatusUnauthorized, "PLAYER_UNAUTHORIZED")
+
+	// 3. Connect authenticated command SSE stream using HttpOnly cookie.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmdReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/players/"+reg.ZoneID+"/commands", nil)
+	cmdReq.AddCookie(tokenCookie)
+	cmdResp, err := http.DefaultClient.Do(cmdReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cmdResp.Body.Close()
+	if cmdResp.StatusCode != http.StatusOK {
+		t.Fatalf("commands SSE status=%d", cmdResp.StatusCode)
+	}
+
+	// Simulated player loop: signal connected handshake, ACK each command, and push PLAYING state.
+	connected := make(chan struct{}, 1)
+	gotRelativeURL := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(cmdResp.Body)
+		var eventType string
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "event: ") {
+				eventType = strings.TrimPrefix(line, "event: ")
+				continue
+			}
+			if eventType == "connected" && strings.HasPrefix(line, "data: ") {
+				select {
+				case connected <- struct{}{}:
+				default:
+				}
+				continue
+			}
+			if eventType == "command" && strings.HasPrefix(line, "data: ") {
+				var cmd player.Command
+				if uerr := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &cmd); uerr != nil {
+					continue
+				}
+				rep := map[string]any{"cmdId": cmd.ID, "ok": true}
+				if cmd.Type == "set_uri" && cmd.Media != nil {
+					gotRelativeURL <- cmd.Media.URL
+					rep["trackUri"] = cmd.Media.URL
+				}
+				if cmd.Type == "play" {
+					rep["state"] = "PLAYING"
+					rep["positionSec"] = 1.0
+				}
+				payload, _ := json.Marshal(rep)
+				stReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/players/"+reg.ZoneID+"/state", bytes.NewReader(payload))
+				stReq.Header.Set("Content-Type", "application/json")
+				stReq.Header.Set("Authorization", "Bearer "+reg.Token)
+				if stResp, serr := http.DefaultClient.Do(stReq); serr == nil {
+					stResp.Body.Close()
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-connected:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for SSE connected handshake")
+	}
+
+	// 4. Play FLAC track on browser zone -> receives server-relative /media/local/ URL!
+	playBody, _ := json.Marshal(map[string]any{
+		"source":     map[string]any{"type": "tracks", "trackIds": []string{flacTrack.ID}},
+		"startIndex": 0,
+	})
+	playResp := doReq(t, http.MethodPut, ts.URL+"/api/v1/zones/"+reg.ZoneID+"/queue", string(playBody))
+	if playResp.StatusCode != http.StatusOK {
+		t.Fatalf("play on browser zone status=%d", playResp.StatusCode)
+	}
+	playResp.Body.Close()
+
+	select {
+	case u := <-gotRelativeURL:
+		want := "/media/local/" + flacTrack.ID + ".flac"
+		if u != want {
+			t.Fatalf("expected relative media URL %q, got %q", want, u)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for set_uri command")
+	}
+
+	// 5. DSD track fails fast with 422 CAPABILITY_UNSUPPORTED on browser endpoint.
+	dsdBody, _ := json.Marshal(map[string]any{
+		"source":     map[string]any{"type": "tracks", "trackIds": []string{dsfTrack.ID}},
+		"startIndex": 0,
+	})
+	assertErrorCode(t, doReq(t, http.MethodPut, ts.URL+"/api/v1/zones/"+reg.ZoneID+"/queue", string(dsdBody)), http.StatusUnprocessableEntity, "CAPABILITY_UNSUPPORTED")
+
+	// 6. Explicit DELETE unregisters player and removes zone.
+	delReq, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/players/"+reg.ZoneID, nil)
+	delReq.Header.Set("Authorization", "Bearer "+reg.Token)
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delResp.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE player status=%d", delResp.StatusCode)
+	}
+	delResp.Body.Close()
+
+	assertErrorCode(t, doReq(t, http.MethodGet, ts.URL+"/api/v1/zones/"+reg.ZoneID, ""), http.StatusNotFound, "ZONE_NOT_FOUND")
 }

@@ -339,6 +339,28 @@ func (m *Manager) RegisterRenderer(ctrl upnp.Controller) {
 	m.emit("zones.updated", "", map[string]any{"zones": zones})
 }
 
+// UnregisterRenderer removes a renderer zone and broadcasts zones.updated.
+func (m *Manager) UnregisterRenderer(zoneID string) bool {
+	m.mu.Lock()
+	if _, ok := m.zones[zoneID]; !ok {
+		m.mu.Unlock()
+		return false
+	}
+	delete(m.zones, zoneID)
+	order := make([]string, 0, len(m.zoneOrder))
+	for _, id := range m.zoneOrder {
+		if id != zoneID {
+			order = append(order, id)
+		}
+	}
+	m.zoneOrder = order
+	zones := m.zonesLocked()
+	m.mu.Unlock()
+
+	m.emit("zones.updated", "", map[string]any{"zones": zones})
+	return true
+}
+
 // Renderers returns metadata for all registered renderers in stable order.
 func (m *Manager) Renderers() []upnp.RendererInfo {
 	m.mu.RLock()
@@ -399,6 +421,11 @@ func (m *Manager) snapshotLocked(z *zone) ZoneSnapshot {
 	}
 
 	eventsActive := m.gena != nil && m.gena.IsSubscribed(info.ID)
+	if !eventsActive {
+		if ps, ok := z.ctrl.(upnp.PushStatusController); ok && ps.PushConnected() {
+			eventsActive = true
+		}
+	}
 	updatedAt := z.positionUpdatedAt
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()

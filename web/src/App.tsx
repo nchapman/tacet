@@ -5,6 +5,7 @@ import { LocalBrowser } from "./components/LocalBrowser";
 import { NowPlaying } from "./components/NowPlaying";
 import { QobuzBrowser } from "./components/QobuzBrowser";
 import { QueuePanel } from "./components/QueuePanel";
+import { useBrowserPlayer } from "./hooks/useBrowserPlayer";
 import { useTacet } from "./hooks/useTacet";
 
 type BrowserTab = "local" | "qobuz";
@@ -16,6 +17,7 @@ function initialTab(): BrowserTab {
 
 export function App() {
   const tacet = useTacet();
+  const browserPlayer = useBrowserPlayer(tacet.selectZone);
   const [tab, setTab] = useState<BrowserTab>(initialTab);
   const [connectOpen, setConnectOpen] = useState(false);
 
@@ -43,11 +45,21 @@ export function App() {
         streamMode={tacet.settings.streamMode}
         connection={tacet.connection}
         discovering={tacet.discovering}
+        browserPlayer={browserPlayer}
         onSelectZone={tacet.selectZone}
         onDiscover={() => void tacet.discoverZones()}
         onOpenConnect={() => setConnectOpen(true)}
         onStreamModeChange={(mode) => void tacet.setStreamMode(mode)}
       />
+
+      {browserPlayer.needsUnlock && (
+        <div className="unlock-banner" role="alert">
+          <span>Browser paused audio until you interact with this tab.</span>
+          <button type="button" className="btn-primary" onClick={() => void browserPlayer.unlockAudio()}>
+            Unlock Audio
+          </button>
+        </div>
+      )}
 
       <main className="layout">
         <div className="left-col">

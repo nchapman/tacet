@@ -190,6 +190,7 @@ func buildRenderer(ctx context.Context, root *goupnp.RootDevice, loc *url.URL, l
 	return &Renderer{
 		info: RendererInfo{
 			ID:              id,
+			Kind:            "upnp",
 			Name:            name,
 			Manufacturer:    strings.TrimSpace(root.Device.Manufacturer),
 			Model:           strings.TrimSpace(root.Device.ModelName),

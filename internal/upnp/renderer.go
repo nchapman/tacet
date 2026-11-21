@@ -39,9 +39,10 @@ func IsActionUnsupported(err error) bool {
 	return false
 }
 
-// RendererInfo describes a discovered UPnP/DLNA MediaRenderer.
+// RendererInfo describes a discovered UPnP/DLNA MediaRenderer or remote player endpoint.
 type RendererInfo struct {
 	ID              string   `json:"id"`
+	Kind            string   `json:"kind,omitempty"`
 	Name            string   `json:"name"`
 	Manufacturer    string   `json:"manufacturer,omitempty"`
 	Model           string   `json:"model,omitempty"`
@@ -87,6 +88,19 @@ type Controller interface {
 // event subscription endpoints.
 type EventSource interface {
 	EventURLs() (avTransportURL, renderingControlURL string)
+}
+
+// RelativeMediaController is optionally implemented by player endpoints that
+// load media via same-origin relative /media/* URLs and prefer server-relayed
+// Qobuz streams over direct CDN URLs.
+type RelativeMediaController interface {
+	PreferRelativeMedia() bool
+}
+
+// PushStatusController is optionally implemented by endpoints that push live
+// transport state directly to the server over a persistent session.
+type PushStatusController interface {
+	PushConnected() bool
 }
 
 // Renderer wraps huin/goupnp AV1 service clients for a single UPnP/DLNA device.

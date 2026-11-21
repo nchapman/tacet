@@ -16,6 +16,7 @@ import (
 
 	"tacet/internal/library"
 	"tacet/internal/media"
+	"tacet/internal/player"
 	"tacet/internal/qobuz"
 	"tacet/internal/queue"
 	"tacet/internal/upnp"
@@ -47,6 +48,7 @@ type Server struct {
 	catalog    *library.Catalog
 	qobuz      *qobuz.Client
 	manager    *queue.Manager
+	players    *player.Registry
 	media      *media.Handler
 	gena       *upnp.GENAClient
 	discover   DiscoverFunc
@@ -61,9 +63,14 @@ type Server struct {
 // NewServer constructs the HTTP API and web remote server.
 func NewServer(cat *library.Catalog, qb *qobuz.Client, mgr *queue.Manager) *Server {
 	s := &Server{
-		catalog:    cat,
-		qobuz:      qb,
-		manager:    mgr,
+		catalog: cat,
+		qobuz:   qb,
+		manager: mgr,
+		players: player.NewRegistry(
+			mgr.RegisterRenderer,
+			func(id string) { mgr.UnregisterRenderer(id) },
+			mgr.HandleDeviceEvent,
+		),
 		media:      media.NewHandler(cat, qb),
 		discover:   upnp.Discover,
 		connect:    upnp.ConnectByURL,
@@ -73,6 +80,13 @@ func NewServer(cat *library.Catalog, qb *qobuz.Client, mgr *queue.Manager) *Serv
 	}
 	s.routes()
 	return s
+}
+
+// Close releases active player endpoint sessions and background timers.
+func (s *Server) Close() {
+	if s.players != nil {
+		s.players.Close()
+	}
 }
 
 // SetGENA attaches the UPnP GENA event receiver so renderers can deliver NOTIFY
@@ -94,8 +108,9 @@ func (s *Server) Handler() http.Handler {
 		if s.corsOrigin != "" && (isAPI || strings.HasPrefix(r.URL.Path, "/media/")) {
 			w.Header().Set("Access-Control-Allow-Origin", s.corsOrigin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-None-Match")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, If-None-Match")
 			if s.corsOrigin != "*" {
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
 				w.Header().Add("Vary", "Origin")
 			}
 			if r.Method == http.MethodOptions {
@@ -182,6 +197,12 @@ func (s *Server) routes() {
 	s.apiMux.HandleFunc("POST /api/v1/zones/{zoneId}/transport/seek", s.handleSeek)
 	s.apiMux.HandleFunc("PUT /api/v1/zones/{zoneId}/volume", s.handleVolume)
 	s.apiMux.HandleFunc("PUT /api/v1/zones/{zoneId}/mute", s.handleMute)
+
+	// Remote HTTP/SSE audio player endpoints (web, mobile, desktop, CLI/daemon)
+	s.apiMux.HandleFunc("POST /api/v1/players", s.handleRegisterPlayer)
+	s.apiMux.HandleFunc("GET /api/v1/players/{zoneId}/commands", s.handlePlayerCommands)
+	s.apiMux.HandleFunc("POST /api/v1/players/{zoneId}/state", s.handlePlayerState)
+	s.apiMux.HandleFunc("DELETE /api/v1/players/{zoneId}", s.handleUnregisterPlayer)
 
 	// Local NAS library
 	s.apiMux.HandleFunc("GET /api/v1/library/status", s.handleLibraryStatus)

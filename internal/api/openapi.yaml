@@ -420,6 +420,56 @@ paths:
           schema: { type: string }
       responses:
         "200": { description: Album details }
+  /api/v1/players:
+    post:
+      summary: Register or reattach any HTTP/SSE audio player endpoint as a controllable zone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                playerId: { type: string }
+                name: { type: string }
+                model: { type: string }
+                manufacturer: { type: string }
+                codecs:
+                  type: array
+                  items: { type: string }
+                hasVolume: { type: boolean, default: true }
+                supportsSetNext: { type: boolean, default: true }
+                supportsSeek: { type: boolean, default: true }
+                preferRelativeMedia: { type: boolean, default: true }
+      responses:
+        "200": { description: Player registration with zoneId, bearer token, and renderer info }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/players/{zoneId}/commands:
+    get:
+      summary: Server-Sent Events stream pushing transport and volume commands to a registered player endpoint
+      parameters: [$ref: "#/components/parameters/ZoneId"]
+      responses:
+        "200": { description: text/event-stream of connected, command, and replaced events }
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/players/{zoneId}/state:
+    post:
+      summary: Push player transport/volume state and command acknowledgements
+      parameters: [$ref: "#/components/parameters/ZoneId"]
+      responses:
+        "204": { description: State accepted }
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/players/{zoneId}:
+    delete:
+      summary: Explicitly unregister a registered player endpoint
+      parameters: [$ref: "#/components/parameters/ZoneId"]
+      responses:
+        "200": { description: Player unregistered }
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
 components:
   parameters:
     ZoneId:

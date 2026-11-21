@@ -25,13 +25,15 @@ const (
 	maxGENABodyBytes      = 512 << 10 // 512 KiB
 )
 
-// DeviceEvent is a parsed UPnP GENA NOTIFY update from a renderer.
+// DeviceEvent is a parsed push transport/volume update from a renderer.
 type DeviceEvent struct {
 	RendererID  string
 	Service     string
 	Seq         uint32
 	HasState    bool
 	State       string
+	HasPosition bool
+	Position    time.Duration
 	HasTrackURI bool
 	TrackURI    string
 	HasDuration bool
@@ -44,7 +46,7 @@ type DeviceEvent struct {
 
 // HasAnyUpdate reports whether the parsed event carried at least one recognized field.
 func (e DeviceEvent) HasAnyUpdate() bool {
-	return e.HasState || e.HasTrackURI || e.HasDuration || e.HasVolume || e.HasMute
+	return e.HasState || e.HasPosition || e.HasTrackURI || e.HasDuration || e.HasVolume || e.HasMute
 }
 
 type genaSub struct {

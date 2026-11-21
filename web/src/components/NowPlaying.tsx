@@ -95,9 +95,23 @@ export function NowPlaying({
         {zone && (
           <span
             className={`badge ${zone.eventsActive ? "badge-ok" : ""}`}
-            title={zone.eventsActive ? "Receiving live UPnP GENA push events" : "Polling renderer state"}
+            title={
+              zone.renderer.kind === "player"
+                ? zone.eventsActive
+                  ? "Connected remote audio player endpoint"
+                  : "Remote audio player reconnecting"
+                : zone.eventsActive
+                  ? "Receiving live UPnP GENA push events"
+                  : "Polling renderer state"
+            }
           >
-            {zone.eventsActive ? "GENA Push" : "Polling"}
+            {zone.renderer.kind === "player"
+              ? zone.eventsActive
+                ? "Player Endpoint"
+                : "Reconnecting"
+              : zone.eventsActive
+                ? "GENA Push"
+                : "Polling"}
           </span>
         )}
       </div>

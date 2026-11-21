@@ -72,6 +72,7 @@ export interface Album {
 
 export interface RendererInfo {
   id: string;
+  kind?: "upnp" | "player" | string;
   name: string;
   manufacturer?: string;
   model?: string;
@@ -144,6 +145,59 @@ export interface QobuzStatus {
 export interface QobuzSearchResult {
   tracks: Track[];
   albums: Album[];
+}
+
+export interface RegisterPlayerRequest {
+  playerId?: string;
+  name: string;
+  model?: string;
+  manufacturer?: string;
+  codecs?: string[];
+  hasVolume?: boolean;
+  supportsSetNext?: boolean;
+  supportsSeek?: boolean;
+  preferRelativeMedia?: boolean;
+}
+
+export interface PlayerRegistration {
+  zoneId: string;
+  token: string;
+  renderer: RendererInfo;
+}
+
+export interface PlayerMediaPayload {
+  id: string;
+  url: string;
+  title: string;
+  artist: string;
+  album: string;
+  artworkUrl?: string;
+  mime: string;
+  durationSec: number;
+  sampleRate?: number;
+  bitDepth?: number;
+}
+
+export interface PlayerCommand {
+  id: string;
+  type: "set_uri" | "set_next_uri" | "play" | "pause" | "stop" | "seek" | "set_volume" | "set_mute";
+  media?: PlayerMediaPayload;
+  positionSec?: number;
+  volume?: number;
+  muted?: boolean;
+}
+
+export interface PlayerStateReport {
+  cmdId?: string;
+  ok?: boolean;
+  errorCode?: string;
+  errorMessage?: string;
+  state?: "PLAYING" | "PAUSED_PLAYBACK" | "TRANSITIONING" | "STOPPED";
+  positionSec?: number;
+  durationSec?: number;
+  trackUri?: string;
+  volume?: number;
+  muted?: boolean;
 }
 
 export interface QobuzLoginRequest {

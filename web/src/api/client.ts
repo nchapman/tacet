@@ -6,6 +6,9 @@ import type {
   LibraryStatus,
   PagedResponse,
   PlaybackEvent,
+  PlayerCommand,
+  PlayerRegistration,
+  PlayerStateReport,
   QobuzLoginRequest,
   QobuzQuality,
   QobuzSearchResult,
@@ -13,6 +16,7 @@ import type {
   QueueEvent,
   QueuePosition,
   QueueSource,
+  RegisterPlayerRequest,
   ServerInfo,
   Settings,
   SnapshotEvent,
@@ -270,6 +274,9 @@ export class TacetClient {
       if (!res.ok) {
         throw parseAPIError(res.status, payload, text);
       }
+      if (res.status === 204) {
+        return undefined as T;
+      }
       if (!text) {
         throw new TacetAPIError(res.status, {
           code: "INVALID_RESPONSE",
@@ -349,6 +356,98 @@ export class TacetClient {
     bind<LibraryStatus>("library.updated", handlers.onLibraryUpdated);
     es.addEventListener("resync", () => handlers.onResync?.());
 
+    return () => es.close();
+  }
+
+  // Remote HTTP/SSE audio player endpoints
+
+  registerPlayer(
+    body: RegisterPlayerRequest,
+    token?: string,
+    opts?: RequestOptions,
+  ): Promise<PlayerRegistration> {
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return this.request<PlayerRegistration>(
+      "/api/v1/players",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      },
+      undefined,
+      opts,
+    );
+  }
+
+  reportPlayerState(
+    zoneId: string,
+    report: PlayerStateReport,
+    token?: string,
+    opts?: RequestOptions,
+  ): Promise<void> {
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return this.request<void>(
+      `/api/v1/players/${encodeURIComponent(zoneId)}/state`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(report),
+      },
+      undefined,
+      opts,
+    );
+  }
+
+  unregisterPlayer(
+    zoneId: string,
+    token?: string,
+    opts?: RequestOptions,
+  ): Promise<{ unregistered: boolean; zoneId: string }> {
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return this.request<{ unregistered: boolean; zoneId: string }>(
+      `/api/v1/players/${encodeURIComponent(zoneId)}`,
+      { method: "DELETE", headers },
+      undefined,
+      opts,
+    );
+  }
+
+  subscribePlayerCommands(
+    zoneId: string,
+    handlers: {
+      onConnected?: (info: { zoneId: string; streamId: number }) => void;
+      onCommand?: (cmd: PlayerCommand) => void;
+      onReplaced?: (reason: string) => void;
+      onError?: () => void;
+    },
+  ): () => void {
+    const Ctor = this.eventSourceImpl ?? globalThis.EventSource;
+    const url = this.url(`/api/v1/players/${encodeURIComponent(zoneId)}/commands`);
+    const es = new Ctor(url, { withCredentials: true });
+    const parse = <T,>(ev: Event): T | null => {
+      try {
+        return JSON.parse((ev as MessageEvent<string>).data) as T;
+      } catch {
+        return null;
+      }
+    };
+    es.addEventListener("connected", (ev: Event) => {
+      const data = parse<{ zoneId: string; streamId: number }>(ev);
+      if (data) handlers.onConnected?.(data);
+    });
+    es.addEventListener("command", (ev: Event) => {
+      const cmd = parse<PlayerCommand>(ev);
+      if (cmd) handlers.onCommand?.(cmd);
+    });
+    es.addEventListener("replaced", (ev: Event) => {
+      const data = parse<{ reason?: string }>(ev);
+      handlers.onReplaced?.(data?.reason ?? "replaced");
+      es.close();
+    });
+    es.onerror = () => handlers.onError?.();
     return () => es.close();
   }
 

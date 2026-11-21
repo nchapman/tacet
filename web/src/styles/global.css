@@ -667,3 +667,21 @@ input[type="range"] {
   gap: 8px;
   margin-top: 6px;
 }
+
+.player-toggle.active {
+  border-color: var(--green);
+  color: var(--green);
+  background: rgba(56, 211, 159, 0.1);
+}
+
+.unlock-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 20px;
+  background: rgba(245, 191, 79, 0.14);
+  border-bottom: 1px solid rgba(245, 191, 79, 0.45);
+  color: var(--amber);
+  font-size: 13px;
+}
