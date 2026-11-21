@@ -6,6 +6,24 @@ import { BrowserAudioEngine, defaultBrowserPlayerName, detectBrowserCodecs } fro
 const PLAYER_ID_KEY = "tacet.browserPlayerId";
 const PLAYER_NAME_KEY = "tacet.browserPlayerName";
 const PLAYER_ENABLED_KEY = "tacet.browserPlayerEnabled";
+const PLAYER_TOKEN_KEY = "tacet.browserPlayerToken";
+
+function loadSessionToken(): string {
+  try {
+    return window.sessionStorage.getItem(PLAYER_TOKEN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveSessionToken(token: string): void {
+  try {
+    if (token) window.sessionStorage.setItem(PLAYER_TOKEN_KEY, token);
+    else window.sessionStorage.removeItem(PLAYER_TOKEN_KEY);
+  } catch {
+    // Ignore storage failures.
+  }
+}
 
 export type BrowserPlayerStatus = "off" | "connecting" | "connected" | "reconnecting";
 
@@ -63,14 +81,19 @@ export function useBrowserPlayer(onZoneRegistered?: (zoneId: string) => void): B
   const [error, setError] = useState<string | null>(null);
 
   const playerIdRef = useRef<string>(loadOrCreatePlayerId());
-  const tokenRef = useRef<string>("");
+  const tokenRef = useRef<string>(loadSessionToken());
   const zoneIdRef = useRef<string | null>(null);
   const engineRef = useRef<BrowserAudioEngine | null>(null);
   const unsubRef = useRef<(() => void) | null>(null);
+  const reregisterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onZoneRegisteredRef = useRef(onZoneRegistered);
   onZoneRegisteredRef.current = onZoneRegistered;
 
   const stopSession = useCallback(() => {
+    if (reregisterTimerRef.current !== null) {
+      clearTimeout(reregisterTimerRef.current);
+      reregisterTimerRef.current = null;
+    }
     unsubRef.current?.();
     unsubRef.current = null;
     engineRef.current?.dispose();
@@ -118,10 +141,12 @@ export function useBrowserPlayer(onZoneRegistered?: (zoneId: string) => void): B
             model: "Web Browser",
             codecs,
             preferRelativeMedia: true,
+            qobuzDelivery: "force",
           },
           tokenRef.current || undefined,
         );
         tokenRef.current = reg.token;
+        saveSessionToken(reg.token);
         zoneIdRef.current = reg.zoneId;
         setZoneId(reg.zoneId);
 
@@ -151,6 +176,10 @@ export function useBrowserPlayer(onZoneRegistered?: (zoneId: string) => void): B
         const activeEngine = engine;
         unsubRef.current = tacetClient.subscribePlayerCommands(reg.zoneId, {
           onConnected: () => {
+            if (reregisterTimerRef.current !== null) {
+              clearTimeout(reregisterTimerRef.current);
+              reregisterTimerRef.current = null;
+            }
             setStatus("connected");
             setError(null);
           },
@@ -169,6 +198,15 @@ export function useBrowserPlayer(onZoneRegistered?: (zoneId: string) => void): B
           },
           onError: () => {
             setStatus("reconnecting");
+            // Recover cleanly if tacet restarted and dropped the player session (HTTP 404).
+            if (reregisterTimerRef.current === null && loadEnabled()) {
+              reregisterTimerRef.current = setTimeout(() => {
+                reregisterTimerRef.current = null;
+                if (loadEnabled()) {
+                  void connect(loadPlayerName(), false, false);
+                }
+              }, 4000);
+            }
           },
         });
 
@@ -219,6 +257,8 @@ export function useBrowserPlayer(onZoneRegistered?: (zoneId: string) => void): B
     setNeedsUnlock(false);
     setZoneId(null);
     zoneIdRef.current = null;
+    tokenRef.current = "";
+    saveSessionToken("");
     try {
       window.localStorage.setItem(PLAYER_ENABLED_KEY, "0");
     } catch {
@@ -239,18 +279,9 @@ export function useBrowserPlayer(onZoneRegistered?: (zoneId: string) => void): B
       } catch {
         // Ignore storage errors.
       }
-      if (enabled) {
+      if (enabled && zoneIdRef.current) {
         await tacetClient
-          .registerPlayer(
-            {
-              playerId: playerIdRef.current,
-              name: cleaned,
-              model: "Web Browser",
-              codecs: detectBrowserCodecs(),
-              preferRelativeMedia: true,
-            },
-            tokenRef.current || undefined,
-          )
+          .updatePlayer(zoneIdRef.current, { name: cleaned }, tokenRef.current || undefined)
           .catch(() => {});
       }
     },

@@ -45,6 +45,18 @@ func NewHandler(cat *library.Catalog, qb *qobuz.Client) *Handler {
 				ResponseHeaderTimeout: 15 * time.Second,
 				IdleConnTimeout:       60 * time.Second,
 			},
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return errors.New("too many redirects")
+				}
+				if req.URL.Scheme != "https" {
+					return errors.New("refusing non-HTTPS relay redirect")
+				}
+				if ip := net.ParseIP(req.URL.Hostname()); ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()) {
+					return errors.New("refusing private relay redirect target")
+				}
+				return nil
+			},
 		},
 	}
 }

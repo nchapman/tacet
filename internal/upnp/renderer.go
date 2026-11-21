@@ -91,10 +91,18 @@ type EventSource interface {
 }
 
 // RelativeMediaController is optionally implemented by player endpoints that
-// load media via same-origin relative /media/* URLs and prefer server-relayed
-// Qobuz streams over direct CDN URLs.
+// load local media via same-origin relative /media/* URLs.
 type RelativeMediaController interface {
 	PreferRelativeMedia() bool
+}
+
+// QobuzDeliveryController is optionally implemented by player endpoints to
+// override Qobuz delivery independently of URL relativity:
+//   - "force": always stream Qobuz through /media/qobuz/
+//   - "direct": always hand out direct signed Qobuz CDN URLs
+//   - "auto" (or empty): follow the server's global streamMode setting
+type QobuzDeliveryController interface {
+	QobuzDelivery() string
 }
 
 // PushStatusController is optionally implemented by endpoints that push live
@@ -124,7 +132,7 @@ func newSOAPHTTPClient() http.Client {
 	return http.Client{
 		Timeout: 5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
+			return errors.New("UPnP HTTP redirects are disallowed")
 		},
 		Transport: &http.Transport{
 			// Many UPnP renderers (LinkPlay/WiiM libupnp) close TCP sockets right

@@ -84,6 +84,7 @@ type PlaybackEvent struct {
 	State             PlaybackState  `json:"state"`
 	PositionSec       int            `json:"positionSec"`
 	PositionUpdatedAt time.Time      `json:"positionUpdatedAt"`
+	ServerTime        time.Time      `json:"serverTime"`
 	DurationSec       int            `json:"durationSec"`
 	CurrentIndex      int            `json:"currentIndex"`
 	CurrentItemID     string         `json:"currentItemId,omitempty"`
@@ -139,6 +140,7 @@ type subscriber struct {
 }
 
 type zone struct {
+	opMu               sync.Mutex
 	ctrl               upnp.Controller
 	queue              []Item
 	currentIndex       int
@@ -160,18 +162,23 @@ type zone struct {
 	generation         uint64
 }
 
+// ErrorClassifier maps external controller errors onto structured zone.error
+// SSE codes and retryable flags.
+type ErrorClassifier func(err error) (code string, retryable bool, matched bool)
+
 // Manager coordinates discovered renderers, per-zone queues, gapless preloading,
 // GENA event updates, and split SSE broadcasts to connected remote clients.
 type Manager struct {
-	mu            sync.RWMutex
-	zones         map[string]*zone
-	zoneOrder     []string
-	streamMode    StreamMode
-	httpPort      int
-	publicBaseURL string
-	qobuz         *qobuz.Client
-	gena          *upnp.GENAClient
-	runCtx        context.Context
+	mu              sync.RWMutex
+	zones           map[string]*zone
+	zoneOrder       []string
+	streamMode      StreamMode
+	httpPort        int
+	publicBaseURL   string
+	qobuz           *qobuz.Client
+	gena            *upnp.GENAClient
+	errorClassifier ErrorClassifier
+	runCtx          context.Context
 
 	itemSeq  atomic.Uint64
 	eventSeq atomic.Uint64
@@ -247,6 +254,19 @@ func (m *Manager) Start(ctx context.Context) {
 	go m.pollLoop(ctx)
 }
 
+// SetErrorClassifier installs a hook used to map external controller errors
+// onto zone.error SSE codes.
+func (m *Manager) SetErrorClassifier(fn ErrorClassifier) {
+	m.mu.Lock()
+	m.errorClassifier = fn
+	m.mu.Unlock()
+}
+
+// Done returns a channel closed when Manager.Close is called.
+func (m *Manager) Done() <-chan struct{} {
+	return m.stopCh
+}
+
 // Close stops background polling and unsubscribes active GENA subscriptions.
 func (m *Manager) Close() {
 	m.stopOnce.Do(func() {
@@ -282,8 +302,12 @@ func (m *Manager) SetStreamMode(mode StreamMode) error {
 	m.mu.Lock()
 	m.streamMode = mode
 	var changed []PlaybackEvent
+	var toClear []upnp.Controller
 	for _, z := range m.zones {
 		if z.nextPreloaded || z.nextFailed {
+			if z.nextPreloaded {
+				toClear = append(toClear, z.ctrl)
+			}
 			z.nextPreloaded = false
 			z.nextFailed = false
 			z.nextURI = ""
@@ -293,6 +317,9 @@ func (m *Manager) SetStreamMode(mode StreamMode) error {
 	}
 	m.mu.Unlock()
 
+	for _, ctrl := range toClear {
+		m.clearNextPreloadAsync(ctrl)
+	}
 	for _, ev := range changed {
 		m.emit("zone.playback", ev.ZoneID, ev)
 	}
@@ -458,6 +485,7 @@ func (m *Manager) playbackEventLocked(z *zone) PlaybackEvent {
 		State:             snap.State,
 		PositionSec:       snap.PositionSec,
 		PositionUpdatedAt: snap.PositionUpdatedAt,
+		ServerTime:        time.Now().UTC(),
 		DurationSec:       snap.DurationSec,
 		CurrentIndex:      snap.CurrentIndex,
 		CurrentItemID:     snap.CurrentItemID,
@@ -551,18 +579,30 @@ func (m *Manager) emit(eventType, zoneID string, data any) {
 }
 
 func (m *Manager) emitZoneError(zoneID string, err error) {
+	m.mu.RLock()
+	classifier := m.errorClassifier
+	m.mu.RUnlock()
+
 	code := "RENDERER_UNREACHABLE"
 	retryable := true
-	switch {
-	case errors.Is(err, qobuz.ErrUnauthenticated):
-		code = "QOBUZ_UNAUTHENTICATED"
-		retryable = false
-	case errors.Is(err, ErrCapabilityUnsupported):
-		code = "CAPABILITY_UNSUPPORTED"
-		retryable = false
-	case errors.Is(err, ErrInvalidArgument):
-		code = "INVALID_REQUEST"
-		retryable = false
+	if classifier != nil {
+		if c, r, ok := classifier(err); ok {
+			code = c
+			retryable = r
+		}
+	}
+	if code == "RENDERER_UNREACHABLE" {
+		switch {
+		case errors.Is(err, qobuz.ErrUnauthenticated):
+			code = "QOBUZ_UNAUTHENTICATED"
+			retryable = false
+		case errors.Is(err, ErrCapabilityUnsupported):
+			code = "CAPABILITY_UNSUPPORTED"
+			retryable = false
+		case errors.Is(err, ErrInvalidArgument):
+			code = "INVALID_REQUEST"
+			retryable = false
+		}
 	}
 	ev := ZoneErrorEvent{
 		ID:     fmt.Sprintf("err_%d", m.eventSeq.Add(1)),

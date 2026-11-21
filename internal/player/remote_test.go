@@ -163,3 +163,60 @@ func TestRegistry_LifecycleCommandAckTimeoutAndGraceReap(t *testing.T) {
 	}
 	mu.Unlock()
 }
+
+func TestRegistry_PartialUpdateAndStandbyClear(t *testing.T) {
+	reg := NewRegistry(nil, nil, nil)
+	res, err := reg.Register(RegisterRequest{
+		PlayerID:      "ios_1",
+		Name:          "Living Room iPad",
+		Codecs:        []string{"audio/flac", "audio/mpeg"},
+		QobuzDelivery: "direct",
+		Host:          "192.168.1.40",
+	}, "")
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+	rp, err := reg.Get(res.ZoneID, res.Token)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if got := rp.QobuzDelivery(); got != "direct" {
+		t.Fatalf("expected qobuz delivery direct, got %q", got)
+	}
+
+	// Partial PATCH: rename only — codecs and qobuz delivery must be preserved.
+	newName := "Kitchen iPad"
+	grace := 120
+	if _, err := reg.Update(res.ZoneID, res.Token, UpdateRequest{Name: &newName, GracePeriodSec: &grace}); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+	info := rp.Info()
+	if info.Name != "Kitchen iPad" {
+		t.Fatalf("expected renamed player, got %q", info.Name)
+	}
+	if len(info.SinkProtocols) != 2 {
+		t.Fatalf("partial Update wiped SinkProtocols: %v", info.SinkProtocols)
+	}
+	if got := rp.QobuzDelivery(); got != "direct" {
+		t.Fatalf("partial Update altered QobuzDelivery: %q", got)
+	}
+
+	// Clearing standby sends set_next_uri with nil Media.
+	stream := rp.AttachStream()
+	defer reg.DetachStream(rp, stream.ID)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- rp.SetNextURI(context.Background(), upnp.MediaItem{})
+	}()
+
+	cmd := <-stream.Commands
+	if cmd.Type != "set_next_uri" || cmd.Media != nil {
+		t.Fatalf("expected set_next_uri with nil Media, got %+v", cmd)
+	}
+	okTrue := true
+	rp.ReportState(StateReport{CmdID: cmd.ID, OK: &okTrue})
+	if err := <-done; err != nil {
+		t.Fatalf("SetNextAVTransportURI clear failed: %v", err)
+	}
+}

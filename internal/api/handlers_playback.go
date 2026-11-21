@@ -64,7 +64,7 @@ func (s *Server) handleConnectZone(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	dev, err := s.connect(ctx, body.URL)
 	if err != nil {
-		writeAPIError(w, http.StatusBadGateway, "RENDERER_UNREACHABLE", err.Error(), true)
+		writeDomainError(w, err)
 		return
 	}
 	s.manager.RegisterRenderer(dev)
@@ -72,6 +72,24 @@ func (s *Server) handleConnectZone(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"zone":  zone,
 		"zones": s.manager.Zones(),
+	})
+}
+
+func (s *Server) handleDeleteZone(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
+	snap, ok := s.manager.Zone(zoneID)
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, "ZONE_NOT_FOUND", fmt.Sprintf("zone %q not found", zoneID), false)
+		return
+	}
+	if snap.Renderer.Kind == "player" {
+		writeAPIError(w, http.StatusConflict, "PLAYER_MANAGED_ZONE", "use DELETE /api/v1/players/{zoneId} to unregister a remote player endpoint", false)
+		return
+	}
+	s.manager.UnregisterRenderer(zoneID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"removed": true,
+		"zoneId":  zoneID,
 	})
 }
 
@@ -136,10 +154,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		qbStatus = s.qobuz.Status()
 	}
 	if !sendFrame(0, "snapshot", map[string]any{
-		"zones":    zones,
-		"settings": s.currentSettings(),
-		"qobuz":    qbStatus,
-		"library":  s.catalog.Status(),
+		"serverTime": time.Now().UTC(),
+		"zones":      zones,
+		"settings":   s.currentSettings(),
+		"qobuz":      qbStatus,
+		"library":    s.catalog.Status(),
 	}) {
 		return
 	}
@@ -150,6 +169,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-s.manager.Done():
 			return
 		case ev, open := <-ch:
 			if !open {
@@ -162,7 +183,21 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-			if !sendFrame(ev.ID, ev.Type, ev.Data) {
+			data := ev.Data
+			if ev.Type == "zones.updated" && len(zoneFilter) > 0 {
+				if m, ok := ev.Data.(map[string]any); ok {
+					if rawZones, ok := m["zones"].([]queue.ZoneSnapshot); ok {
+						filtered := make([]queue.ZoneSnapshot, 0, len(rawZones))
+						for _, z := range rawZones {
+							if _, match := zoneFilter[z.ZoneID]; match {
+								filtered = append(filtered, z)
+							}
+						}
+						data = map[string]any{"zones": filtered}
+					}
+				}
+			}
+			if !sendFrame(ev.ID, ev.Type, data) {
 				return
 			}
 		case <-keepalive.C:
@@ -204,8 +239,12 @@ func (s *Server) resolveSource(ctx context.Context, src queueSource) ([]library.
 		return alb.Tracks, nil
 
 	case "tracks":
+		const maxBatchTracks = 500
 		if len(src.TrackIDs) == 0 {
 			return nil, fmt.Errorf("%w: source.trackIds must not be empty", queue.ErrInvalidArgument)
+		}
+		if len(src.TrackIDs) > maxBatchTracks {
+			return nil, fmt.Errorf("%w: source.trackIds exceeds maximum of %d tracks", queue.ErrInvalidArgument, maxBatchTracks)
 		}
 		resolved := make([]library.Track, 0, len(src.TrackIDs))
 		for _, rawID := range src.TrackIDs {

@@ -108,7 +108,7 @@ export class BrowserAudioEngine {
 
     this.progressTimer = setInterval(() => {
       if (!this.disposed && !this.active.paused && !this.active.ended && this.currentURI) {
-        this.emitState("PLAYING");
+        this.emitState("playing");
       }
     }, 3000);
   }
@@ -151,7 +151,7 @@ export class BrowserAudioEngine {
     }
     try {
       await this.active.play();
-      this.emitState("PLAYING");
+      this.emitState("playing");
     } catch {
       this.callbacks.onAutoplayBlocked?.(true);
     }
@@ -179,7 +179,7 @@ export class BrowserAudioEngine {
           this.active.muted = this.muted;
           this.active.load();
           this.updateMediaSessionMetadata(cmd.media);
-          this.ack(cmd.id, true, undefined, undefined, "TRANSITIONING");
+          this.ack(cmd.id, true, undefined, undefined, "buffering");
         } catch (err) {
           this.ack(cmd.id, false, "LOAD_ERROR", err instanceof Error ? err.message : "failed to load media");
         }
@@ -216,7 +216,7 @@ export class BrowserAudioEngine {
         try {
           await this.active.play();
           this.callbacks.onAutoplayBlocked?.(false);
-          this.ack(cmd.id, true, undefined, undefined, "PLAYING");
+          this.ack(cmd.id, true, undefined, undefined, "playing");
         } catch (err) {
           const isAutoplay = isNotAllowedError(err);
           if (isAutoplay) {
@@ -226,11 +226,11 @@ export class BrowserAudioEngine {
               false,
               "PLAYBACK_BLOCKED",
               "Browser blocked autoplay — click inside the player tab to unlock audio",
-              "PAUSED_PLAYBACK",
+              "paused",
             );
           } else {
             const msg = err instanceof Error ? err.message : "Audio playback failed";
-            this.ack(cmd.id, false, "PLAYBACK_ERROR", msg, "STOPPED");
+            this.ack(cmd.id, false, "PLAYBACK_ERROR", msg, "stopped");
           }
         }
         return;
@@ -238,7 +238,7 @@ export class BrowserAudioEngine {
 
       case "pause": {
         this.active.pause();
-        this.ack(cmd.id, true, undefined, undefined, "PAUSED_PLAYBACK");
+        this.ack(cmd.id, true, undefined, undefined, "paused");
         return;
       }
 
@@ -250,7 +250,7 @@ export class BrowserAudioEngine {
           // Ignore seek reset if metadata is not yet loaded.
         }
         this.clearStandby();
-        this.ack(cmd.id, true, undefined, undefined, "STOPPED");
+        this.ack(cmd.id, true, undefined, undefined, "stopped");
         return;
       }
 
@@ -266,7 +266,7 @@ export class BrowserAudioEngine {
           this.ack(cmd.id, false, "SEEK_ERROR", err instanceof Error ? err.message : "seek failed");
           return;
         }
-        const st = this.active.paused ? "PAUSED_PLAYBACK" : "PLAYING";
+        const st = this.active.paused ? "paused" : "playing";
         this.ack(cmd.id, true, undefined, undefined, st);
         return;
       }
@@ -326,16 +326,16 @@ export class BrowserAudioEngine {
     const onPlaying = () => {
       if (this.disposed || el !== this.active || !this.currentURI) return;
       this.setMediaSessionPlaybackState("playing");
-      this.emitState("PLAYING");
+      this.emitState("playing");
     };
     const onPause = () => {
       if (this.disposed || el !== this.active || el.ended || !this.currentURI) return;
       this.setMediaSessionPlaybackState("paused");
-      this.emitState("PAUSED_PLAYBACK");
+      this.emitState("paused");
     };
     const onWaiting = () => {
       if (this.disposed || el !== this.active || !this.currentURI) return;
-      this.emitState("TRANSITIONING");
+      this.emitState("buffering");
     };
     const onEnded = () => {
       if (this.disposed || el !== this.active) return;
@@ -343,7 +343,7 @@ export class BrowserAudioEngine {
     };
     const onError = () => {
       if (this.disposed || el !== this.active || !this.currentURI) return;
-      this.emitState("STOPPED");
+      this.emitState("stopped");
     };
 
     el.addEventListener("playing", onPlaying);
@@ -386,18 +386,18 @@ export class BrowserAudioEngine {
       try {
         await this.active.play();
         this.setMediaSessionPlaybackState("playing");
-        this.emitState("PLAYING");
+        this.emitState("playing");
       } catch (err) {
         if (isNotAllowedError(err)) {
           this.callbacks.onAutoplayBlocked?.(true);
         }
-        this.emitState("STOPPED");
+        this.emitState("stopped");
       }
       return;
     }
 
     this.setMediaSessionPlaybackState("none");
-    this.emitState("STOPPED");
+    this.emitState("stopped");
   }
 
   private ack(

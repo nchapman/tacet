@@ -49,6 +49,15 @@ export function useTacet() {
 
   const selectedZoneIdRef = useRef(selectedZoneId);
   selectedZoneIdRef.current = selectedZoneId;
+  const clockOffsetMsRef = useRef(0);
+
+  const syncClockOffset = useCallback((serverTime?: string) => {
+    if (!serverTime) return;
+    const serverMs = Date.parse(serverTime);
+    if (Number.isFinite(serverMs)) {
+      clockOffsetMsRef.current = Date.now() - serverMs;
+    }
+  }, []);
 
   // Apply full snapshot only if its revision is >= our current zone revision.
   const upsertZone = useCallback((incoming: ZoneSnapshot) => {
@@ -63,7 +72,16 @@ export function useTacet() {
   }, []);
 
   const replaceZones = useCallback((list: ZoneSnapshot[]) => {
-    setZones(list);
+    setZones((prev) => {
+      const prevById = new Map(prev.map((z) => [z.zoneId, z]));
+      return list.map((incoming) => {
+        const existing = prevById.get(incoming.zoneId);
+        if (existing && incoming.revision < existing.revision) {
+          return existing;
+        }
+        return incoming;
+      });
+    });
     setSelectedZoneId((cur) => {
       if (cur && list.some((z) => z.zoneId === cur)) return cur;
       const fallback = list[0]?.zoneId ?? "";
@@ -102,6 +120,7 @@ export function useTacet() {
       onError: () => setConnection("reconnecting"),
       onResync: resyncAll,
       onSnapshot: (snap) => {
+        syncClockOffset(snap.serverTime);
         replaceZones(snap.zones ?? []);
         if (snap.settings) setSettings(snap.settings);
         if (snap.qobuz) setQobuzStatus(snap.qobuz);
@@ -111,6 +130,7 @@ export function useTacet() {
         replaceZones(ev.zones ?? []);
       },
       onPlayback: (ev) => {
+        syncClockOffset(ev.serverTime);
         setZones((prev) =>
           prev.map((z) => {
             if (z.zoneId !== ev.zoneId || ev.revision < z.revision) return z;
@@ -164,7 +184,7 @@ export function useTacet() {
     });
 
     return unsubscribe;
-  }, [replaceZones]);
+  }, [replaceZones, syncClockOffset]);
 
   const activeZone = useMemo<ZoneSnapshot | null>(() => {
     if (!zones.length) return null;
@@ -186,7 +206,8 @@ export function useTacet() {
     if (activeZone.state !== "playing") return base;
     const updatedMs = Date.parse(activeZone.positionUpdatedAt);
     if (!Number.isFinite(updatedMs)) return base;
-    const elapsed = Math.max(0, Math.floor((nowMs - updatedMs) / 1000));
+    const adjustedNowMs = nowMs - clockOffsetMsRef.current;
+    const elapsed = Math.max(0, Math.floor((adjustedNowMs - updatedMs) / 1000));
     const maxDur = activeZone.durationSec || activeZone.currentTrack?.durationSec || 0;
     return maxDur > 0 ? Math.min(maxDur, base + elapsed) : base + elapsed;
   }, [activeZone, nowMs]);

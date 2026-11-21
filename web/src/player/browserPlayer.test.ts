@@ -94,11 +94,11 @@ describe("BrowserAudioEngine", () => {
       },
     });
     expect(audios[0].src).toBe("/media/local/local:t1.flac");
-    expect(reports.at(-1)).toMatchObject({ cmdId: "cmd_1", ok: true, state: "TRANSITIONING" });
+    expect(reports.at(-1)).toMatchObject({ cmdId: "cmd_1", ok: true, state: "buffering" });
 
     await engine.handleCommand({ id: "cmd_2", type: "play" });
     expect(audios[0].paused).toBe(false);
-    expect(reports.at(-1)).toMatchObject({ cmdId: "cmd_2", ok: true, state: "PLAYING" });
+    expect(reports.at(-1)).toMatchObject({ cmdId: "cmd_2", ok: true, state: "playing" });
 
     await engine.handleCommand({ id: "cmd_3", type: "set_volume", volume: 65 });
     expect(audios[0].volume).toBeCloseTo(0.65);
@@ -132,7 +132,7 @@ describe("BrowserAudioEngine", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(audios[1].paused).toBe(false);
     expect(reports.at(-1)).toMatchObject({
-      state: "PLAYING",
+      state: "playing",
       trackUri: "/media/local/local:t2.flac",
     });
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,9 +19,11 @@ import (
 
 const (
 	defaultGracePeriod    = 20 * time.Second
+	minGracePeriod        = 5 * time.Second
+	maxGracePeriod        = 60 * time.Minute
 	defaultCommandTimeout = 3 * time.Second
-	maxNameLen            = 80
-	maxModelLen           = 80
+	maxPlayers            = 64
+	maxPlayerLabelRunes   = 80
 	maxPlayerIDLen        = 64
 	maxReportedSeconds    = 24 * 60 * 60 // 24h cap prevents int64 time.Duration overflow
 )
@@ -47,7 +50,24 @@ type RegisterRequest struct {
 	SupportsSetNext     *bool    `json:"supportsSetNext,omitempty"`
 	SupportsSeek        *bool    `json:"supportsSeek,omitempty"`
 	PreferRelativeMedia *bool    `json:"preferRelativeMedia,omitempty"`
+	QobuzDelivery       string   `json:"qobuzDelivery,omitempty"`
+	GracePeriodSec      *int     `json:"gracePeriodSec,omitempty"`
 	Host                string   `json:"-"`
+}
+
+// UpdateRequest applies a partial update to an existing registered player
+// endpoint without resetting omitted fields.
+type UpdateRequest struct {
+	Name                *string   `json:"name,omitempty"`
+	Model               *string   `json:"model,omitempty"`
+	Manufacturer        *string   `json:"manufacturer,omitempty"`
+	Codecs              *[]string `json:"codecs,omitempty"`
+	HasVolume           *bool     `json:"hasVolume,omitempty"`
+	SupportsSetNext     *bool     `json:"supportsSetNext,omitempty"`
+	SupportsSeek        *bool     `json:"supportsSeek,omitempty"`
+	PreferRelativeMedia *bool     `json:"preferRelativeMedia,omitempty"`
+	QobuzDelivery       *string   `json:"qobuzDelivery,omitempty"`
+	GracePeriodSec      *int      `json:"gracePeriodSec,omitempty"`
 }
 
 // Registration is returned after registering or refreshing a player endpoint.
@@ -167,9 +187,9 @@ func NewRegistry(
 // Register creates or refreshes a remote player zone. If zoneID already exists,
 // existingToken must match the current session token to reattach.
 func (r *Registry) Register(req RegisterRequest, existingToken string) (Registration, error) {
-	name := clampString(req.Name, maxNameLen, "Remote Player")
-	model := clampString(req.Model, maxModelLen, "Remote Endpoint")
-	manufacturer := clampString(req.Manufacturer, maxModelLen, "tacet")
+	name := clampString(req.Name, "Remote Player")
+	model := clampString(req.Model, "Remote Endpoint")
+	manufacturer := clampString(req.Manufacturer, "tacet")
 
 	zoneID, err := normalizeZoneID(req.PlayerID)
 	if err != nil {
@@ -198,6 +218,14 @@ func (r *Registry) Register(req RegisterRequest, existingToken string) (Registra
 	if req.PreferRelativeMedia != nil {
 		preferRelative = *req.PreferRelativeMedia
 	}
+	qobuzDelivery, err := parseQobuzDelivery(req.QobuzDelivery)
+	if err != nil {
+		return Registration{}, err
+	}
+	grace := r.gracePeriod
+	if req.GracePeriodSec != nil {
+		grace = clampGracePeriod(time.Duration(*req.GracePeriodSec) * time.Second)
+	}
 
 	r.mu.Lock()
 	if r.closed {
@@ -210,8 +238,8 @@ func (r *Registry) Register(req RegisterRequest, existingToken string) (Registra
 			r.mu.Unlock()
 			return Registration{}, fmt.Errorf("%w: player id already active", ErrUnauthorized)
 		}
-		existing.updateMetadata(name, model, manufacturer, host, codecs, hasVolume, supportsSetNext, supportsSeek, preferRelative)
-		existing.scheduleGraceLocked(r.gracePeriod, func() { r.reapIfDisconnected(zoneID, existing) })
+		existing.updateMetadata(name, model, manufacturer, host, codecs, hasVolume, supportsSetNext, supportsSeek, preferRelative, qobuzDelivery, grace)
+		existing.scheduleGraceLocked(grace, func() { r.reapIfDisconnected(zoneID, existing) })
 		info := existing.Info()
 		tok := existing.token
 		r.mu.Unlock()
@@ -220,6 +248,11 @@ func (r *Registry) Register(req RegisterRequest, existingToken string) (Registra
 			r.onRegister(existing)
 		}
 		return Registration{ZoneID: zoneID, Token: tok, Info: info}, nil
+	}
+
+	if len(r.players) >= maxPlayers {
+		r.mu.Unlock()
+		return Registration{}, fmt.Errorf("%w: maximum active player endpoints (%d) reached", ErrInvalidPlayer, maxPlayers)
 	}
 
 	tok, err := randomHex(32)
@@ -233,6 +266,9 @@ func (r *Registry) Register(req RegisterRequest, existingToken string) (Registra
 		commandTimeout: r.commandTimeout,
 		onEvent:        r.onEvent,
 		preferRelative: preferRelative,
+		qobuzDelivery:  qobuzDelivery,
+		gracePeriod:    grace,
+		localIP:        outboundIPForPeer(host),
 		pending:        make(map[string]chan cmdResult),
 		info: upnp.RendererInfo{
 			ID:              zoneID,
@@ -256,7 +292,7 @@ func (r *Registry) Register(req RegisterRequest, existingToken string) (Registra
 			HasVolume:   hasVolume,
 		},
 	}
-	rp.scheduleGraceLocked(r.gracePeriod, func() { r.reapIfDisconnected(zoneID, rp) })
+	rp.scheduleGraceLocked(grace, func() { r.reapIfDisconnected(zoneID, rp) })
 	r.players[zoneID] = rp
 	info := rp.Info()
 	r.mu.Unlock()
@@ -265,6 +301,61 @@ func (r *Registry) Register(req RegisterRequest, existingToken string) (Registra
 		r.onRegister(rp)
 	}
 	return Registration{ZoneID: zoneID, Token: tok, Info: info}, nil
+}
+
+// Update applies partial metadata/capability changes to an authenticated player.
+func (r *Registry) Update(zoneID, token string, req UpdateRequest) (upnp.RendererInfo, error) {
+	rp, err := r.Get(zoneID, token)
+	if err != nil {
+		return upnp.RendererInfo{}, err
+	}
+	var qd *string
+	if req.QobuzDelivery != nil {
+		parsed, perr := parseQobuzDelivery(*req.QobuzDelivery)
+		if perr != nil {
+			return upnp.RendererInfo{}, perr
+		}
+		qd = &parsed
+	}
+
+	rp.mu.Lock()
+	if req.Name != nil {
+		rp.info.Name = clampString(*req.Name, rp.info.Name)
+	}
+	if req.Model != nil {
+		rp.info.Model = clampString(*req.Model, rp.info.Model)
+	}
+	if req.Manufacturer != nil {
+		rp.info.Manufacturer = clampString(*req.Manufacturer, rp.info.Manufacturer)
+	}
+	if req.Codecs != nil {
+		rp.info.SinkProtocols = normalizeCodecs(*req.Codecs)
+	}
+	if req.HasVolume != nil {
+		rp.info.HasVolume = *req.HasVolume
+		rp.status.HasVolume = *req.HasVolume
+	}
+	if req.SupportsSetNext != nil {
+		rp.info.SupportsSetNext = *req.SupportsSetNext
+	}
+	if req.SupportsSeek != nil {
+		rp.info.SupportsSeek = *req.SupportsSeek
+	}
+	if req.PreferRelativeMedia != nil {
+		rp.preferRelative = *req.PreferRelativeMedia
+	}
+	if qd != nil {
+		rp.qobuzDelivery = *qd
+	}
+	if req.GracePeriodSec != nil {
+		rp.gracePeriod = clampGracePeriod(time.Duration(*req.GracePeriodSec) * time.Second)
+	}
+	rp.mu.Unlock()
+
+	if r.onRegister != nil {
+		r.onRegister(rp)
+	}
+	return rp.Info(), nil
 }
 
 // Get returns an authenticated RemotePlayer for zoneID.
@@ -305,21 +396,24 @@ func (r *Registry) Unregister(zoneID, token string) error {
 
 // DetachStream marks the player's command SSE stream disconnected and starts
 // the grace-period timer for automatic removal if it does not reconnect.
-func (r *Registry) DetachStream(rp *RemotePlayer, streamID uint64) {
+// Returns true only when streamID was the active stream (false if already replaced).
+func (r *Registry) DetachStream(rp *RemotePlayer, streamID uint64) bool {
 	if rp == nil {
-		return
+		return false
 	}
 	zoneID := rp.Info().ID
 	r.mu.RLock()
-	grace := r.gracePeriod
 	closed := r.closed
 	r.mu.RUnlock()
 
-	detached := rp.detachStream(streamID)
-	if !detached || closed {
-		return
+	detached, grace := rp.detachStream(streamID)
+	if !detached {
+		return false
 	}
-	rp.scheduleGrace(grace, func() { r.reapIfDisconnected(zoneID, rp) })
+	if !closed {
+		rp.scheduleGrace(grace, func() { r.reapIfDisconnected(zoneID, rp) })
+	}
+	return true
 }
 
 // Close shuts down all active player streams and cancels pending timers.
@@ -365,6 +459,9 @@ type RemotePlayer struct {
 
 	mu             sync.Mutex
 	preferRelative bool
+	qobuzDelivery  string
+	gracePeriod    time.Duration
+	localIP        string
 	info           upnp.RendererInfo
 	status         upnp.TransportStatus
 	streamID       uint64
@@ -375,11 +472,18 @@ type RemotePlayer struct {
 }
 
 // PreferRelativeMedia signals queue.Manager to emit server-relative /media/*
-// URLs and relay Qobuz streams through /media/qobuz/ when requested by the client.
+// URLs when requested by the client.
 func (p *RemotePlayer) PreferRelativeMedia() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.preferRelative
+}
+
+// QobuzDelivery returns the player's Qobuz streaming preference ("auto", "force", or "direct").
+func (p *RemotePlayer) QobuzDelivery() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.qobuzDelivery
 }
 
 // PushConnected reports whether the endpoint currently has a live SSE command stream.
@@ -400,8 +504,16 @@ func (p *RemotePlayer) Info() upnp.RendererInfo {
 	return cp
 }
 
-// LocalIP returns loopback as fallback when absolute URLs are constructed without PublicBaseURL.
-func (p *RemotePlayer) LocalIP() string { return "127.0.0.1" }
+// LocalIP returns the server's LAN/route IP toward this player when absolute
+// media URLs are requested without --public-url.
+func (p *RemotePlayer) LocalIP() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.localIP != "" {
+		return p.localIP
+	}
+	return "127.0.0.1"
+}
 
 // AttachStream attaches a new SSE command stream, replacing any older stream.
 func (p *RemotePlayer) AttachStream() CommandStream {
@@ -429,11 +541,11 @@ func (p *RemotePlayer) AttachStream() CommandStream {
 	}
 }
 
-func (p *RemotePlayer) detachStream(streamID uint64) bool {
+func (p *RemotePlayer) detachStream(streamID uint64) (bool, time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.streamID != streamID || p.cmdCh == nil {
-		return false
+		return false, 0
 	}
 	p.cmdCh = nil
 	p.replacedCh = nil
@@ -441,7 +553,7 @@ func (p *RemotePlayer) detachStream(streamID uint64) bool {
 		delete(p.pending, id)
 		ch <- cmdResult{ok: false, errorCode: "DISCONNECTED", errorMessage: "player endpoint disconnected"}
 	}
-	return true
+	return true, p.gracePeriod
 }
 
 func (p *RemotePlayer) shutdown() {
@@ -475,7 +587,7 @@ func (p *RemotePlayer) scheduleGraceLocked(d time.Duration, fn func()) {
 	p.graceTimer = time.AfterFunc(d, fn)
 }
 
-func (p *RemotePlayer) updateMetadata(name, model, manufacturer, host string, codecs []string, hasVol, supportsNext, supportsSeek, preferRel bool) {
+func (p *RemotePlayer) updateMetadata(name, model, manufacturer, host string, codecs []string, hasVol, supportsNext, supportsSeek, preferRel bool, qobuzDelivery string, grace time.Duration) {
 	p.mu.Lock()
 	p.info.Name = name
 	p.info.Model = model
@@ -485,6 +597,9 @@ func (p *RemotePlayer) updateMetadata(name, model, manufacturer, host string, co
 	p.info.SupportsSetNext = supportsNext
 	p.info.SupportsSeek = supportsSeek
 	p.preferRelative = preferRel
+	p.qobuzDelivery = qobuzDelivery
+	p.gracePeriod = grace
+	p.localIP = outboundIPForPeer(host)
 	p.status.HasVolume = hasVol
 	if len(codecs) > 0 {
 		p.info.SinkProtocols = codecs
@@ -582,10 +697,15 @@ func (p *RemotePlayer) SetURI(ctx context.Context, item upnp.MediaItem) error {
 }
 
 // SetNextURI preloads the next queued track into the player endpoint.
+// Passing an empty item.URL clears any previously preloaded track.
 func (p *RemotePlayer) SetNextURI(ctx context.Context, item upnp.MediaItem) error {
+	var media *MediaPayload
+	if item.URL != "" {
+		media = mediaPayloadFromItem(item)
+	}
 	return p.sendCommand(ctx, Command{
 		Type:  "set_next_uri",
-		Media: mediaPayloadFromItem(item),
+		Media: media,
 	})
 }
 
@@ -691,6 +811,60 @@ func (p *RemotePlayer) sendCommand(ctx context.Context, cmd Command) error {
 	}
 }
 
+func parseQobuzDelivery(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "auto":
+		return "auto", nil
+	case "force":
+		return "force", nil
+	case "direct":
+		return "direct", nil
+	default:
+		return "", fmt.Errorf("%w: qobuzDelivery must be auto, force, or direct", ErrInvalidPlayer)
+	}
+}
+
+func clampGracePeriod(d time.Duration) time.Duration {
+	if d < minGracePeriod {
+		return minGracePeriod
+	}
+	if d > maxGracePeriod {
+		return maxGracePeriod
+	}
+	return d
+}
+
+func outboundIPForPeer(peerHost string) string {
+	if ip := net.ParseIP(peerHost); ip != nil && !ip.IsLoopback() {
+		d := net.Dialer{Timeout: 200 * time.Millisecond}
+		if conn, err := d.DialContext(context.Background(), "udp", net.JoinHostPort(ip.String(), "80")); err == nil {
+			defer func() { _ = conn.Close() }()
+			if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok && addr.IP != nil && !addr.IP.IsLoopback() {
+				return addr.IP.String()
+			}
+		}
+	}
+	if ifaces, err := net.Interfaces(); err == nil {
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, a := range addrs {
+				if ipNet, ok := a.(*net.IPNet); ok {
+					if v4 := ipNet.IP.To4(); v4 != nil && !v4.IsLoopback() {
+						return v4.String()
+					}
+				}
+			}
+		}
+	}
+	return "127.0.0.1"
+}
+
 func validSeconds(v *float64) (float64, bool) {
 	if v == nil || math.IsNaN(*v) || math.IsInf(*v, 0) || *v < 0 || *v > maxReportedSeconds {
 		return 0, false
@@ -698,13 +872,14 @@ func validSeconds(v *float64) (float64, bool) {
 	return *v, true
 }
 
-func clampString(raw string, maxLen int, fallback string) string {
+func clampString(raw string, fallback string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return fallback
 	}
-	if len(s) > maxLen {
-		return s[:maxLen]
+	runes := []rune(s)
+	if len(runes) > maxPlayerLabelRunes {
+		return string(runes[:maxPlayerLabelRunes])
 	}
 	return s
 }

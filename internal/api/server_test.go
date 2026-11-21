@@ -566,6 +566,30 @@ func TestAPIv1_RemotePlayerEndpointLifecycle(t *testing.T) {
 	})
 	assertErrorCode(t, doReq(t, http.MethodPut, ts.URL+"/api/v1/zones/"+reg.ZoneID+"/queue", string(dsdBody)), http.StatusUnprocessableEntity, "CAPABILITY_UNSUPPORTED")
 
+	// 5b. PATCH /api/v1/players/{zoneId} renames while preserving codecs, and requires auth.
+	unauthPatch, _ := http.NewRequest(http.MethodPatch, ts.URL+"/api/v1/players/"+reg.ZoneID, strings.NewReader(`{"name":"Hijack"}`))
+	unauthPatch.Header.Set("Content-Type", "application/json")
+	if resp, uerr := http.DefaultClient.Do(unauthPatch); uerr != nil {
+		t.Fatal(uerr)
+	} else {
+		assertErrorCode(t, resp, http.StatusUnauthorized, "PLAYER_UNAUTHORIZED")
+	}
+
+	patchReq, _ := http.NewRequest(http.MethodPatch, ts.URL+"/api/v1/players/"+reg.ZoneID, strings.NewReader(`{"name":"Renamed Browser"}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchReq.Header.Set("Authorization", "Bearer "+reg.Token)
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH player status=%d", patchResp.StatusCode)
+	}
+	patchResp.Body.Close()
+
+	// 5c. DELETE /api/v1/zones/{zoneId} rejects player-managed zones with 409.
+	assertErrorCode(t, doReq(t, http.MethodDelete, ts.URL+"/api/v1/zones/"+reg.ZoneID, ""), http.StatusConflict, "PLAYER_MANAGED_ZONE")
+
 	// 6. Explicit DELETE unregisters player and removes zone.
 	delReq, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/players/"+reg.ZoneID, nil)
 	delReq.Header.Set("Authorization", "Bearer "+reg.Token)
@@ -579,4 +603,54 @@ func TestAPIv1_RemotePlayerEndpointLifecycle(t *testing.T) {
 	delResp.Body.Close()
 
 	assertErrorCode(t, doReq(t, http.MethodGet, ts.URL+"/api/v1/zones/"+reg.ZoneID, ""), http.StatusNotFound, "ZONE_NOT_FOUND")
+}
+
+func TestAPI_CSRFAndZoneRemovalAndTrackCap(t *testing.T) {
+	cat := library.NewCatalog(t.TempDir())
+	ctrl := &stubController{
+		info:  upnp.RendererInfo{ID: "uuid:living", Name: "Living Room", HasVolume: true},
+		state: "STOPPED",
+	}
+	qb := qobuz.NewClient(qobuz.Config{})
+	mgr := queue.NewManager(8080, "", qb)
+	mgr.RegisterRenderer(ctrl)
+	srv := NewServer(cat, qb, mgr)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// Cross-site browser POST must be rejected with 403 CROSS_SITE_BLOCKED.
+	csrfReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/zones/uuid:living/transport/pause", nil)
+	csrfReq.Header.Set("Origin", "https://evil.example")
+	csrfResp, err := http.DefaultClient.Do(csrfReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertErrorCode(t, csrfResp, http.StatusForbidden, "CROSS_SITE_BLOCKED")
+
+	// Cross-site browser POST with missing Content-Type is rejected when same-origin check passes.
+	sameOriginNoCT, _ := http.NewRequest(http.MethodPatch, ts.URL+"/api/v1/settings", strings.NewReader(`{"streamMode":"relay"}`))
+	sameOriginNoCT.Header.Set("Origin", ts.URL)
+	noCTResp, err := http.DefaultClient.Do(sameOriginNoCT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertErrorCode(t, noCTResp, http.StatusBadRequest, "INVALID_REQUEST")
+
+	// Track batch cap (> 500 trackIds) returns 400 INVALID_ARGUMENT.
+	ids := make([]string, 501)
+	for i := range ids {
+		ids[i] = "local:t1"
+	}
+	hugeBody, _ := json.Marshal(map[string]any{
+		"source": map[string]any{"type": "tracks", "trackIds": ids},
+	})
+	assertErrorCode(t, doReq(t, http.MethodPut, ts.URL+"/api/v1/zones/uuid:living/queue", string(hugeBody)), http.StatusBadRequest, "INVALID_REQUEST")
+
+	// DELETE /api/v1/zones/{zoneId} removes an existing UPnP zone cleanly.
+	delResp := doReq(t, http.MethodDelete, ts.URL+"/api/v1/zones/uuid:living", "")
+	if delResp.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE UPnP zone status=%d", delResp.StatusCode)
+	}
+	delResp.Body.Close()
+	assertErrorCode(t, doReq(t, http.MethodGet, ts.URL+"/api/v1/zones/uuid:living", ""), http.StatusNotFound, "ZONE_NOT_FOUND")
 }

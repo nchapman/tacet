@@ -2,8 +2,12 @@ package upnp
 
 import (
 	"context"
+	"encoding/xml"
+	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -11,7 +15,13 @@ import (
 
 	"github.com/huin/goupnp"
 	"github.com/huin/goupnp/dcps/av1"
+	"github.com/huin/goupnp/scpd"
 )
+
+const maxUPnPXMLBytes = 2 << 20 // 2 MiB cap for device description & SCPD XML
+
+// ErrInvalidRendererURL indicates a renderer URL failed syntax, scheme, or LAN IP validation.
+var ErrInvalidRendererURL = errors.New("invalid renderer URL")
 
 // Discover scans the local network via SSDP for UPnP/DLNA MediaRenderers
 // exposing AVTransport:1.
@@ -52,24 +62,60 @@ func ConnectByURL(ctx context.Context, rawURL string) (*Renderer, error) {
 	if err != nil {
 		return nil, err
 	}
-	root, err := goupnp.DeviceByURLCtx(ctx, loc)
+	root, err := fetchRootDevice(ctx, loc)
 	if err != nil {
 		return nil, fmt.Errorf("fetch device description %s: %w", loc.String(), err)
 	}
 	return buildRenderer(ctx, root, loc, nil)
 }
 
+func fetchXML(ctx context.Context, target *url.URL, dst any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return err
+	}
+	client := newSOAPHTTPClient()
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, target.String())
+	}
+	dec := xml.NewDecoder(io.LimitReader(resp.Body, maxUPnPXMLBytes))
+	return dec.Decode(dst)
+}
+
+func fetchRootDevice(ctx context.Context, loc *url.URL) (*goupnp.RootDevice, error) {
+	var root goupnp.RootDevice
+	if err := fetchXML(ctx, loc, &root); err != nil {
+		return nil, err
+	}
+	root.SetURLBase(loc)
+	return &root, nil
+}
+
+func fetchSCPD(ctx context.Context, target *url.URL) (*scpd.SCPD, error) {
+	var doc scpd.SCPD
+	if err := fetchXML(ctx, target, &doc); err != nil {
+		return nil, err
+	}
+	doc.Clean()
+	return &doc, nil
+}
+
 func validateRendererURL(ctx context.Context, rawURL string) (*url.URL, error) {
 	loc, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || loc.Host == "" {
-		return nil, fmt.Errorf("invalid renderer description URL %q", rawURL)
+		return nil, fmt.Errorf("%w: %q", ErrInvalidRendererURL, rawURL)
 	}
 	if loc.Scheme != "http" && loc.Scheme != "https" {
-		return nil, fmt.Errorf("renderer URL must use http or https scheme, got %q", loc.Scheme)
+		return nil, fmt.Errorf("%w: must use http or https scheme, got %q", ErrInvalidRendererURL, loc.Scheme)
 	}
 	host := loc.Hostname()
 	if host == "" {
-		return nil, fmt.Errorf("renderer URL missing host: %q", rawURL)
+		return nil, fmt.Errorf("%w: missing host in %q", ErrInvalidRendererURL, rawURL)
 	}
 
 	var ips []net.IP
@@ -78,7 +124,7 @@ func validateRendererURL(ctx context.Context, rawURL string) (*url.URL, error) {
 	} else {
 		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 		if err != nil || len(addrs) == 0 {
-			return nil, fmt.Errorf("could not resolve renderer host %q", host)
+			return nil, fmt.Errorf("%w: could not resolve host %q", ErrInvalidRendererURL, host)
 		}
 		for _, a := range addrs {
 			ips = append(ips, a.IP)
@@ -87,7 +133,7 @@ func validateRendererURL(ctx context.Context, rawURL string) (*url.URL, error) {
 
 	for _, ip := range ips {
 		if !ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			return nil, fmt.Errorf("renderer host %q resolves to non-LAN IP %s", host, ip.String())
+			return nil, fmt.Errorf("%w: host %q resolves to non-LAN IP %s", ErrInvalidRendererURL, host, ip.String())
 		}
 	}
 
@@ -124,7 +170,7 @@ func buildRenderer(ctx context.Context, root *goupnp.RootDevice, loc *url.URL, l
 		if pinnedSCPD, err := validateRendererURL(ctx, avClients[0].Service.SCPDURL.URL.String()); err == nil {
 			avClients[0].Service.SCPDURL.URL = *pinnedSCPD
 			sctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			scpdDoc, scpdErr := avClients[0].Service.RequestSCPDCtx(sctx)
+			scpdDoc, scpdErr := fetchSCPD(sctx, pinnedSCPD)
 			cancel()
 			if scpdErr == nil && scpdDoc != nil && len(scpdDoc.Actions) > 0 {
 				supportsSetNext = scpdDoc.GetAction("SetNextAVTransportURI") != nil

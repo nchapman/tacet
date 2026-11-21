@@ -32,10 +32,26 @@ func (m *Manager) ReplaceQueue(ctx context.Context, zoneID string, tracks []libr
 		return ZoneSnapshot{}, err
 	}
 
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
+
+	m.mu.RLock()
+	ctrl := z.ctrl
+	m.mu.RUnlock()
+
+	// Validate format support and resolve stream URL BEFORE mutating z.queue so
+	// an unsupported format or unauthenticated Qobuz track never wipes the active queue.
+	media, resolvedTrack, err := m.buildMediaItem(ctx, ctrl, tracks[startIndex])
+	if err != nil {
+		m.emitZoneError(zoneID, err)
+		return ZoneSnapshot{}, err
+	}
+
 	items := make([]Item, len(tracks))
 	for i, tr := range tracks {
 		items[i] = Item{ItemID: m.nextItemID(), Track: tr}
 	}
+	items[startIndex].Track = resolvedTrack
 
 	m.mu.Lock()
 	z.queue = items
@@ -54,7 +70,7 @@ func (m *Manager) ReplaceQueue(ctx context.Context, zoneID string, tracks []libr
 
 	m.emit("zone.queue", zoneID, qEv)
 
-	if err := m.loadAndPlay(ctx, z, startIndex, gen); err != nil {
+	if err := m.playPreparedMedia(ctx, z, startIndex, gen, ctrl, media, resolvedTrack); err != nil {
 		return ZoneSnapshot{}, err
 	}
 	snap, _ := m.Zone(zoneID)
@@ -77,6 +93,8 @@ func (m *Manager) AddQueueItems(ctx context.Context, zoneID string, tracks []lib
 	if err != nil {
 		return ZoneSnapshot{}, err
 	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
 
 	added := make([]Item, len(tracks))
 	for i, tr := range tracks {
@@ -88,6 +106,7 @@ func (m *Manager) AddQueueItems(ctx context.Context, zoneID string, tracks []lib
 	isPlaying := z.status.State == "PLAYING" || z.status.State == "TRANSITIONING"
 
 	startIdx := -1
+	clearedPreload := false
 	if wasEmpty {
 		z.queue = added
 		if autoplay {
@@ -102,6 +121,7 @@ func (m *Manager) AddQueueItems(ctx context.Context, zoneID string, tracks []lib
 		updated = append(updated, z.queue[insertAt:]...)
 		z.queue = updated
 		// Next track changed, so clear any previously preloaded URI.
+		clearedPreload = z.nextPreloaded
 		z.nextPreloaded = false
 		z.nextPreloading = false
 		z.nextFailed = false
@@ -126,10 +146,14 @@ func (m *Manager) AddQueueItems(ctx context.Context, zoneID string, tracks []lib
 		gen = z.generation
 	}
 	z.revision++
+	ctrl := z.ctrl
 	qEv := m.queueEventLocked(z)
 	pbEv := m.playbackEventLocked(z)
 	m.mu.Unlock()
 
+	if clearedPreload {
+		m.clearNextPreloadAsync(ctrl)
+	}
 	m.emit("zone.queue", zoneID, qEv)
 	if startIdx >= 0 {
 		if err := m.loadAndPlay(ctx, z, startIdx, gen); err != nil {
@@ -151,6 +175,8 @@ func (m *Manager) JumpToItem(ctx context.Context, zoneID, itemID string) (ZoneSn
 	if err != nil {
 		return ZoneSnapshot{}, err
 	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
 
 	m.mu.Lock()
 	idx := findItemIndexLocked(z.queue, itemID)
@@ -177,7 +203,7 @@ func (m *Manager) JumpToItem(ctx context.Context, zoneID, itemID string) (ZoneSn
 	return snap, nil
 }
 
-// RemoveItem idempotently deletes a queue entry by itemId.
+// RemoveItem deletes a queue entry by itemId, returning ErrQueueItemNotFound if absent.
 func (m *Manager) RemoveItem(ctx context.Context, zoneID, itemID string) (ZoneSnapshot, error) {
 	if strings.TrimSpace(itemID) == "" {
 		return ZoneSnapshot{}, fmt.Errorf("%w: itemId is required", ErrInvalidArgument)
@@ -186,6 +212,8 @@ func (m *Manager) RemoveItem(ctx context.Context, zoneID, itemID string) (ZoneSn
 	if err != nil {
 		return ZoneSnapshot{}, err
 	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
 
 	m.mu.Lock()
 	idx := findItemIndexLocked(z.queue, itemID)
@@ -195,6 +223,7 @@ func (m *Manager) RemoveItem(ctx context.Context, zoneID, itemID string) (ZoneSn
 	}
 	removingCurrent := idx == z.currentIndex
 	removingNext := idx == z.currentIndex+1
+	clearedPreload := removingNext && z.nextPreloaded
 	z.queue = append(z.queue[:idx], z.queue[idx+1:]...)
 
 	switch {
@@ -249,6 +278,9 @@ func (m *Manager) RemoveItem(ctx context.Context, zoneID, itemID string) (ZoneSn
 			m.emit("zone.playback", zoneID, pbEv)
 		}
 	} else if removingNext {
+		if clearedPreload {
+			m.clearNextPreloadAsync(ctrl)
+		}
 		m.emit("zone.playback", zoneID, pbEv)
 	}
 
@@ -265,6 +297,8 @@ func (m *Manager) MoveItem(zoneID, itemID string, toIndex int) (ZoneSnapshot, er
 	if err != nil {
 		return ZoneSnapshot{}, err
 	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
 
 	m.mu.Lock()
 	fromIndex := findItemIndexLocked(z.queue, itemID)
@@ -277,6 +311,7 @@ func (m *Manager) MoveItem(zoneID, itemID string, toIndex int) (ZoneSnapshot, er
 		return ZoneSnapshot{}, fmt.Errorf("%w: toIndex %d out of range [0, %d)", ErrInvalidArgument, toIndex, len(z.queue))
 	}
 
+	clearedPreload := false
 	if fromIndex != toIndex {
 		curItemID := ""
 		if z.currentIndex >= 0 && z.currentIndex < len(z.queue) {
@@ -294,17 +329,22 @@ func (m *Manager) MoveItem(zoneID, itemID string, toIndex int) (ZoneSnapshot, er
 			z.currentIndex = findItemIndexLocked(z.queue, curItemID)
 		}
 		// Order around next track may have changed; re-arm gapless cleanly on next tick.
+		clearedPreload = z.nextPreloaded
 		z.nextPreloaded = false
 		z.nextPreloading = false
 		z.nextFailed = false
 		z.nextURI = ""
 		z.revision++
 	}
+	ctrl := z.ctrl
 	qEv := m.queueEventLocked(z)
 	pbEv := m.playbackEventLocked(z)
 	snap := m.snapshotLocked(z)
 	m.mu.Unlock()
 
+	if clearedPreload {
+		m.clearNextPreloadAsync(ctrl)
+	}
 	m.emit("zone.queue", zoneID, qEv)
 	m.emit("zone.playback", zoneID, pbEv)
 	return snap, nil
@@ -316,6 +356,9 @@ func (m *Manager) ClearQueue(ctx context.Context, zoneID string) (ZoneSnapshot, 
 	if err != nil {
 		return ZoneSnapshot{}, err
 	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
+
 	m.mu.Lock()
 	z.queue = make([]Item, 0)
 	z.currentIndex = -1
@@ -349,6 +392,9 @@ func (m *Manager) Play(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	if err != nil {
 		return ZoneSnapshot{}, err
 	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
+
 	m.mu.Lock()
 	z.userStopped = false
 	needsReload := (z.status.State == "STOPPED" || z.status.State == "NO_MEDIA_PRESENT" || z.currentURI == "") &&
@@ -389,6 +435,9 @@ func (m *Manager) Pause(ctx context.Context, zoneID string) (ZoneSnapshot, error
 	if err != nil {
 		return ZoneSnapshot{}, err
 	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
+
 	if err := z.ctrl.Pause(ctx); err != nil {
 		return ZoneSnapshot{}, wrapRendererErr("Pause", err)
 	}
@@ -409,6 +458,9 @@ func (m *Manager) Stop(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	if err != nil {
 		return ZoneSnapshot{}, err
 	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
+
 	m.mu.Lock()
 	z.userStopped = true
 	z.wasPlaying = false
@@ -436,6 +488,9 @@ func (m *Manager) Next(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	if err != nil {
 		return ZoneSnapshot{}, err
 	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
+
 	m.mu.Lock()
 	if len(z.queue) == 0 {
 		m.mu.Unlock()
@@ -471,6 +526,9 @@ func (m *Manager) Prev(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	if err != nil {
 		return ZoneSnapshot{}, err
 	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
+
 	m.mu.Lock()
 	if len(z.queue) == 0 {
 		m.mu.Unlock()
@@ -478,14 +536,18 @@ func (m *Manager) Prev(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	}
 	pos := z.status.Position
 	curIdx := z.currentIndex
+	supportsSeek := z.ctrl.Info().SupportsSeek
 	m.mu.Unlock()
 
-	if pos > 5*time.Second {
-		return m.Seek(ctx, zoneID, 0)
+	if pos > 5*time.Second && supportsSeek {
+		return m.seekLockedOp(ctx, zoneID, z, 0)
 	}
-	target := curIdx - 1
-	if target < 0 {
-		target = 0
+	target := curIdx
+	if pos <= 5*time.Second {
+		target = curIdx - 1
+		if target < 0 {
+			target = 0
+		}
 	}
 	m.mu.Lock()
 	z.currentIndex = target
@@ -516,6 +578,12 @@ func (m *Manager) Seek(ctx context.Context, zoneID string, positionSec int) (Zon
 	if err != nil {
 		return ZoneSnapshot{}, err
 	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
+	return m.seekLockedOp(ctx, zoneID, z, positionSec)
+}
+
+func (m *Manager) seekLockedOp(ctx context.Context, zoneID string, z *zone, positionSec int) (ZoneSnapshot, error) {
 	if !z.ctrl.Info().SupportsSeek {
 		return ZoneSnapshot{}, fmt.Errorf("%w: renderer does not support Seek", ErrCapabilityUnsupported)
 	}

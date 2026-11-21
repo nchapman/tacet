@@ -157,6 +157,21 @@ export interface RegisterPlayerRequest {
   supportsSetNext?: boolean;
   supportsSeek?: boolean;
   preferRelativeMedia?: boolean;
+  qobuzDelivery?: QobuzDelivery;
+  gracePeriodSec?: number;
+}
+
+export interface UpdatePlayerRequest {
+  name?: string;
+  model?: string;
+  manufacturer?: string;
+  codecs?: string[];
+  hasVolume?: boolean;
+  supportsSetNext?: boolean;
+  supportsSeek?: boolean;
+  preferRelativeMedia?: boolean;
+  qobuzDelivery?: QobuzDelivery;
+  gracePeriodSec?: number;
 }
 
 export interface PlayerRegistration {
@@ -192,7 +207,7 @@ export interface PlayerStateReport {
   ok?: boolean;
   errorCode?: string;
   errorMessage?: string;
-  state?: "PLAYING" | "PAUSED_PLAYBACK" | "TRANSITIONING" | "STOPPED";
+  state?: PlaybackState;
   positionSec?: number;
   durationSec?: number;
   trackUri?: string;
@@ -210,11 +225,14 @@ export interface QobuzLoginRequest {
 
 // Split SSE event payloads
 export interface SnapshotEvent {
+  serverTime?: string;
   zones: ZoneSnapshot[];
   settings: Settings;
   qobuz: QobuzStatus;
   library: LibraryStatus;
 }
+
+export type QobuzDelivery = "auto" | "force" | "direct";
 
 export interface PlaybackEvent {
   zoneId: string;
@@ -222,6 +240,7 @@ export interface PlaybackEvent {
   state: PlaybackState;
   positionSec: number;
   positionUpdatedAt: string;
+  serverTime?: string;
   durationSec: number;
   currentIndex: number;
   currentItemId?: string;

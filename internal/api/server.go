@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"sync"
@@ -78,6 +80,19 @@ func NewServer(cat *library.Catalog, qb *qobuz.Client, mgr *queue.Manager) *Serv
 		apiMux:     http.NewServeMux(),
 		oauthState: make(map[string]time.Time),
 	}
+	mgr.SetErrorClassifier(func(err error) (string, bool, bool) {
+		switch {
+		case errors.Is(err, player.ErrPlaybackBlocked):
+			return "PLAYBACK_BLOCKED", false, true
+		case errors.Is(err, player.ErrCommandTimeout):
+			return "PLAYER_TIMEOUT", true, true
+		case errors.Is(err, player.ErrPlayerDisconnected):
+			return "RENDERER_UNREACHABLE", true, true
+		default:
+			return "", false, false
+		}
+	})
+
 	s.routes()
 	return s
 }
@@ -108,7 +123,8 @@ func (s *Server) Handler() http.Handler {
 		if s.corsOrigin != "" && (isAPI || strings.HasPrefix(r.URL.Path, "/media/")) {
 			w.Header().Set("Access-Control-Allow-Origin", s.corsOrigin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, If-None-Match")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, If-None-Match, Last-Event-ID")
+			w.Header().Set("Access-Control-Expose-Headers", "ETag, Allow")
 			if s.corsOrigin != "*" {
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 				w.Header().Add("Vary", "Origin")
@@ -120,6 +136,10 @@ func (s *Server) Handler() http.Handler {
 		}
 
 		if isAPI {
+			if isMutatingMethod(r.Method) && !s.isAllowedOrigin(r) {
+				writeAPIError(w, http.StatusForbidden, "CROSS_SITE_BLOCKED", "cross-site mutating request rejected", false)
+				return
+			}
 			h, pattern := s.apiMux.Handler(r)
 			if pattern != "" {
 				s.apiMux.ServeHTTP(w, r)
@@ -179,6 +199,7 @@ func (s *Server) routes() {
 	s.apiMux.HandleFunc("POST /api/v1/zones/discover", s.handleDiscoverZones)
 	s.apiMux.HandleFunc("POST /api/v1/zones/connect", s.handleConnectZone)
 	s.apiMux.HandleFunc("GET /api/v1/zones/{zoneId}", s.handleGetZone)
+	s.apiMux.HandleFunc("DELETE /api/v1/zones/{zoneId}", s.handleDeleteZone)
 
 	// Zone queue management
 	s.apiMux.HandleFunc("PUT /api/v1/zones/{zoneId}/queue", s.handleReplaceQueue)
@@ -200,6 +221,7 @@ func (s *Server) routes() {
 
 	// Remote HTTP/SSE audio player endpoints (web, mobile, desktop, CLI/daemon)
 	s.apiMux.HandleFunc("POST /api/v1/players", s.handleRegisterPlayer)
+	s.apiMux.HandleFunc("PATCH /api/v1/players/{zoneId}", s.handleUpdatePlayer)
 	s.apiMux.HandleFunc("GET /api/v1/players/{zoneId}/commands", s.handlePlayerCommands)
 	s.apiMux.HandleFunc("POST /api/v1/players/{zoneId}/state", s.handlePlayerState)
 	s.apiMux.HandleFunc("DELETE /api/v1/players/{zoneId}", s.handleUnregisterPlayer)
@@ -336,8 +358,41 @@ func newSPAHandler(dist fs.FS) http.Handler {
 	})
 }
 
+func isMutatingMethod(method string) bool {
+	return method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch || method == http.MethodDelete
+}
+
+// isAllowedOrigin defends LAN/localhost endpoints against drive-by browser CSRF
+// while allowing same-origin browsers, non-browser native/CLI clients (no Origin
+// / Sec-Fetch-Site headers), and explicitly configured --cors-origin origins.
+func (s *Server) isAllowedOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin != "" {
+		if s.corsOrigin == "*" || (s.corsOrigin != "" && origin == s.corsOrigin) {
+			return true
+		}
+		u, err := url.Parse(origin)
+		if err != nil || u.Host == "" {
+			return false
+		}
+		return strings.EqualFold(u.Host, r.Host)
+	}
+	if sfs := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))); sfs == "cross-site" {
+		return s.corsOrigin == "*"
+	}
+	return true
+}
+
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	defer func() { _ = r.Body.Close() }()
+	if ct := strings.TrimSpace(r.Header.Get("Content-Type")); ct != "" {
+		mt, _, err := mime.ParseMediaType(ct)
+		if err != nil || !strings.EqualFold(mt, "application/json") {
+			return errors.New("Content-Type must be application/json")
+		}
+	} else if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "" {
+		return errors.New("Content-Type must be application/json")
+	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {

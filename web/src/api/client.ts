@@ -23,6 +23,7 @@ import type {
   StreamMode,
   Track,
   TransportAction,
+  UpdatePlayerRequest,
   VolumeEvent,
   ZoneErrorEvent,
   ZoneSnapshot,
@@ -326,6 +327,10 @@ export class TacetClient {
     return this.request("/api/v1/zones/connect", { method: "POST", body: JSON.stringify({ url }) }, undefined, opts);
   }
 
+  removeZone(zoneId: string, opts?: RequestOptions): Promise<{ removed: boolean; zoneId: string }> {
+    return this.request(`/api/v1/zones/${encodeURIComponent(zoneId)}`, { method: "DELETE" }, undefined, opts);
+  }
+
   // Live SSE stream
   subscribeEvents(handlers: EventHandlers, zoneIds?: string[]): () => void {
     const ES = this.eventSourceImpl ?? globalThis.EventSource;
@@ -372,6 +377,26 @@ export class TacetClient {
       "/api/v1/players",
       {
         method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      },
+      undefined,
+      opts,
+    );
+  }
+
+  updatePlayer(
+    zoneId: string,
+    body: UpdatePlayerRequest,
+    token?: string,
+    opts?: RequestOptions,
+  ): Promise<{ zoneId: string; renderer: PlayerRegistration["renderer"] }> {
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return this.request<{ zoneId: string; renderer: PlayerRegistration["renderer"] }>(
+      `/api/v1/players/${encodeURIComponent(zoneId)}`,
+      {
+        method: "PATCH",
         headers,
         body: JSON.stringify(body),
       },

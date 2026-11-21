@@ -1,12 +1,15 @@
 openapi: 3.1.0
 info:
-  title: tacet Control Point API
-  version: 0.2.0
+  title: tacet Control Point & Remote Player API
+  version: "1.0.0"
   description: >
-    Headless UPnP/DLNA hi-res audio control point REST & Server-Sent Events API.
-    Supports multi-zone server-side queues, gapless playback, local NAS libraries, and Qobuz.
+    Headless multi-zone UPnP/DLNA control point, remote HTTP/SSE audio player
+    endpoint protocol, and bit-perfect audio streaming server.
+    All API errors return a structured ErrorEnvelope. Mutating requests from
+    browsers require Content-Type: application/json and same-origin or
+    explicitly allowed --cors-origin headers.
 servers:
-  - url: http://localhost:8080
+  - url: /
 paths:
   /api/health:
     get:
@@ -14,28 +17,42 @@ paths:
       responses:
         "200":
           description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+  /api/v1/openapi.yaml:
+    get:
+      summary: Download this OpenAPI 3.1 specification
+      responses:
+        "200":
+          description: OpenAPI YAML document
+          content:
+            application/yaml:
+              schema: { type: string }
   /api/v1/info:
     get:
-      summary: Server version and enabled capabilities
+      summary: Server metadata and enabled capabilities
       responses:
         "200":
           description: Server metadata
           content:
             application/json:
-              schema:
-                $ref: "#/components/schemas/ServerInfo"
+              schema: { $ref: "#/components/schemas/ServerInfo" }
   /api/v1/settings:
     get:
-      summary: Read global server playback settings
+      summary: Get global server settings
       responses:
         "200":
           description: Current settings
           content:
             application/json:
-              schema:
-                $ref: "#/components/schemas/Settings"
+              schema: { $ref: "#/components/schemas/Settings" }
     patch:
-      summary: Update global server playback settings
+      summary: Update global server settings
       requestBody:
         required: true
         content:
@@ -43,41 +60,41 @@ paths:
             schema:
               type: object
               properties:
-                streamMode:
-                  $ref: "#/components/schemas/StreamMode"
-                qobuzMaxQuality:
-                  $ref: "#/components/schemas/QobuzQuality"
+                streamMode: { $ref: "#/components/schemas/StreamMode" }
+                qobuzMaxQuality: { $ref: "#/components/schemas/QobuzQuality" }
       responses:
         "200":
           description: Updated settings
           content:
             application/json:
-              schema:
-                $ref: "#/components/schemas/Settings"
+              schema: { $ref: "#/components/schemas/Settings" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/events:
     get:
-      summary: Multi-zone Server-Sent Events stream
+      summary: Server-Sent Events stream for multi-zone state updates
       description: >
-        Emits initial `snapshot`, followed by incremental `zone.playback`, `zone.volume`,
-        `zone.queue`, `zone.error`, `zones.updated`, `settings.updated`, `qobuz.status`,
-        `library.updated`, and `resync` events.
+        Emits named SSE events: snapshot, zone.playback, zone.volume, zone.queue,
+        zone.error, zones.updated, settings.updated, qobuz.status, library.updated,
+        and resync. Pass ?zone=<id> (repeatable) to filter zone events and zones.updated.
       parameters:
         - name: zone
           in: query
           description: Optional repeatable zoneId filter
           schema:
             type: array
-            items:
-              type: string
+            items: { type: string }
       responses:
         "200":
           description: text/event-stream
+          content:
+            text/event-stream:
+              schema: { type: string }
   /api/v1/zones:
     get:
-      summary: List all discovered renderer zones with current playback state
+      summary: List all discovered UPnP renderers and registered remote player zones
       responses:
         "200":
-          description: Zone list
+          description: Zone snapshots
           content:
             application/json:
               schema:
@@ -86,17 +103,27 @@ paths:
                 properties:
                   zones:
                     type: array
-                    items:
-                      $ref: "#/components/schemas/ZoneSnapshot"
+                    items: { $ref: "#/components/schemas/ZoneSnapshot" }
   /api/v1/zones/discover:
     post:
-      summary: Trigger SSDP UPnP renderer discovery on the LAN
+      summary: Run SSDP discovery for UPnP MediaRenderers on the LAN
       responses:
         "200":
           description: Discovery results
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [discovered, zones]
+                properties:
+                  discovered: { type: integer }
+                  zones:
+                    type: array
+                    items: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "502": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/connect:
     post:
-      summary: Connect directly to a UPnP MediaRenderer by its LAN description XML URL
+      summary: Connect directly to a UPnP renderer description XML URL on the LAN
       requestBody:
         required: true
         content:
@@ -105,31 +132,54 @@ paths:
               type: object
               required: [url]
               properties:
-                url:
-                  type: string
-                  format: uri
+                url: { type: string, format: uri }
       responses:
         "200":
-          description: Connected zone and updated zone list
+          description: Connected zone snapshot and updated zone list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [zone, zones]
+                properties:
+                  zone: { $ref: "#/components/schemas/ZoneSnapshot" }
+                  zones:
+                    type: array
+                    items: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "502": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}:
     get:
-      summary: Get snapshot for a specific zone
-      parameters:
-        - $ref: "#/components/parameters/ZoneId"
+      summary: Get a single zone snapshot
+      parameters: [$ref: "#/components/parameters/ZoneId"]
       responses:
         "200":
           description: Zone snapshot
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+    delete:
+      summary: Remove an offline or stale UPnP renderer zone
+      description: Removes a UPnP zone from memory. Remote player zones return 409 and must be unregistered via DELETE /api/v1/players/{zoneId}.
+      parameters: [$ref: "#/components/parameters/ZoneId"]
+      responses:
+        "200":
+          description: Zone removed
+          content:
+            application/json:
               schema:
-                $ref: "#/components/schemas/ZoneSnapshot"
-        "404":
-          $ref: "#/components/responses/ErrorResponse"
+                type: object
+                required: [removed, zoneId]
+                properties:
+                  removed: { type: boolean }
+                  zoneId: { type: string }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "409": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/queue:
     put:
-      summary: Replace zone queue from an album or track IDs and start playback
-      parameters:
-        - $ref: "#/components/parameters/ZoneId"
+      summary: Replace zone queue from a source and start playback
+      parameters: [$ref: "#/components/parameters/ZoneId"]
       requestBody:
         required: true
         content:
@@ -138,30 +188,35 @@ paths:
               type: object
               required: [source]
               properties:
-                source:
-                  $ref: "#/components/schemas/QueueSource"
-                startIndex:
-                  type: integer
-                  minimum: 0
+                source: { $ref: "#/components/schemas/QueueSource" }
+                startIndex: { type: integer, minimum: 0, default: 0 }
       responses:
         "200":
           description: Updated zone snapshot
           content:
             application/json:
-              schema:
-                $ref: "#/components/schemas/ZoneSnapshot"
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "409": { $ref: "#/components/responses/ErrorResponse" }
+        "422": { $ref: "#/components/responses/ErrorResponse" }
+        "502": { $ref: "#/components/responses/ErrorResponse" }
+        "504": { $ref: "#/components/responses/ErrorResponse" }
     delete:
-      summary: Clear the zone queue and stop playback
-      parameters:
-        - $ref: "#/components/parameters/ZoneId"
+      summary: Clear zone queue and stop playback
+      parameters: [$ref: "#/components/parameters/ZoneId"]
       responses:
         "200":
-          description: Cleared zone snapshot
+          description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/queue/items:
     post:
-      summary: Append or play-next tracks/album in the zone queue
-      parameters:
-        - $ref: "#/components/parameters/ZoneId"
+      summary: Append or Play-Next items in a zone queue
+      parameters: [$ref: "#/components/parameters/ZoneId"]
       requestBody:
         required: true
         content:
@@ -170,23 +225,23 @@ paths:
               type: object
               required: [source]
               properties:
-                source:
-                  $ref: "#/components/schemas/QueueSource"
-                position:
-                  type: string
-                  enum: [end, next]
-                  default: end
-                autoplay:
-                  type: boolean
-                  default: true
+                source: { $ref: "#/components/schemas/QueueSource" }
+                position: { type: string, enum: [end, next], default: end }
+                autoplay: { type: boolean, default: true }
       responses:
         "200":
           description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "409": { $ref: "#/components/responses/ErrorResponse" }
+        "422": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/queue/jump:
     post:
       summary: Jump playback to a specific queue item by itemId
-      parameters:
-        - $ref: "#/components/parameters/ZoneId"
+      parameters: [$ref: "#/components/parameters/ZoneId"]
       requestBody:
         required: true
         content:
@@ -195,22 +250,29 @@ paths:
               type: object
               required: [itemId]
               properties:
-                itemId:
-                  type: string
+                itemId: { type: string }
       responses:
         "200":
           description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "409": { $ref: "#/components/responses/ErrorResponse" }
+        "422": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/queue/items/{itemId}:
     delete:
-      summary: Idempotently remove a queue item by itemId
+      summary: Remove a queue item by itemId (returns 404 QUEUE_ITEM_NOT_FOUND if absent)
       parameters:
         - $ref: "#/components/parameters/ZoneId"
         - $ref: "#/components/parameters/ItemId"
       responses:
         "200":
           description: Updated zone snapshot
-        "404":
-          $ref: "#/components/responses/ErrorResponse"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/queue/items/{itemId}/move:
     post:
       summary: Reorder a queue item to a new 0-based index
@@ -225,43 +287,80 @@ paths:
               type: object
               required: [toIndex]
               properties:
-                toIndex:
-                  type: integer
-                  minimum: 0
+                toIndex: { type: integer, minimum: 0 }
       responses:
         "200":
           description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/transport/play:
     post:
       summary: Start or resume playback
       parameters: [$ref: "#/components/parameters/ZoneId"]
       responses:
-        "200": { description: Updated zone snapshot }
+        "200":
+          description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "409": { $ref: "#/components/responses/ErrorResponse" }
+        "502": { $ref: "#/components/responses/ErrorResponse" }
+        "504": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/transport/pause:
     post:
       summary: Pause playback
       parameters: [$ref: "#/components/parameters/ZoneId"]
       responses:
-        "200": { description: Updated zone snapshot }
+        "200":
+          description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "502": { $ref: "#/components/responses/ErrorResponse" }
+        "504": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/transport/stop:
     post:
       summary: Stop playback
       parameters: [$ref: "#/components/parameters/ZoneId"]
       responses:
-        "200": { description: Updated zone snapshot }
+        "200":
+          description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "502": { $ref: "#/components/responses/ErrorResponse" }
+        "504": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/transport/next:
     post:
       summary: Advance to next queued track
       parameters: [$ref: "#/components/parameters/ZoneId"]
       responses:
-        "200": { description: Updated zone snapshot }
+        "200":
+          description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
         "409": { $ref: "#/components/responses/ErrorResponse" }
+        "422": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/transport/prev:
     post:
-      summary: Restart track (>5s) or move to previous queued track
+      summary: Restart current track (>5s) or jump to previous track
       parameters: [$ref: "#/components/parameters/ZoneId"]
       responses:
-        "200": { description: Updated zone snapshot }
+        "200":
+          description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "409": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/transport/seek:
     post:
       summary: Seek to positionSec seconds
@@ -276,10 +375,17 @@ paths:
               properties:
                 positionSec: { type: integer, minimum: 0 }
       responses:
-        "200": { description: Updated zone snapshot }
+        "200":
+          description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "422": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/volume:
     put:
-      summary: Set zone volume (0..100)
+      summary: Set zone volume (0–100)
       parameters: [$ref: "#/components/parameters/ZoneId"]
       requestBody:
         required: true
@@ -291,7 +397,14 @@ paths:
               properties:
                 volume: { type: integer, minimum: 0, maximum: 100 }
       responses:
-        "200": { description: Updated zone snapshot }
+        "200":
+          description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "422": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/mute:
     put:
       summary: Set zone mute state
@@ -306,15 +419,26 @@ paths:
               properties:
                 muted: { type: boolean }
       responses:
-        "200": { description: Updated zone snapshot }
+        "200":
+          description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "422": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/library/status:
     get:
-      summary: Local library summary and scan status
+      summary: Local NAS library scan status and counts
       responses:
-        "200": { description: Library status }
+        "200":
+          description: Library status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LibraryStatus" }
   /api/v1/library/albums:
     get:
-      summary: Paginated local albums (supports ETag / If-None-Match)
+      summary: List or search local albums (paginated, supports ETag / If-None-Match)
       parameters:
         - name: q
           in: query
@@ -324,74 +448,143 @@ paths:
           schema: { type: string, enum: [artist, title, year] }
         - name: limit
           in: query
-          schema: { type: integer, minimum: 1, maximum: 500 }
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
         - name: offset
           in: query
-          schema: { type: integer, minimum: 0 }
+          schema: { type: integer, minimum: 0, default: 0 }
       responses:
-        "200": { description: Paginated album list }
+        "200":
+          description: Paginated albums
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Album" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
         "304": { description: Not Modified }
   /api/v1/library/albums/{id}:
     get:
-      summary: Get local album with ordered tracks
+      summary: Fetch a single local album with ordered tracks
       parameters:
         - name: id
           in: path
           required: true
           schema: { type: string }
       responses:
-        "200": { description: Album details }
+        "200":
+          description: Album with tracks
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Album" }
         "404": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/library/tracks:
     get:
-      summary: Paginated local tracks / search
+      summary: List or search local tracks (paginated)
       parameters:
         - name: q
           in: query
           schema: { type: string }
         - name: limit
           in: query
-          schema: { type: integer, minimum: 1, maximum: 500 }
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
         - name: offset
           in: query
-          schema: { type: integer, minimum: 0 }
+          schema: { type: integer, minimum: 0, default: 0 }
       responses:
-        "200": { description: Paginated track list }
+        "200":
+          description: Paginated tracks
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Track" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
   /api/v1/library/rescan:
     post:
-      summary: Trigger single-flight local library rescan
+      summary: Trigger local library rescan (async 202 by default, sync 200 with ?wait=true)
       parameters:
         - name: wait
           in: query
-          schema: { type: boolean }
+          schema: { type: boolean, default: false }
       responses:
-        "202": { description: Async rescan started }
-        "200": { description: Synchronous rescan completed (?wait=true) }
+        "200":
+          description: Completed rescan status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LibraryStatus" }
+        "202":
+          description: Background rescan started
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LibraryStatus" }
   /api/v1/qobuz/status:
     get:
-      summary: Qobuz authentication & quality status
+      summary: Get Qobuz authentication and quality status
       responses:
-        "200": { description: Qobuz status }
+        "200":
+          description: Qobuz status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QobuzStatus" }
   /api/v1/qobuz/oauth/start:
     get:
-      summary: Redirect browser to Qobuz OAuth sign-in
+      summary: Redirect to Qobuz OAuth sign-in
       responses:
-        "302": { description: Redirect to Qobuz }
+        "302": { description: Redirect to Qobuz OAuth }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "503": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/qobuz/oauth/callback:
     get:
-      summary: Qobuz OAuth callback
+      summary: Handle Qobuz OAuth callback
       responses:
-        "302": { description: Redirect to web UI }
+        "302": { description: Redirect back to web client }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "403": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/qobuz/login:
     post:
-      summary: Authenticate Qobuz using a user_auth_token
+      summary: Authenticate Qobuz using an authToken or legacy email/password credentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                authToken: { type: string }
+                email: { type: string }
+                password: { type: string }
+                appId: { type: string }
+                appSecret: { type: string }
       responses:
-        "200": { description: Authenticated Qobuz status }
+        "200":
+          description: Authenticated Qobuz status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QobuzStatus" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+        "503": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/qobuz/session:
     delete:
-      summary: Sign out of Qobuz
+      summary: Log out of Qobuz and clear in-memory session token
       responses:
-        "200": { description: Unauthenticated Qobuz status }
+        "200":
+          description: Cleared Qobuz status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QobuzStatus" }
   /api/v1/qobuz/search:
     get:
       summary: Search Qobuz tracks and albums
@@ -402,75 +595,146 @@ paths:
           schema: { type: string }
         - name: limit
           in: query
-          schema: { type: integer, minimum: 1, maximum: 100 }
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
         - name: offset
           in: query
-          schema: { type: integer, minimum: 0 }
+          schema: { type: integer, minimum: 0, default: 0 }
       responses:
-        "200": { description: Search matches }
+        "200":
+          description: Search matches
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QobuzSearchResult" }
         "400": { $ref: "#/components/responses/ErrorResponse" }
         "401": { $ref: "#/components/responses/ErrorResponse" }
+        "503": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/qobuz/albums/{id}:
     get:
-      summary: Fetch Qobuz album and tracks
+      summary: Fetch Qobuz album and ordered tracks
       parameters:
         - name: id
           in: path
           required: true
           schema: { type: string }
       responses:
-        "200": { description: Album details }
+        "200":
+          description: Album details
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Album" }
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/players:
     post:
       summary: Register or reattach any HTTP/SSE audio player endpoint as a controllable zone
+      security:
+        - {}
+        - bearerAuth: []
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [name]
-              properties:
-                playerId: { type: string }
-                name: { type: string }
-                model: { type: string }
-                manufacturer: { type: string }
-                codecs:
-                  type: array
-                  items: { type: string }
-                hasVolume: { type: boolean, default: true }
-                supportsSetNext: { type: boolean, default: true }
-                supportsSeek: { type: boolean, default: true }
-                preferRelativeMedia: { type: boolean, default: true }
+            schema: { $ref: "#/components/schemas/RegisterPlayerRequest" }
       responses:
-        "200": { description: Player registration with zoneId, bearer token, and renderer info }
+        "200":
+          description: Player registration with zoneId, bearer token, and renderer info
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlayerRegistration" }
         "400": { $ref: "#/components/responses/ErrorResponse" }
         "401": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/players/{zoneId}:
+    patch:
+      summary: Partially update metadata or capabilities of a registered player endpoint
+      security:
+        - bearerAuth: []
+        - playerCookie: []
+      parameters: [$ref: "#/components/parameters/ZoneId"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdatePlayerRequest" }
+      responses:
+        "200":
+          description: Updated renderer info
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [zoneId, renderer]
+                properties:
+                  zoneId: { type: string }
+                  renderer: { $ref: "#/components/schemas/RendererInfo" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+    delete:
+      summary: Explicitly unregister a registered player endpoint
+      security:
+        - bearerAuth: []
+        - playerCookie: []
+      parameters: [$ref: "#/components/parameters/ZoneId"]
+      responses:
+        "200":
+          description: Player unregistered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [unregistered, zoneId]
+                properties:
+                  unregistered: { type: boolean }
+                  zoneId: { type: string }
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/players/{zoneId}/commands:
     get:
       summary: Server-Sent Events stream pushing transport and volume commands to a registered player endpoint
+      description: >
+        Emits connected (with current zone snapshot & serverTime), command (with
+        SSE id matching command.id), and replaced events. On 404 after a server
+        restart, clients should re-register via POST /api/v1/players.
+      security:
+        - bearerAuth: []
+        - playerCookie: []
       parameters: [$ref: "#/components/parameters/ZoneId"]
       responses:
-        "200": { description: text/event-stream of connected, command, and replaced events }
+        "200":
+          description: text/event-stream of connected, command, and replaced events
+          content:
+            text/event-stream:
+              schema: { type: string }
         "401": { $ref: "#/components/responses/ErrorResponse" }
         "404": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/players/{zoneId}/state:
     post:
       summary: Push player transport/volume state and command acknowledgements
+      security:
+        - bearerAuth: []
+        - playerCookie: []
       parameters: [$ref: "#/components/parameters/ZoneId"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PlayerStateReport" }
       responses:
         "204": { description: State accepted }
-        "401": { $ref: "#/components/responses/ErrorResponse" }
-        "404": { $ref: "#/components/responses/ErrorResponse" }
-  /api/v1/players/{zoneId}:
-    delete:
-      summary: Explicitly unregister a registered player endpoint
-      parameters: [$ref: "#/components/parameters/ZoneId"]
-      responses:
-        "200": { description: Player unregistered }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
         "401": { $ref: "#/components/responses/ErrorResponse" }
         "404": { $ref: "#/components/responses/ErrorResponse" }
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Per-player session token returned by POST /api/v1/players
+    playerCookie:
+      type: apiKey
+      in: cookie
+      name: tacet_player_session
+      description: HttpOnly SameSite=Lax cookie scoped to /api/v1/players/{zoneId}
   parameters:
     ZoneId:
       name: zoneId
@@ -487,8 +751,7 @@ components:
       description: Structured JSON error
       content:
         application/json:
-          schema:
-            $ref: "#/components/schemas/ErrorEnvelope"
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   schemas:
     StreamMode:
       type: string
@@ -496,6 +759,9 @@ components:
     QobuzQuality:
       type: string
       enum: [mp3_320, flac_16_44, flac_24_96, flac_24_192]
+    QobuzDelivery:
+      type: string
+      enum: [auto, force, direct]
     PlaybackState:
       type: string
       enum: [idle, playing, paused, buffering, stopped]
@@ -518,6 +784,91 @@ components:
             localLibrary: { type: boolean }
             qobuz: { type: boolean }
             gena: { type: boolean }
+    Track:
+      type: object
+      required: [id, source, title, artist, album, trackNumber, discNumber, durationSec, mime, ext]
+      properties:
+        id: { type: string, description: "Opaque source-prefixed ID (local:... or qobuz:...)" }
+        source: { type: string, enum: [local, qobuz] }
+        title: { type: string }
+        artist: { type: string }
+        albumArtist: { type: string }
+        album: { type: string }
+        albumId: { type: string }
+        trackNumber: { type: integer }
+        discNumber: { type: integer }
+        year: { type: integer }
+        durationSec: { type: integer }
+        mime: { type: string }
+        ext: { type: string }
+        size: { type: integer }
+        sampleRate: { type: integer }
+        bitDepth: { type: integer }
+        channels: { type: integer }
+        artworkUrl: { type: string }
+        qobuzTrackId: { type: integer }
+    Album:
+      type: object
+      required: [id, source, title, artist, trackCount]
+      properties:
+        id: { type: string }
+        source: { type: string, enum: [local, qobuz] }
+        title: { type: string }
+        artist: { type: string }
+        year: { type: integer }
+        artworkUrl: { type: string }
+        trackCount: { type: integer }
+        maxBitDepth: { type: integer }
+        maxSampleRate: { type: integer }
+        tracks:
+          type: array
+          items: { $ref: "#/components/schemas/Track" }
+    RendererInfo:
+      type: object
+      required: [id, name, location, host, hasVolume, supportsSetNext, supportsSeek, supportsEvents]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [upnp, player] }
+        name: { type: string }
+        manufacturer: { type: string }
+        model: { type: string }
+        location: { type: string }
+        host: { type: string }
+        hasVolume: { type: boolean }
+        supportsSetNext: { type: boolean }
+        supportsSeek: { type: boolean }
+        supportsEvents: { type: boolean }
+        sinkProtocols:
+          type: array
+          items: { type: string }
+    LibraryStatus:
+      type: object
+      required: [scanning, trackCount, albumCount]
+      properties:
+        scanning: { type: boolean }
+        trackCount: { type: integer }
+        albumCount: { type: integer }
+        lastScan: { type: string, format: date-time }
+    QobuzStatus:
+      type: object
+      required: [configured, authenticated, maxFormatId, maxQuality]
+      properties:
+        configured: { type: boolean }
+        authenticated: { type: boolean }
+        user: { type: string }
+        subscription: { type: string }
+        maxFormatId: { type: integer }
+        maxQuality: { $ref: "#/components/schemas/QobuzQuality" }
+    QobuzSearchResult:
+      type: object
+      required: [tracks, albums]
+      properties:
+        tracks:
+          type: array
+          items: { $ref: "#/components/schemas/Track" }
+        albums:
+          type: array
+          items: { $ref: "#/components/schemas/Album" }
     QueueSource:
       oneOf:
         - type: object
@@ -531,19 +882,20 @@ components:
             type: { const: tracks }
             trackIds:
               type: array
+              maxItems: 500
               items: { type: string }
     QueueItem:
       type: object
       required: [itemId, track]
       properties:
         itemId: { type: string }
-        track: { type: object }
+        track: { $ref: "#/components/schemas/Track" }
     ZoneSnapshot:
       type: object
       required: [zoneId, renderer, revision, state, positionSec, positionUpdatedAt, durationSec, volume, muted, queue, currentIndex, gaplessArmed, eventsActive]
       properties:
         zoneId: { type: string }
-        renderer: { type: object }
+        renderer: { $ref: "#/components/schemas/RendererInfo" }
         revision: { type: integer }
         state: { $ref: "#/components/schemas/PlaybackState" }
         positionSec: { type: integer }
@@ -556,7 +908,113 @@ components:
           items: { $ref: "#/components/schemas/QueueItem" }
         currentIndex: { type: integer }
         currentItemId: { type: string }
-        currentTrack: { type: object }
+        currentTrack: { $ref: "#/components/schemas/Track" }
+        gaplessArmed: { type: boolean }
+        eventsActive: { type: boolean }
+    RegisterPlayerRequest:
+      type: object
+      properties:
+        playerId:
+          type: string
+          pattern: "^(player:)?[A-Za-z0-9_-]{1,64}$"
+        name: { type: string, maxLength: 80, default: Remote Player }
+        model: { type: string, maxLength: 80 }
+        manufacturer: { type: string, maxLength: 80 }
+        codecs:
+          type: array
+          items: { type: string }
+        hasVolume: { type: boolean, default: true }
+        supportsSetNext: { type: boolean, default: true }
+        supportsSeek: { type: boolean, default: true }
+        preferRelativeMedia: { type: boolean, default: true }
+        qobuzDelivery: { $ref: "#/components/schemas/QobuzDelivery" }
+        gracePeriodSec: { type: integer, minimum: 5, maximum: 3600, default: 20 }
+    UpdatePlayerRequest:
+      type: object
+      properties:
+        name: { type: string, maxLength: 80 }
+        model: { type: string, maxLength: 80 }
+        manufacturer: { type: string, maxLength: 80 }
+        codecs:
+          type: array
+          items: { type: string }
+        hasVolume: { type: boolean }
+        supportsSetNext: { type: boolean }
+        supportsSeek: { type: boolean }
+        preferRelativeMedia: { type: boolean }
+        qobuzDelivery: { $ref: "#/components/schemas/QobuzDelivery" }
+        gracePeriodSec: { type: integer, minimum: 5, maximum: 3600 }
+    PlayerRegistration:
+      type: object
+      required: [zoneId, token, renderer]
+      properties:
+        zoneId: { type: string }
+        token: { type: string }
+        renderer: { $ref: "#/components/schemas/RendererInfo" }
+    PlayerMediaPayload:
+      type: object
+      required: [id, url, title, artist, album, mime, durationSec]
+      properties:
+        id: { type: string }
+        url: { type: string }
+        title: { type: string }
+        artist: { type: string }
+        album: { type: string }
+        artworkUrl: { type: string }
+        mime: { type: string }
+        durationSec: { type: integer }
+        sampleRate: { type: integer }
+        bitDepth: { type: integer }
+    PlayerCommand:
+      type: object
+      required: [id, type]
+      properties:
+        id: { type: string }
+        type:
+          type: string
+          enum: [set_uri, set_next_uri, play, pause, stop, seek, set_volume, set_mute]
+        media: { $ref: "#/components/schemas/PlayerMediaPayload" }
+        positionSec: { type: integer }
+        volume: { type: integer }
+        muted: { type: boolean }
+    PlayerStateReport:
+      type: object
+      properties:
+        cmdId: { type: string }
+        ok: { type: boolean }
+        errorCode: { type: string }
+        errorMessage: { type: string }
+        state: { $ref: "#/components/schemas/PlaybackState" }
+        positionSec: { type: number, minimum: 0, maximum: 86400 }
+        durationSec: { type: number, minimum: 0, maximum: 86400 }
+        trackUri: { type: string }
+        volume: { type: integer, minimum: 0, maximum: 100 }
+        muted: { type: boolean }
+    SnapshotEvent:
+      type: object
+      required: [serverTime, zones, settings, qobuz, library]
+      properties:
+        serverTime: { type: string, format: date-time }
+        zones:
+          type: array
+          items: { $ref: "#/components/schemas/ZoneSnapshot" }
+        settings: { $ref: "#/components/schemas/Settings" }
+        qobuz: { $ref: "#/components/schemas/QobuzStatus" }
+        library: { $ref: "#/components/schemas/LibraryStatus" }
+    PlaybackEvent:
+      type: object
+      required: [zoneId, revision, state, positionSec, positionUpdatedAt, serverTime, durationSec, currentIndex, gaplessArmed, eventsActive]
+      properties:
+        zoneId: { type: string }
+        revision: { type: integer }
+        state: { $ref: "#/components/schemas/PlaybackState" }
+        positionSec: { type: integer }
+        positionUpdatedAt: { type: string, format: date-time }
+        serverTime: { type: string, format: date-time }
+        durationSec: { type: integer }
+        currentIndex: { type: integer }
+        currentItemId: { type: string }
+        currentTrack: { $ref: "#/components/schemas/Track" }
         gaplessArmed: { type: boolean }
         eventsActive: { type: boolean }
     ErrorEnvelope:

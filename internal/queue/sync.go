@@ -29,12 +29,38 @@ func (m *Manager) loadAndPlay(ctx context.Context, z *zone, idx int, gen uint64)
 		m.emitZoneError(zoneID, err)
 		return err
 	}
+	return m.playPreparedMedia(ctx, z, idx, gen, ctrl, media, resolvedTrack)
+}
 
+func (m *Manager) playPreparedMedia(
+	ctx context.Context,
+	z *zone,
+	idx int,
+	gen uint64,
+	ctrl upnp.Controller,
+	media upnp.MediaItem,
+	resolvedTrack library.Track,
+) error {
+	zoneID := ctrl.Info().ID
 	if err := ctrl.SetURI(ctx, media); err != nil {
 		werr := wrapRendererErr("SetAVTransportURI", err)
 		m.emitZoneError(zoneID, werr)
 		return werr
 	}
+	// Record currentURI immediately after SetURI succeeds so even if Play times out
+	// on a slow DAC and starts 300ms later, subsequent PLAYING reports are not treated
+	// as stale tracks.
+	m.mu.Lock()
+	if z.generation == gen {
+		if idx >= 0 && idx < len(z.queue) {
+			z.queue[idx].Track = resolvedTrack
+		}
+		z.currentURI = media.URL
+		z.status.Duration = media.Duration
+		z.status.TrackURI = media.URL
+	}
+	m.mu.Unlock()
+
 	if err := ctrl.Play(ctx); err != nil {
 		werr := wrapRendererErr("Play", err)
 		m.emitZoneError(zoneID, werr)
@@ -43,7 +69,7 @@ func (m *Manager) loadAndPlay(ctx context.Context, z *zone, idx int, gen uint64)
 
 	m.mu.Lock()
 	if z.generation == gen {
-		if idx < len(z.queue) {
+		if idx >= 0 && idx < len(z.queue) {
 			z.queue[idx].Track = resolvedTrack
 		}
 		z.currentURI = media.URL
@@ -67,11 +93,19 @@ func (m *Manager) loadAndPlay(ctx context.Context, z *zone, idx int, gen uint64)
 	return nil
 }
 
+func (m *Manager) clearNextPreloadAsync(ctrl upnp.Controller) {
+	if ctrl == nil || ctrl.Info().Kind != "player" {
+		return
+	}
+	go func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = ctrl.SetNextURI(cctx, upnp.MediaItem{})
+	}()
+}
+
 func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, track library.Track) (upnp.MediaItem, library.Track, error) {
 	info := ctrl.Info()
-	if err := checkEndpointFormat(info, track); err != nil {
-		return upnp.MediaItem{}, track, err
-	}
 
 	relativeMedia := false
 	if rm, ok := ctrl.(upnp.RelativeMediaController); ok && rm.PreferRelativeMedia() {
@@ -84,6 +118,9 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 
 	switch track.Source {
 	case library.SourceLocal:
+		if err := checkEndpointFormat(info, track); err != nil {
+			return upnp.MediaItem{}, track, err
+		}
 		artURL := ""
 		if track.ArtworkURL != "" {
 			if strings.HasPrefix(track.ArtworkURL, "http://") || strings.HasPrefix(track.ArtworkURL, "https://") {
@@ -137,9 +174,28 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 			track.MIME = stream.MIME
 		}
 
+		// Validate codec AFTER resolving the real Qobuz stream MIME (e.g. audio/mpeg for mp3_320).
+		if err := checkEndpointFormat(info, track); err != nil {
+			return upnp.MediaItem{}, track, err
+		}
+
+		useRelay := m.StreamMode() == StreamModeRelay
+		if qdc, ok := ctrl.(upnp.QobuzDeliveryController); ok {
+			switch strings.ToLower(strings.TrimSpace(qdc.QobuzDelivery())) {
+			case "force":
+				useRelay = true
+			case "direct":
+				useRelay = false
+			}
+		}
+
 		streamURL := stream.URL
-		if relativeMedia || m.StreamMode() == StreamModeRelay {
-			streamURL = baseURL + "/media/qobuz/" + strconv.FormatInt(qID, 10) + ".flac"
+		if useRelay {
+			ext := ".flac"
+			if strings.Contains(strings.ToLower(track.MIME), "mpeg") || strings.Contains(strings.ToLower(track.MIME), "mp3") {
+				ext = ".mp3"
+			}
+			streamURL = baseURL + "/media/qobuz/" + strconv.FormatInt(qID, 10) + ext
 		}
 
 		return upnp.MediaItem{

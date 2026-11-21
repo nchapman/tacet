@@ -407,3 +407,68 @@ func TestManager_PartialStatusFailurePreservesPositionAndVolume(t *testing.T) {
 		t.Fatalf("expected previous pos/dur/vol/mute preserved, got %+v", snap)
 	}
 }
+
+func TestManager_ValidateBeforeMutateAndStandbyClearAndPrevFallback(t *testing.T) {
+	r := newFakeRenderer("uuid:strict", "Strict Renderer")
+	r.info.Kind = "player"
+	r.info.SinkProtocols = []string{"http-get:*:audio/flac:*"}
+	r.info.SupportsSeek = false
+
+	mgr := NewManager(8080, "", nil)
+	mgr.RegisterRenderer(r)
+
+	flac1 := library.Track{ID: "local:t1", Source: library.SourceLocal, Title: "FLAC 1", MIME: "audio/flac", Ext: ".flac", DurationSec: 180}
+	flac2 := library.Track{ID: "local:t2", Source: library.SourceLocal, Title: "FLAC 2", MIME: "audio/flac", Ext: ".flac", DurationSec: 190}
+	dsd := library.Track{ID: "local:t3", Source: library.SourceLocal, Title: "DSD Track", MIME: "audio/x-dsf", Ext: ".dsf", DurationSec: 200}
+
+	ctx := context.Background()
+	snap, err := mgr.ReplaceQueue(ctx, "uuid:strict", []library.Track{flac1, flac2}, 0)
+	if err != nil {
+		t.Fatalf("ReplaceQueue valid FLAC failed: %v", err)
+	}
+	// First poll observes PLAYING and arms SetNextAVTransportURI for Track 2.
+	mgr.pollOne(ctx, "uuid:strict")
+	snap, _ = mgr.Zone("uuid:strict")
+	if !snap.GaplessArmed || len(snap.Queue) != 2 {
+		t.Fatalf("expected 2 tracks and gaplessArmed=true, got len=%d armed=%v", len(snap.Queue), snap.GaplessArmed)
+	}
+
+	// Unsupported DSD track must fail BEFORE mutating the existing queue.
+	if _, err = mgr.ReplaceQueue(ctx, "uuid:strict", []library.Track{dsd}, 0); !errors.Is(err, ErrCapabilityUnsupported) {
+		t.Fatalf("expected ErrCapabilityUnsupported, got %v", err)
+	}
+	afterFail, _ := mgr.Zone("uuid:strict")
+	if len(afterFail.Queue) != 2 || afterFail.Queue[0].Track.ID != "local:t1" {
+		t.Fatalf("failed ReplaceQueue mutated existing queue: %+v", afterFail.Queue)
+	}
+
+	// Removing the armed next track must clear the standby URI on the renderer.
+	snap, err = mgr.RemoveItem(ctx, "uuid:strict", afterFail.Queue[1].ItemID)
+	if err != nil {
+		t.Fatalf("RemoveItem armed next failed: %v", err)
+	}
+	if snap.GaplessArmed {
+		t.Fatalf("expected gaplessArmed=false after removing next track")
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		r.mu.Lock()
+		cleared := r.nextURI == ""
+		r.mu.Unlock()
+		if cleared {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	r.mu.Lock()
+	clearedNext := r.nextURI
+	r.mu.Unlock()
+	if clearedNext != "" {
+		t.Fatalf("expected renderer nextURI to be cleared to empty string, got %q", clearedNext)
+	}
+
+	// Prev when SupportsSeek=false should fall back to re-sending track 0 cleanly instead of ErrUnsupported.
+	if _, err := mgr.Prev(ctx, "uuid:strict"); err != nil {
+		t.Fatalf("expected Prev fallback on non-seeking renderer to succeed, got %v", err)
+	}
+}

@@ -90,11 +90,12 @@ func (s *Server) handleLocalRescan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go func() {
+		defer func() {
+			s.manager.Publish("library.updated", s.catalog.Status())
+		}()
 		if _, err := s.catalog.Scan(); err != nil {
 			log.Printf("async library rescan failed: %v", err)
-			return
 		}
-		s.manager.Publish("library.updated", s.catalog.Status())
 	}()
 
 	st := s.catalog.Status()

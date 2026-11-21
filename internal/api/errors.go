@@ -8,6 +8,7 @@ import (
 	"tacet/internal/player"
 	"tacet/internal/qobuz"
 	"tacet/internal/queue"
+	"tacet/internal/upnp"
 )
 
 // ErrorBody is the structured error object returned in all JSON API error responses.
@@ -59,7 +60,7 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		writeAPIError(w, http.StatusConflict, "QUEUE_EMPTY", err.Error(), false)
 	case errors.Is(err, queue.ErrEndOfQueue):
 		writeAPIError(w, http.StatusConflict, "END_OF_QUEUE", err.Error(), false)
-	case errors.Is(err, queue.ErrInvalidArgument), errors.Is(err, qobuz.ErrInvalidQuality):
+	case errors.Is(err, queue.ErrInvalidArgument), errors.Is(err, qobuz.ErrInvalidQuality), errors.Is(err, upnp.ErrInvalidRendererURL):
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 	case errors.Is(err, queue.ErrCapabilityUnsupported):
 		writeAPIError(w, http.StatusUnprocessableEntity, "CAPABILITY_UNSUPPORTED", err.Error(), false)
