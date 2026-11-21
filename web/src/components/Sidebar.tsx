@@ -28,27 +28,45 @@ export function Sidebar({ activeSection, connection, libraryStatus, onNavigate }
 
   return (
     <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-white/[0.06] bg-[#0c0c0f] select-none">
-      {/* Brand header */}
-      <div className="flex items-center justify-between px-5 pt-5 pb-4 shrink-0">
+      {/* Brand header — optical centers aligned with nav icons (30px) and text labels (52px) */}
+      <div className="flex items-center justify-between pl-[18px] pr-3 pt-4 pb-3 shrink-0">
         <button
           type="button"
           onClick={() => onNavigate("home")}
           className="flex items-center gap-2.5 text-left cursor-pointer group"
         >
-          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-white/15 to-white/[0.04] border border-white/10 text-white">
-            <Disc3 className="h-4 w-4 transition-transform duration-500 group-hover:rotate-45" />
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-white/15 to-white/[0.04] border border-white/10 text-white">
+            <Disc3 className="h-3.5 w-3.5 transition-transform duration-500 group-hover:rotate-45" />
           </span>
           <span className="text-[15px] font-semibold tracking-tight text-foreground">tacet</span>
         </button>
-        <span
-          className={cn("h-2 w-2 rounded-full transition-colors", connColor)}
-          title={`Server connection: ${connection}`}
-          aria-label={`Event stream: ${connection}`}
-        />
+
+        <div className="flex items-center gap-1.5">
+          <span
+            className={cn("h-2 w-2 rounded-full transition-colors", connColor)}
+            title={`Server connection: ${connection}`}
+            aria-label={`Event stream: ${connection}`}
+          />
+          <button
+            type="button"
+            onClick={() => onNavigate("settings")}
+            aria-label="Settings"
+            aria-current={activeSection === "settings" ? "page" : undefined}
+            title="Settings"
+            className={cn(
+              "flex h-7 w-7 items-center justify-center rounded-lg transition-colors cursor-pointer",
+              activeSection === "settings"
+                ? "bg-white/[0.12] text-foreground"
+                : "text-muted-foreground hover:bg-white/[0.06] hover:text-foreground",
+            )}
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       {/* Scrollable nav groups */}
-      <nav aria-label="Main navigation" className="flex-1 overflow-y-auto px-3 space-y-5">
+      <nav aria-label="Main navigation" className="flex-1 overflow-y-auto px-3 pt-1 space-y-5">
         <div className="space-y-0.5">
           <NavItem
             active={activeSection === "home"}
@@ -86,23 +104,15 @@ export function Sidebar({ activeSection, connection, libraryStatus, onNavigate }
         </div>
       </nav>
 
-      {/* Quiet footer: library pulse + settings */}
-      <div className="border-t border-white/[0.06] p-3 space-y-1 shrink-0">
-        {libraryStatus && (
-          <div className="flex items-center justify-between px-2.5 py-1 text-[11px] text-muted-foreground/80">
-            <span className="truncate">
-              {libraryStatus.albums} albums · {libraryStatus.tracks} tracks
-            </span>
-            {libraryStatus.scanning && <Loader2 className="h-3 w-3 animate-spin text-emerald-400 shrink-0" />}
-          </div>
-        )}
-        <NavItem
-          active={activeSection === "settings"}
-          icon={Settings}
-          label="Settings"
-          onClick={() => onNavigate("settings")}
-        />
-      </div>
+      {/* Quiet library count — no heavy footer chrome competing with the PlayerBar */}
+      {libraryStatus && (
+        <div className="flex items-center justify-between px-[22px] py-3 text-[11px] text-muted-foreground/55 shrink-0">
+          <span className="truncate">
+            {libraryStatus.albums} albums · {libraryStatus.tracks} tracks
+          </span>
+          {libraryStatus.scanning && <Loader2 className="h-3 w-3 animate-spin text-emerald-400 shrink-0" />}
+        </div>
+      )}
     </aside>
   );
 }
@@ -124,7 +134,7 @@ function NavItem({
       aria-current={active ? "page" : undefined}
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-[13.5px] font-medium transition-colors cursor-pointer",
+        "flex w-full items-center gap-3.5 rounded-lg px-2.5 py-2 text-[13.5px] font-medium transition-colors cursor-pointer",
         active
           ? "bg-white/[0.09] text-foreground"
           : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
