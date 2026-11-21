@@ -1,13 +1,11 @@
 import { Compass, Disc3, Home, ListMusic, Loader2, Settings, Users } from "lucide-react";
 import type { LibraryStatus } from "@/api/types";
-import type { ConnectionStatus } from "@/hooks/useTacet";
 import { cn } from "@/lib/utils";
 
 export type AppSection = "home" | "albums" | "artists" | "songs" | "qobuz" | "settings";
 
 interface SidebarProps {
   activeSection: AppSection;
-  connection: ConnectionStatus;
   libraryStatus: LibraryStatus | null;
   onNavigate: (section: AppSection) => void;
 }
@@ -18,14 +16,7 @@ const LIBRARY_ITEMS: Array<{ id: AppSection; label: string; icon: typeof Home }>
   { id: "songs", label: "Songs", icon: ListMusic },
 ];
 
-export function Sidebar({ activeSection, connection, libraryStatus, onNavigate }: SidebarProps) {
-  const connColor =
-    connection === "live"
-      ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.65)]"
-      : connection === "reconnecting"
-        ? "bg-amber-400"
-        : "bg-zinc-500";
-
+export function Sidebar({ activeSection, libraryStatus, onNavigate }: SidebarProps) {
   return (
     <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-white/[0.06] bg-[#0c0c0f] select-none">
       {/* Brand header — optical centers aligned with nav icons (30px) and text labels (52px) */}
@@ -41,28 +32,21 @@ export function Sidebar({ activeSection, connection, libraryStatus, onNavigate }
           <span className="text-[15px] font-semibold tracking-tight text-foreground">tacet</span>
         </button>
 
-        <div className="flex items-center gap-1.5">
-          <span
-            className={cn("h-2 w-2 rounded-full transition-colors", connColor)}
-            title={`Server connection: ${connection}`}
-            aria-label={`Event stream: ${connection}`}
-          />
-          <button
-            type="button"
-            onClick={() => onNavigate("settings")}
-            aria-label="Settings"
-            aria-current={activeSection === "settings" ? "page" : undefined}
-            title="Settings"
-            className={cn(
-              "flex h-7 w-7 items-center justify-center rounded-lg transition-colors cursor-pointer",
-              activeSection === "settings"
-                ? "bg-white/[0.12] text-foreground"
-                : "text-muted-foreground hover:bg-white/[0.06] hover:text-foreground",
-            )}
-          >
-            <Settings className="h-4 w-4" />
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => onNavigate("settings")}
+          aria-label="Settings"
+          aria-current={activeSection === "settings" ? "page" : undefined}
+          title="Settings"
+          className={cn(
+            "flex h-7 w-7 items-center justify-center rounded-lg transition-colors cursor-pointer",
+            activeSection === "settings"
+              ? "bg-white/[0.12] text-foreground"
+              : "text-muted-foreground hover:bg-white/[0.06] hover:text-foreground",
+          )}
+        >
+          <Settings className="h-4 w-4" />
+        </button>
       </div>
 
       {/* Scrollable nav groups */}

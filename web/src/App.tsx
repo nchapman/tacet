@@ -140,7 +140,6 @@ export function App() {
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <Sidebar
           activeSection={section}
-          connection={tacet.connection}
           libraryStatus={tacet.libraryStatus}
           onNavigate={navigate}
         />
