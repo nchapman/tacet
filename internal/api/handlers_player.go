@@ -27,7 +27,9 @@ func extractPlayerToken(r *http.Request) string {
 const legacyPlayerCookiePath = "/api/v1/players"
 
 func playerCookiePath(zoneID string) string {
-	return legacyPlayerCookiePath + "/" + url.PathEscape(zoneID)
+	// Match JavaScript encodeURIComponent (RFC 6265 cookie path matching is literal,
+	// and Go's url.PathEscape leaves ':' unescaped while encodeURIComponent encodes it as %3A).
+	return legacyPlayerCookiePath + "/" + strings.ReplaceAll(url.PathEscape(zoneID), ":", "%3A")
 }
 
 func clearLegacyPlayerTokenCookie(w http.ResponseWriter, r *http.Request) {

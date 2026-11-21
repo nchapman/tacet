@@ -1,60 +1,74 @@
 import { type FormEvent, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 
 interface ConnectModalProps {
   open: boolean;
+  externalError?: string;
   onClose: () => void;
-  onConnect: (url: string) => Promise<boolean>;
+  onConnect: (descriptionUrl: string) => Promise<boolean>;
 }
 
-export function ConnectModal({ open, onClose, onConnect }: ConnectModalProps) {
+export function ConnectModal({ open, externalError, onClose, onConnect }: ConnectModalProps) {
   const [url, setUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
-
-  if (!open) return null;
+  const [error, setError] = useState("");
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const trimmed = url.trim();
     if (!trimmed) return;
     setSubmitting(true);
+    setError("");
     try {
       const ok = await onConnect(trimmed);
       if (ok) {
         setUrl("");
         onClose();
+      } else {
+        setError(externalError || "Could not connect to UPnP renderer at that URL.");
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }
   };
 
+  const shownError = error ? externalError || error : "";
+
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="connect-modal-title" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-        <h3 id="connect-modal-title">Connect UPnP Renderer by URL</h3>
-        <p className="muted">
-          Enter the device description XML URL on your LAN. For WiiM / LinkPlay renderers, this is typically{" "}
-          <code>http://&lt;ip&gt;:49152/description.xml</code>.
-        </p>
-        <form onSubmit={handleSubmit} className="form-stack">
-          <input
-            type="url"
-            autoFocus
-            required
-            placeholder="http://192.168.1.50:49152/description.xml"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-          />
-          <div className="modal-actions">
-            <button type="button" onClick={onClose} disabled={submitting}>
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent>
+        <DialogTitle>Connect UPnP Renderer</DialogTitle>
+        <DialogDescription className="mt-1">
+          Enter the device description XML URL when SSDP multicast discovery cannot cross VLANs or Docker networks.
+        </DialogDescription>
+
+        <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+          <div className="space-y-1.5">
+            <Input
+              type="url"
+              placeholder="http://192.168.1.50:49152/description.xml"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              autoFocus
+              required
+            />
+            {shownError && <p className="text-xs text-red-400">{shownError}</p>}
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={onClose}>
               Cancel
-            </button>
-            <button type="submit" className="primary" disabled={submitting || !url.trim()}>
+            </Button>
+            <Button type="submit" disabled={submitting || !url.trim()}>
               {submitting ? "Connecting…" : "Connect"}
-            </button>
+            </Button>
           </div>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

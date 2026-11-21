@@ -224,6 +224,14 @@ func TestUnifiedLibraryAPI(t *testing.T) {
 	}
 }
 
+func TestPlayerCookiePathMatchesEncodeURIComponent(t *testing.T) {
+	got := playerCookiePath("player:994f6d155ad4")
+	want := "/api/v1/players/player%3A994f6d155ad4"
+	if got != want {
+		t.Fatalf("playerCookiePath = %q, want %q", got, want)
+	}
+}
+
 func makeTestFLACBytes(sampleRate, bitDepth int, tags map[string]string) []byte {
 	// Valid 42-byte FLAC header + STREAMINFO block (2 channels, 180s), plus optional Vorbis Comment block.
 	buf := make([]byte, 42)
