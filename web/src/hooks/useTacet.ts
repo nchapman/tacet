@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { tacetClient } from "../api/client";
 import type {
+  AudioQuality,
   LibraryStatus,
   QobuzQuality,
   QobuzStatus,
@@ -158,6 +159,8 @@ export function useTacet(defaultZoneId?: string | null) {
               currentIndex: ev.currentIndex,
               currentItemId: ev.currentItemId,
               currentTrack: ev.currentTrack,
+              audioQuality: ev.audioQuality ?? z.audioQuality,
+              activeQuality: ev.activeQuality,
               gaplessArmed: ev.gaplessArmed,
               eventsActive: ev.eventsActive,
             };
@@ -350,6 +353,13 @@ export function useTacet(defaultZoneId?: string | null) {
     [activeZoneId, runAction, upsertZone],
   );
 
+  const setZoneQuality = useCallback(
+    (zoneId: string, quality: AudioQuality) => {
+      return runAction(() => tacetClient.zone(zoneId).setQuality(quality), upsertZone);
+    },
+    [runAction, upsertZone],
+  );
+
   return {
     zones,
     activeZone,
@@ -376,5 +386,6 @@ export function useTacet(defaultZoneId?: string | null) {
     seek,
     setVolume,
     setMute,
+    setZoneQuality,
   };
 }

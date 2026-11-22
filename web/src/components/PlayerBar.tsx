@@ -14,8 +14,8 @@ import {
   X,
 } from "lucide-react";
 import { useState } from "react";
-import { fmtDuration, fmtQuality, isHiRes } from "@/api/format";
-import type { TransportAction, ZoneSnapshot } from "@/api/types";
+import { fmtDuration, fmtOutputQuality, isHiResOutput } from "@/api/format";
+import type { AudioQuality, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
 import { AlbumArt, AmbientBackdrop } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +32,7 @@ interface PlayerBarProps {
   positionSec: number;
   error: string;
   discovering: boolean;
+  transcodeAvailable: boolean;
   queueOpen: boolean;
   browserPlayer: BrowserPlayerController;
   onDismissError: () => void;
@@ -40,6 +41,7 @@ interface PlayerBarProps {
   onVolume: (vol: number) => void;
   onMute: (muted: boolean) => void;
   onSelectZone: (zoneId: string) => void;
+  onSetZoneQuality: (zoneId: string, quality: AudioQuality) => void;
   onDiscover: () => void;
   onOpenConnect: () => void;
   onToggleQueue: () => void;
@@ -53,6 +55,7 @@ export function PlayerBar({
   positionSec,
   error,
   discovering,
+  transcodeAvailable,
   queueOpen,
   browserPlayer,
   onDismissError,
@@ -61,6 +64,7 @@ export function PlayerBar({
   onVolume,
   onMute,
   onSelectZone,
+  onSetZoneQuality,
   onDiscover,
   onOpenConnect,
   onToggleQueue,
@@ -88,8 +92,8 @@ export function PlayerBar({
       ? "This Browser"
       : activeZone.renderer.name
     : "No Device";
-  const qualLabel = track ? fmtQuality(track) : "";
-  const hiRes = track ? isHiRes(track.bitDepth, track.sampleRate) : false;
+  const qualLabel = track ? fmtOutputQuality(track, activeZone?.activeQuality) : "";
+  const hiRes = track ? isHiResOutput(track, activeZone?.activeQuality) : false;
   const progressPct = duration > 0 ? Math.min(100, (shownPos / duration) * 100) : 0;
 
   return (
@@ -266,13 +270,15 @@ export function PlayerBar({
                 <span className="truncate">{activeDeviceName}</span>
               </button>
             </PopoverTrigger>
-            <PopoverContent align="end" side="top">
+            <PopoverContent align="end" side="top" className="max-h-[calc(100dvh-110px)] overflow-y-auto">
               <DeviceList
                 zones={zones}
                 activeZoneId={activeZone?.zoneId ?? ""}
                 discovering={discovering}
+                transcodeAvailable={transcodeAvailable}
                 browserPlayer={browserPlayer}
                 onSelectZone={onSelectZone}
+                onSetZoneQuality={onSetZoneQuality}
                 onDiscover={onDiscover}
                 onOpenConnect={onOpenConnect}
                 onDone={() => setDevicePopoverOpen(false)}
@@ -444,8 +450,10 @@ export function PlayerBar({
                     zones={zones}
                     activeZoneId={activeZone?.zoneId ?? ""}
                     discovering={discovering}
+                    transcodeAvailable={transcodeAvailable}
                     browserPlayer={browserPlayer}
                     onSelectZone={onSelectZone}
+                    onSetZoneQuality={onSetZoneQuality}
                     onDiscover={onDiscover}
                     onOpenConnect={() => {
                       setMobileExpanded(false);

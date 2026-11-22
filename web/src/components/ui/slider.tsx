@@ -4,8 +4,9 @@ import { cn } from "@/lib/utils";
 
 export function Slider({
   className,
+  alwaysShowThumb = false,
   ...props
-}: ComponentPropsWithoutRef<typeof SliderPrimitive.Root>) {
+}: ComponentPropsWithoutRef<typeof SliderPrimitive.Root> & { alwaysShowThumb?: boolean }) {
   return (
     <SliderPrimitive.Root
       className={cn(
@@ -17,7 +18,12 @@ export function Slider({
       <SliderPrimitive.Track className="relative h-1 w-full grow overflow-hidden rounded-full bg-white/[0.14] group-hover:h-1.5 transition-[height]">
         <SliderPrimitive.Range className="absolute h-full rounded-full bg-white/85 group-hover:bg-emerald-400 transition-colors" />
       </SliderPrimitive.Track>
-      <SliderPrimitive.Thumb className="block h-3 w-3 rounded-full bg-white shadow-md ring-offset-background opacity-0 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-opacity" />
+      <SliderPrimitive.Thumb
+        className={cn(
+          "block h-3.5 w-3.5 rounded-full bg-white shadow-md ring-offset-background focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-opacity",
+          alwaysShowThumb ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+        )}
+      />
     </SliderPrimitive.Root>
   );
 }

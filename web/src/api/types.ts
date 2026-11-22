@@ -24,9 +24,12 @@ export interface ServerInfo {
   };
 }
 
+export type AudioQuality = "opus_96" | "opus_128" | "opus_160" | "opus_256" | "original" | "wav";
+
 export interface Settings {
   streamMode: StreamMode;
   qobuzMaxQuality: QobuzQuality;
+  transcodeAvailable?: boolean;
 }
 
 export interface ProviderSyncStatus {
@@ -233,6 +236,8 @@ export interface ZoneSnapshot {
   currentIndex: number;
   currentItemId?: string;
   currentTrack?: Track;
+  audioQuality?: AudioQuality;
+  activeQuality?: AudioQuality;
   gaplessArmed: boolean;
   eventsActive: boolean;
 }
@@ -387,6 +392,8 @@ export interface PlaybackEvent {
   currentIndex: number;
   currentItemId?: string;
   currentTrack?: Track;
+  audioQuality?: AudioQuality;
+  activeQuality?: AudioQuality;
   gaplessArmed: boolean;
   eventsActive: boolean;
 }

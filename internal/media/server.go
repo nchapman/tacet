@@ -24,10 +24,11 @@ const relayReadIdleTimeout = 30 * time.Second
 // Handler serves local NAS audio files, cover art, and Qobuz Quiet Relay
 // streams over plain HTTP with DLNA streaming headers and Range support.
 type Handler struct {
-	catalog   *library.Catalog
-	qobuz     *qobuz.Client
-	art       *artCache
-	relayHTTP *http.Client
+	catalog    *library.Catalog
+	qobuz      *qobuz.Client
+	art        *artCache
+	transcoder *TranscoderInfo
+	relayHTTP  *http.Client
 }
 
 // NewHandler creates a media HTTP handler.
@@ -68,6 +69,13 @@ func (h *Handler) SetArtCacheDir(dir string) {
 	h.art = newArtCache(dir)
 }
 
+func (h *Handler) transcoderInfo() TranscoderInfo {
+	if h.transcoder != nil {
+		return *h.transcoder
+	}
+	return DetectTranscoder()
+}
+
 // Register mounts media routes onto mux.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/media/local/", h.serveLocal)
@@ -91,6 +99,15 @@ func (h *Handler) serveLocal(w http.ResponseWriter, r *http.Request) {
 	track, ok := h.catalog.Track(id)
 	if !ok {
 		http.NotFound(w, r)
+		return
+	}
+
+	if spec, transcode := parseTranscodeSpec(r.URL.Query().Get("q"), r.URL.Query().Get("container"), track); transcode {
+		if _, err := os.Stat(track.FilePath); err != nil {
+			http.Error(w, "audio file unavailable", http.StatusNotFound)
+			return
+		}
+		h.streamTranscode(w, r, spec, track.FilePath, nil)
 		return
 	}
 
@@ -207,13 +224,26 @@ func (h *Handler) serveQobuzRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	qTrack := library.Track{
+		SampleRate: stream.SampleRate,
+		BitDepth:   stream.BitDepth,
+		MIME:       stream.MIME,
+	}
+	spec, transcode := parseTranscodeSpec(r.URL.Query().Get("q"), r.URL.Query().Get("container"), qTrack)
+	if transcode && r.Method == http.MethodHead {
+		h.streamTranscode(w, r, spec, "", nil)
+		return
+	}
+
 	upReq, err := http.NewRequestWithContext(r.Context(), r.Method, stream.URL, nil)
 	if err != nil {
 		http.Error(w, "bad upstream url", http.StatusBadGateway)
 		return
 	}
-	if rng := r.Header.Get("Range"); rng != "" {
-		upReq.Header.Set("Range", rng)
+	if !transcode {
+		if rng := r.Header.Get("Range"); rng != "" {
+			upReq.Header.Set("Range", rng)
+		}
 	}
 
 	upResp, err := h.relayHTTP.Do(upReq)
@@ -222,6 +252,16 @@ func (h *Handler) serveQobuzRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = upResp.Body.Close() }()
+
+	if transcode {
+		if upResp.StatusCode != http.StatusOK {
+			http.Error(w, fmt.Sprintf("upstream qobuz returned HTTP %d", upResp.StatusCode), http.StatusBadGateway)
+			return
+		}
+		body := &idleTimeoutReader{rc: upResp.Body, timeout: relayReadIdleTimeout}
+		h.streamTranscode(w, r, spec, "", body)
+		return
+	}
 
 	if upResp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 		if cr := upResp.Header.Get("Content-Range"); cr != "" {

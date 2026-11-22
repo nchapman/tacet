@@ -73,6 +73,8 @@ type ZoneSnapshot struct {
 	CurrentIndex      int               `json:"currentIndex"`
 	CurrentItemID     string            `json:"currentItemId,omitempty"`
 	CurrentTrack      *library.Track    `json:"currentTrack,omitempty"`
+	AudioQuality      AudioQuality      `json:"audioQuality"`
+	ActiveQuality     AudioQuality      `json:"activeQuality,omitempty"`
 	GaplessArmed      bool              `json:"gaplessArmed"`
 	EventsActive      bool              `json:"eventsActive"`
 }
@@ -89,6 +91,8 @@ type PlaybackEvent struct {
 	CurrentIndex      int            `json:"currentIndex"`
 	CurrentItemID     string         `json:"currentItemId,omitempty"`
 	CurrentTrack      *library.Track `json:"currentTrack,omitempty"`
+	AudioQuality      AudioQuality   `json:"audioQuality"`
+	ActiveQuality     AudioQuality   `json:"activeQuality,omitempty"`
 	GaplessArmed      bool           `json:"gaplessArmed"`
 	EventsActive      bool           `json:"eventsActive"`
 }
@@ -150,6 +154,9 @@ type zone struct {
 	lastPlaybackEmit   time.Time
 	currentURI         string
 	nextURI            string
+	audioQuality       AudioQuality
+	activeQuality      AudioQuality
+	nextQuality        AudioQuality
 	nextPreloaded      bool
 	nextPreloading     bool
 	nextFailed         bool
@@ -170,17 +177,19 @@ type ErrorClassifier func(err error) (code string, retryable bool, matched bool)
 // Manager coordinates discovered renderers, per-zone queues, gapless preloading,
 // GENA event updates, and split SSE broadcasts to connected remote clients.
 type Manager struct {
-	mu              sync.RWMutex
-	zones           map[string]*zone
-	zoneOrder       []string
-	streamMode      StreamMode
-	httpPort        int
-	publicBaseURL   string
-	qobuz           *qobuz.Client
-	gena            *upnp.GENAClient
-	errorClassifier ErrorClassifier
-	onTrackPlayed   func(library.Track)
-	runCtx          context.Context
+	mu                 sync.RWMutex
+	zones              map[string]*zone
+	zoneOrder          []string
+	savedQualities     map[string]AudioQuality
+	transcodeAvailable bool
+	streamMode         StreamMode
+	httpPort           int
+	publicBaseURL      string
+	qobuz              *qobuz.Client
+	gena               *upnp.GENAClient
+	errorClassifier    ErrorClassifier
+	onTrackPlayed      func(library.Track)
+	runCtx             context.Context
 
 	itemSeq  atomic.Uint64
 	eventSeq atomic.Uint64
@@ -195,13 +204,14 @@ type Manager struct {
 // NewManager creates a multi-zone playback/queue manager.
 func NewManager(httpPort int, publicBaseURL string, qb *qobuz.Client) *Manager {
 	return &Manager{
-		zones:         make(map[string]*zone),
-		streamMode:    StreamModeDirect,
-		httpPort:      httpPort,
-		publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
-		qobuz:         qb,
-		subs:          make(map[*subscriber]struct{}),
-		stopCh:        make(chan struct{}),
+		zones:          make(map[string]*zone),
+		savedQualities: make(map[string]AudioQuality),
+		streamMode:     StreamModeDirect,
+		httpPort:       httpPort,
+		publicBaseURL:  strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
+		qobuz:          qb,
+		subs:           make(map[*subscriber]struct{}),
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -343,6 +353,91 @@ func (m *Manager) StreamMode() StreamMode {
 	return m.streamMode
 }
 
+// SetTranscodeAvailable records whether server-side ffmpeg+libopus transcoding is available.
+func (m *Manager) SetTranscodeAvailable(available bool) {
+	m.mu.Lock()
+	m.transcodeAvailable = available
+	m.mu.Unlock()
+}
+
+// TranscodeAvailable reports whether server-side transcoding is available.
+func (m *Manager) TranscodeAvailable() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.transcodeAvailable
+}
+
+// LoadZoneQualities seeds saved per-endpoint quality settings restored from persistence.
+func (m *Manager) LoadZoneQualities(saved map[string]AudioQuality) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, raw := range saved {
+		if q, ok := NormalizeAudioQuality(string(raw)); ok {
+			m.savedQualities[id] = q
+			if z, exists := m.zones[id]; exists {
+				z.audioQuality = q
+			}
+		}
+	}
+}
+
+// SavedZoneQualities returns a copy of all non-default per-endpoint quality settings for persistence.
+func (m *Manager) SavedZoneQualities() map[string]AudioQuality {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]AudioQuality, len(m.savedQualities))
+	for id, q := range m.savedQualities {
+		if q != "" && q != AudioQualityOriginal {
+			out[id] = q
+		}
+	}
+	return out
+}
+
+// SetZoneQuality updates the audio quality delivered to a specific zone (applies on the next track).
+func (m *Manager) SetZoneQuality(zoneID string, quality AudioQuality) (ZoneSnapshot, error) {
+	q, ok := NormalizeAudioQuality(string(quality))
+	if !ok {
+		return ZoneSnapshot{}, fmt.Errorf("%w: unsupported audio quality %q", ErrInvalidArgument, quality)
+	}
+	m.mu.Lock()
+	z, exists := m.zones[zoneID]
+	if !exists {
+		m.mu.Unlock()
+		return ZoneSnapshot{}, fmt.Errorf("%w: %s", ErrZoneNotFound, zoneID)
+	}
+	if q.NeedsTranscode() && !m.transcodeAvailable {
+		m.mu.Unlock()
+		return ZoneSnapshot{}, fmt.Errorf("%w: ffmpeg with libopus is required for transcoding", ErrCapabilityUnsupported)
+	}
+	z.audioQuality = q
+	if q == AudioQualityOriginal {
+		delete(m.savedQualities, zoneID)
+	} else {
+		m.savedQualities[zoneID] = q
+	}
+	var toClear upnp.Controller
+	if z.nextPreloaded || z.nextFailed {
+		if z.nextPreloaded {
+			toClear = z.ctrl
+		}
+		z.nextPreloaded = false
+		z.nextFailed = false
+		z.nextURI = ""
+		z.nextQuality = ""
+	}
+	z.revision++
+	snap := m.snapshotLocked(z)
+	ev := m.playbackEventLocked(z)
+	m.mu.Unlock()
+
+	if toClear != nil {
+		m.clearNextPreloadAsync(toClear)
+	}
+	m.emit("zone.playback", zoneID, ev)
+	return snap, nil
+}
+
 // RegisterRenderer adds or updates a discovered UPnP renderer zone.
 func (m *Manager) RegisterRenderer(ctrl upnp.Controller) {
 	info := ctrl.Info()
@@ -352,10 +447,15 @@ func (m *Manager) RegisterRenderer(ctrl upnp.Controller) {
 		existing.setNextUnsupported = !info.SupportsSetNext
 		existing.revision++
 	} else {
+		savedQ := m.savedQualities[info.ID]
+		if savedQ == "" {
+			savedQ = AudioQualityOriginal
+		}
 		m.zones[info.ID] = &zone{
 			ctrl:               ctrl,
 			currentIndex:       -1,
 			revision:           1,
+			audioQuality:       savedQ,
 			positionUpdatedAt:  time.Now().UTC(),
 			setNextUnsupported: !info.SupportsSetNext,
 			status: upnp.TransportStatus{
@@ -468,6 +568,11 @@ func (m *Manager) snapshotLocked(z *zone) ZoneSnapshot {
 		updatedAt = time.Now().UTC()
 	}
 
+	quality := z.audioQuality
+	if quality == "" {
+		quality = AudioQualityOriginal
+	}
+
 	return ZoneSnapshot{
 		ZoneID:            info.ID,
 		Renderer:          info,
@@ -482,6 +587,8 @@ func (m *Manager) snapshotLocked(z *zone) ZoneSnapshot {
 		CurrentIndex:      z.currentIndex,
 		CurrentItemID:     curItemID,
 		CurrentTrack:      cur,
+		AudioQuality:      quality,
+		ActiveQuality:     z.activeQuality,
 		GaplessArmed:      z.nextPreloaded,
 		EventsActive:      eventsActive,
 	}
@@ -500,6 +607,8 @@ func (m *Manager) playbackEventLocked(z *zone) PlaybackEvent {
 		CurrentIndex:      snap.CurrentIndex,
 		CurrentItemID:     snap.CurrentItemID,
 		CurrentTrack:      snap.CurrentTrack,
+		AudioQuality:      snap.AudioQuality,
+		ActiveQuality:     snap.ActiveQuality,
 		GaplessArmed:      snap.GaplessArmed,
 		EventsActive:      snap.EventsActive,
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -517,6 +518,34 @@ func (s *Server) handleMute(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeDomainError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *Server) handleZoneQuality(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
+	var req struct {
+		Quality *queue.AudioQuality `json:"quality"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	if req.Quality == nil {
+		writeDomainError(w, fmt.Errorf("%w: quality is required", queue.ErrInvalidArgument))
+		return
+	}
+	snap, err := s.manager.SetZoneQuality(zoneID, *req.Quality)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if s.catalog != nil {
+		if encoded, err := json.Marshal(s.manager.SavedZoneQualities()); err == nil {
+			if err := s.catalog.SetPref(r.Context(), library.PrefZoneQualities, string(encoded)); err != nil {
+				log.Printf("warning: failed to persist zone_qualities preference: %v", err)
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, snap)
 }

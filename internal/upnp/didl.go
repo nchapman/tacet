@@ -16,6 +16,9 @@ const DLNAFeaturesSeekable = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=017000
 // DLNAFeaturesStreaming is used when byte-range seeking is unavailable.
 const DLNAFeaturesStreaming = "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 
+// DLNAFeaturesTranscoded is used for live server-transcoded streams (non-seekable, CI=1).
+const DLNAFeaturesTranscoded = "DLNA.ORG_OP=00;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+
 // MediaItem describes an audio resource to hand to a UPnP/DLNA renderer.
 type MediaItem struct {
 	ID          string

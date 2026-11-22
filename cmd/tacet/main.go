@@ -18,6 +18,7 @@ import (
 
 	"tacet/internal/api"
 	"tacet/internal/library"
+	"tacet/internal/media"
 	"tacet/internal/qobuz"
 	"tacet/internal/queue"
 	"tacet/internal/upnp"
@@ -114,6 +115,19 @@ func run() error {
 
 	// 3. Queue / playback manager + UPnP GENA event subscriber.
 	mgr := queue.NewManager(*port, *publicURL, qb)
+	transcoder := media.DetectTranscoder()
+	mgr.SetTranscodeAvailable(transcoder.Available())
+	if transcoder.Available() {
+		log.Printf("audio transcoder ready: %s (libopus + wav)", transcoder.FFmpegPath)
+	} else {
+		log.Printf("audio transcoder unavailable (install ffmpeg with libopus for Opus/WAV output)")
+	}
+	if rawQ, ok, prefErr := cat.GetPref(ctx, library.PrefZoneQualities); prefErr == nil && ok && strings.TrimSpace(rawQ) != "" {
+		var savedQ map[string]queue.AudioQuality
+		if uErr := json.Unmarshal([]byte(rawQ), &savedQ); uErr == nil {
+			mgr.LoadZoneQualities(savedQ)
+		}
+	}
 	if err = mgr.SetStreamMode(queue.StreamMode(*streamMode)); err != nil {
 		return fmt.Errorf("invalid --stream-mode: %w", err)
 	}

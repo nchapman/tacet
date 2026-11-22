@@ -380,6 +380,7 @@ export function App() {
           positionSec={tacet.interpolatedPositionSec}
           error={tacet.error}
           discovering={tacet.discovering}
+          transcodeAvailable={Boolean(tacet.settings.transcodeAvailable)}
           queueOpen={queueOpen}
           browserPlayer={browserPlayer}
           onDismissError={tacet.clearError}
@@ -388,6 +389,7 @@ export function App() {
           onVolume={(vol) => void tacet.setVolume(vol)}
           onMute={(muted) => void tacet.setMute(muted)}
           onSelectZone={tacet.selectZone}
+          onSetZoneQuality={(zoneId, quality) => void tacet.setZoneQuality(zoneId, quality)}
           onDiscover={() => void tacet.discoverZones()}
           onOpenConnect={() => setConnectOpen(true)}
           onToggleQueue={() => setQueueOpen((v) => !v)}

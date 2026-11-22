@@ -2,6 +2,7 @@ import type {
   APIErrorBody,
   Album,
   ArtistSummary,
+  AudioQuality,
   ConnectZoneResponse,
   DiscoverZonesResponse,
   GenreSummary,
@@ -193,6 +194,15 @@ export class ZoneClient {
     return this.client.request(
       this.zonePath("/mute"),
       { method: "PUT", body: JSON.stringify({ muted }) },
+      undefined,
+      opts,
+    );
+  }
+
+  setQuality(quality: AudioQuality, opts?: RequestOptions): Promise<ZoneSnapshot> {
+    return this.client.request(
+      this.zonePath("/quality"),
+      { method: "PUT", body: JSON.stringify({ quality }) },
       undefined,
       opts,
     );

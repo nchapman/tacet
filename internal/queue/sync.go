@@ -22,14 +22,15 @@ func (m *Manager) loadAndPlay(ctx context.Context, z *zone, idx int, gen uint64)
 	track := z.queue[idx].Track
 	ctrl := z.ctrl
 	zoneID := ctrl.Info().ID
+	quality := z.audioQuality
 	m.mu.RUnlock()
 
-	media, resolvedTrack, err := m.buildMediaItem(ctx, ctrl, track)
+	media, resolvedTrack, effQuality, err := m.buildMediaItem(ctx, ctrl, track, quality)
 	if err != nil {
 		m.emitZoneError(zoneID, err)
 		return err
 	}
-	return m.playPreparedMedia(ctx, z, idx, gen, ctrl, media, resolvedTrack)
+	return m.playPreparedMedia(ctx, z, idx, gen, ctrl, media, resolvedTrack, effQuality)
 }
 
 func (m *Manager) playPreparedMedia(
@@ -40,6 +41,7 @@ func (m *Manager) playPreparedMedia(
 	ctrl upnp.Controller,
 	media upnp.MediaItem,
 	resolvedTrack library.Track,
+	effQuality AudioQuality,
 ) error {
 	zoneID := ctrl.Info().ID
 	if err := ctrl.SetURI(ctx, media); err != nil {
@@ -56,6 +58,7 @@ func (m *Manager) playPreparedMedia(
 			z.queue[idx].Track = resolvedTrack
 		}
 		z.currentURI = media.URL
+		z.activeQuality = effQuality
 		z.status.Duration = media.Duration
 		z.status.TrackURI = media.URL
 	}
@@ -73,6 +76,7 @@ func (m *Manager) playPreparedMedia(
 			z.queue[idx].Track = resolvedTrack
 		}
 		z.currentURI = media.URL
+		z.activeQuality = effQuality
 		z.status.State = "TRANSITIONING"
 		z.status.Position = 0
 		z.status.Duration = media.Duration
@@ -104,8 +108,13 @@ func (m *Manager) clearNextPreloadAsync(ctrl upnp.Controller) {
 	}()
 }
 
-func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, track library.Track) (upnp.MediaItem, library.Track, error) {
+func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, track library.Track, quality AudioQuality) (upnp.MediaItem, library.Track, AudioQuality, error) {
 	info := ctrl.Info()
+
+	effQuality, ok := NormalizeAudioQuality(string(quality))
+	if !ok || (effQuality.NeedsTranscode() && !m.TranscodeAvailable()) {
+		effQuality = AudioQualityOriginal
+	}
 
 	relativeMedia := false
 	if rm, ok := ctrl.(upnp.RelativeMediaController); ok && rm.PreferRelativeMedia() {
@@ -116,10 +125,25 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 		baseURL = m.baseURLFor(ctrl)
 	}
 
+	// Determine transcoded output extension, MIME, and query params when active.
+	transcodeExt, transcodeMIME, transcodeQuery := transcodeOutputFor(info, effQuality)
+
 	switch track.Source {
 	case library.SourceLocal:
-		if err := checkEndpointFormat(info, track); err != nil {
-			return upnp.MediaItem{}, track, err
+		outMIME := track.MIME
+		outExt := track.Ext
+		outQuery := ""
+		outSize := track.Size
+		seekable := true
+		if effQuality.NeedsTranscode() {
+			outMIME = transcodeMIME
+			outExt = transcodeExt
+			outQuery = transcodeQuery
+			outSize = 0
+			seekable = false
+		}
+		if err := checkEndpointMIME(info, outMIME); err != nil {
+			return upnp.MediaItem{}, track, effQuality, err
 		}
 		artURL := ""
 		if track.ArtworkURL != "" {
@@ -131,24 +155,24 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 		}
 		return upnp.MediaItem{
 			ID:          track.ID,
-			URL:         baseURL + "/media/local/" + track.ID + track.Ext,
+			URL:         baseURL + "/media/local/" + track.ID + outExt + outQuery,
 			Title:       track.Title,
 			Artist:      track.Artist,
 			Album:       track.Album,
 			AlbumArtURL: artURL,
 			TrackNumber: track.TrackNumber,
-			MIME:        track.MIME,
+			MIME:        outMIME,
 			Duration:    time.Duration(track.DurationSec) * time.Second,
-			Size:        track.Size,
+			Size:        outSize,
 			SampleRate:  track.SampleRate,
 			BitDepth:    track.BitDepth,
 			Channels:    track.Channels,
-			Seekable:    true,
-		}, track, nil
+			Seekable:    seekable,
+		}, track, effQuality, nil
 
 	case library.SourceQobuz:
 		if m.qobuz == nil {
-			return upnp.MediaItem{}, track, errors.New("qobuz client is not configured")
+			return upnp.MediaItem{}, track, effQuality, errors.New("qobuz client is not configured")
 		}
 		qID := track.QobuzTrackID
 		if qID <= 0 {
@@ -159,7 +183,7 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 		}
 		stream, err := m.qobuz.StreamURL(ctx, qID)
 		if err != nil {
-			return upnp.MediaItem{}, track, fmt.Errorf("qobuz stream URL: %w", err)
+			return upnp.MediaItem{}, track, effQuality, fmt.Errorf("qobuz stream URL: %w", err)
 		}
 		if stream.SampleRate > 0 {
 			track.SampleRate = stream.SampleRate
@@ -174,18 +198,27 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 			track.MIME = stream.MIME
 		}
 
-		// Validate codec AFTER resolving the real Qobuz stream MIME (e.g. audio/mpeg for mp3_320).
-		if err := checkEndpointFormat(info, track); err != nil {
-			return upnp.MediaItem{}, track, err
+		outMIME := track.MIME
+		seekable := true
+		if effQuality.NeedsTranscode() {
+			outMIME = transcodeMIME
+			seekable = false
 		}
 
-		useRelay := m.StreamMode() == StreamModeRelay
-		if qdc, ok := ctrl.(upnp.QobuzDeliveryController); ok {
-			switch strings.ToLower(strings.TrimSpace(qdc.QobuzDelivery())) {
-			case "force":
-				useRelay = true
-			case "direct":
-				useRelay = false
+		// Validate codec AFTER resolving the real Qobuz stream MIME (or transcoded output MIME).
+		if err := checkEndpointMIME(info, outMIME); err != nil {
+			return upnp.MediaItem{}, track, effQuality, err
+		}
+
+		useRelay := m.StreamMode() == StreamModeRelay || effQuality.NeedsTranscode()
+		if !effQuality.NeedsTranscode() {
+			if qdc, ok := ctrl.(upnp.QobuzDeliveryController); ok {
+				switch strings.ToLower(strings.TrimSpace(qdc.QobuzDelivery())) {
+				case "force":
+					useRelay = true
+				case "direct":
+					useRelay = false
+				}
 			}
 		}
 
@@ -195,7 +228,12 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 			if strings.Contains(strings.ToLower(track.MIME), "mpeg") || strings.Contains(strings.ToLower(track.MIME), "mp3") {
 				ext = ".mp3"
 			}
-			streamURL = baseURL + "/media/qobuz/" + strconv.FormatInt(qID, 10) + ext
+			query := ""
+			if effQuality.NeedsTranscode() {
+				ext = transcodeExt
+				query = transcodeQuery
+			}
+			streamURL = baseURL + "/media/qobuz/" + strconv.FormatInt(qID, 10) + ext + query
 		}
 
 		return upnp.MediaItem{
@@ -206,40 +244,65 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 			Album:       track.Album,
 			AlbumArtURL: track.ArtworkURL,
 			TrackNumber: track.TrackNumber,
-			MIME:        track.MIME,
+			MIME:        outMIME,
 			Duration:    time.Duration(track.DurationSec) * time.Second,
 			SampleRate:  track.SampleRate,
 			BitDepth:    track.BitDepth,
 			Channels:    2,
-			Seekable:    true,
-		}, track, nil
+			Seekable:    seekable,
+		}, track, effQuality, nil
 
 	default:
-		return upnp.MediaItem{}, track, fmt.Errorf("%w: unsupported track source %q", ErrInvalidArgument, track.Source)
+		return upnp.MediaItem{}, track, effQuality, fmt.Errorf("%w: unsupported track source %q", ErrInvalidArgument, track.Source)
 	}
 }
 
-func checkEndpointFormat(info upnp.RendererInfo, track library.Track) error {
+func transcodeOutputFor(info upnp.RendererInfo, q AudioQuality) (ext, mime, query string) {
+	if q == AudioQualityWAV {
+		return ".wav", "audio/wav", "?q=wav"
+	}
+	if !q.IsOpus() {
+		return "", "", ""
+	}
+	// Prefer Ogg/Opus universally; fall back to fragmented MP4/Opus only when a
+	// remote player explicitly advertises audio/mp4 without audio/ogg (e.g. older Safari).
+	if info.Kind == "player" && len(info.SinkProtocols) > 0 &&
+		!sinkSupportsMIME(info.SinkProtocols, "audio/ogg") &&
+		sinkSupportsMIME(info.SinkProtocols, "audio/mp4") {
+		return ".m4a", "audio/mp4", "?q=" + string(q) + "&container=mp4"
+	}
+	return ".ogg", "audio/ogg", "?q=" + string(q)
+}
+
+func sinkSupportsMIME(protocols []string, mime string) bool {
+	mime = strings.ToLower(strings.TrimSpace(mime))
+	for _, proto := range protocols {
+		p := strings.ToLower(proto)
+		if p == mime || strings.Contains(p, ":"+mime+":") || strings.HasPrefix(p, mime+";") {
+			return true
+		}
+		if (mime == "audio/flac" || mime == "audio/x-flac") && (strings.Contains(p, "audio/flac") || strings.Contains(p, "audio/x-flac")) {
+			return true
+		}
+		if (mime == "audio/mp4" || mime == "audio/x-m4a") && (strings.Contains(p, "audio/mp4") || strings.Contains(p, "audio/x-m4a") || strings.Contains(p, "audio/aac")) {
+			return true
+		}
+	}
+	return false
+}
+
+func checkEndpointMIME(info upnp.RendererInfo, mime string) error {
 	if info.Kind != "player" || len(info.SinkProtocols) == 0 {
 		return nil
 	}
-	mime := strings.ToLower(strings.TrimSpace(track.MIME))
+	mime = strings.ToLower(strings.TrimSpace(mime))
 	if mime == "" {
 		return nil
 	}
-	for _, proto := range info.SinkProtocols {
-		p := strings.ToLower(proto)
-		if p == mime || strings.Contains(p, ":"+mime+":") || strings.HasPrefix(p, mime+";") {
-			return nil
-		}
-		if (mime == "audio/flac" || mime == "audio/x-flac") && (strings.Contains(p, "audio/flac") || strings.Contains(p, "audio/x-flac")) {
-			return nil
-		}
-		if (mime == "audio/mp4" || mime == "audio/x-m4a") && (strings.Contains(p, "audio/mp4") || strings.Contains(p, "audio/x-m4a") || strings.Contains(p, "audio/aac")) {
-			return nil
-		}
+	if sinkSupportsMIME(info.SinkProtocols, mime) {
+		return nil
 	}
-	return fmt.Errorf("%w: player endpoint %q does not support %s", ErrCapabilityUnsupported, info.Name, track.MIME)
+	return fmt.Errorf("%w: player endpoint %q does not support %s", ErrCapabilityUnsupported, info.Name, mime)
 }
 
 func (m *Manager) baseURLFor(ctrl upnp.Controller) string {
@@ -488,7 +551,11 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 	if z.nextPreloaded && z.nextURI != "" && z.status.TrackURI == z.nextURI {
 		z.currentIndex++
 		z.currentURI = z.nextURI
+		if z.nextQuality != "" {
+			z.activeQuality = z.nextQuality
+		}
 		z.nextURI = ""
+		z.nextQuality = ""
 		z.nextPreloaded = false
 		z.nextPreloading = false
 		z.nextFailed = false
@@ -590,9 +657,10 @@ func (m *Manager) preloadNext(ctx context.Context, z *zone, track library.Track,
 	m.mu.RLock()
 	ctrl := z.ctrl
 	zoneID := ctrl.Info().ID
+	quality := z.audioQuality
 	m.mu.RUnlock()
 
-	media, resolved, err := m.buildMediaItem(ctx, ctrl, track)
+	media, resolved, effQuality, err := m.buildMediaItem(ctx, ctrl, track, quality)
 	if err != nil {
 		log.Printf("gapless preload skipped (resolve failed): %v", err)
 		m.mu.Lock()
@@ -627,6 +695,7 @@ func (m *Manager) preloadNext(ctx context.Context, z *zone, track library.Track,
 			z.queue[z.currentIndex+1].Track = resolved
 		}
 		z.nextURI = media.URL
+		z.nextQuality = effQuality
 		z.nextPreloaded = true
 		z.nextPreloading = false
 		z.revision++

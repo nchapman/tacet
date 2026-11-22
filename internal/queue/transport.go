@@ -37,11 +37,12 @@ func (m *Manager) ReplaceQueue(ctx context.Context, zoneID string, tracks []libr
 
 	m.mu.RLock()
 	ctrl := z.ctrl
+	quality := z.audioQuality
 	m.mu.RUnlock()
 
 	// Validate format support and resolve stream URL BEFORE mutating z.queue so
 	// an unsupported format or unauthenticated Qobuz track never wipes the active queue.
-	media, resolvedTrack, err := m.buildMediaItem(ctx, ctrl, tracks[startIndex])
+	media, resolvedTrack, effQuality, err := m.buildMediaItem(ctx, ctrl, tracks[startIndex], quality)
 	if err != nil {
 		m.emitZoneError(zoneID, err)
 		return ZoneSnapshot{}, err
@@ -70,7 +71,7 @@ func (m *Manager) ReplaceQueue(ctx context.Context, zoneID string, tracks []libr
 
 	m.emit("zone.queue", zoneID, qEv)
 
-	if err := m.playPreparedMedia(ctx, z, startIndex, gen, ctrl, media, resolvedTrack); err != nil {
+	if err := m.playPreparedMedia(ctx, z, startIndex, gen, ctrl, media, resolvedTrack, effQuality); err != nil {
 		return ZoneSnapshot{}, err
 	}
 	snap, _ := m.Zone(zoneID)
@@ -367,6 +368,8 @@ func (m *Manager) ClearQueue(ctx context.Context, zoneID string) (ZoneSnapshot, 
 	z.nextFailed = false
 	z.nextURI = ""
 	z.currentURI = ""
+	z.activeQuality = ""
+	z.nextQuality = ""
 	z.userStopped = true
 	z.wasPlaying = false
 	z.status.State = "STOPPED"

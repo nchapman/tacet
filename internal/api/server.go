@@ -42,8 +42,9 @@ type ConnectFunc func(ctx context.Context, rawURL string) (*upnp.Renderer, error
 
 // Settings represents global server playback preferences.
 type Settings struct {
-	StreamMode      queue.StreamMode `json:"streamMode"`
-	QobuzMaxQuality string           `json:"qobuzMaxQuality"`
+	StreamMode         queue.StreamMode `json:"streamMode"`
+	QobuzMaxQuality    string           `json:"qobuzMaxQuality"`
+	TranscodeAvailable bool             `json:"transcodeAvailable"`
 }
 
 // Server wires HTTP API endpoints, media endpoints, SSE events, GENA callbacks, and web UI.
@@ -228,6 +229,7 @@ func (s *Server) routes() {
 	s.apiMux.HandleFunc("POST /api/v1/zones/{zoneId}/transport/seek", s.handleSeek)
 	s.apiMux.HandleFunc("PUT /api/v1/zones/{zoneId}/volume", s.handleVolume)
 	s.apiMux.HandleFunc("PUT /api/v1/zones/{zoneId}/mute", s.handleMute)
+	s.apiMux.HandleFunc("PUT /api/v1/zones/{zoneId}/quality", s.handleZoneQuality)
 
 	// Remote HTTP/SSE audio player endpoints (web, mobile, desktop, CLI/daemon)
 	s.apiMux.HandleFunc("POST /api/v1/players", s.handleRegisterPlayer)
@@ -277,8 +279,9 @@ func (s *Server) currentSettings() Settings {
 		maxQ = s.qobuz.MaxQuality()
 	}
 	return Settings{
-		StreamMode:      s.manager.StreamMode(),
-		QobuzMaxQuality: maxQ,
+		StreamMode:         s.manager.StreamMode(),
+		QobuzMaxQuality:    maxQ,
+		TranscodeAvailable: s.manager.TranscodeAvailable(),
 	}
 }
 

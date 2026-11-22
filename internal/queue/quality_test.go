@@ -1,0 +1,88 @@
+package queue
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"tacet/internal/library"
+)
+
+func TestZoneAudioQuality_AppliesOnNextTrackAndPersists(t *testing.T) {
+	mgr := NewManager(4320, "http://127.0.0.1:4320", nil)
+	mgr.SetTranscodeAvailable(true)
+	defer mgr.Close()
+
+	r := newFakeRenderer("zone-q", "Living Room")
+	mgr.RegisterRenderer(r)
+
+	tracks := []library.Track{
+		{ID: "local:t1", Source: library.SourceLocal, Title: "One", MIME: "audio/flac", Ext: ".flac", BitDepth: 24, SampleRate: 96000, DurationSec: 180},
+		{ID: "local:t2", Source: library.SourceLocal, Title: "Two", MIME: "audio/flac", Ext: ".flac", BitDepth: 24, SampleRate: 96000, DurationSec: 200},
+	}
+
+	snap, err := mgr.ReplaceQueue(context.Background(), "zone-q", tracks, 0)
+	if err != nil {
+		t.Fatalf("ReplaceQueue: %v", err)
+	}
+	if snap.AudioQuality != AudioQualityOriginal || snap.ActiveQuality != AudioQualityOriginal {
+		t.Fatalf("initial quality = (%q, active=%q), want original", snap.AudioQuality, snap.ActiveQuality)
+	}
+
+	// Switching quality mid-track updates AudioQuality but leaves ActiveQuality as original until next track.
+	snap, err = mgr.SetZoneQuality("zone-q", AudioQualityOpus128)
+	if err != nil {
+		t.Fatalf("SetZoneQuality: %v", err)
+	}
+	if snap.AudioQuality != AudioQualityOpus128 || snap.ActiveQuality != AudioQualityOriginal {
+		t.Fatalf("after SetZoneQuality: quality=%q active=%q", snap.AudioQuality, snap.ActiveQuality)
+	}
+
+	// Advancing to the next track delivers the Opus transcoded URL and updates ActiveQuality.
+	snap, err = mgr.Next(context.Background(), "zone-q")
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if snap.ActiveQuality != AudioQualityOpus128 {
+		t.Fatalf("ActiveQuality after Next = %q, want opus_128", snap.ActiveQuality)
+	}
+	r.mu.Lock()
+	uri := r.currentURI
+	r.mu.Unlock()
+	if !strings.Contains(uri, "/media/local/local:t2.ogg?q=opus_128") {
+		t.Fatalf("expected transcoded opus URI, got %q", uri)
+	}
+
+	// SavedZoneQualities preserves non-default settings for persistence across restarts.
+	saved := mgr.SavedZoneQualities()
+	if saved["zone-q"] != AudioQualityOpus128 {
+		t.Fatalf("SavedZoneQualities = %v, want opus_128", saved)
+	}
+
+	// Switching back to original removes the zone from SavedZoneQualities.
+	if _, err = mgr.SetZoneQuality("zone-q", AudioQualityOriginal); err != nil {
+		t.Fatalf("SetZoneQuality(original): %v", err)
+	}
+	if len(mgr.SavedZoneQualities()) != 0 {
+		t.Fatalf("expected empty SavedZoneQualities after reset to original, got %v", mgr.SavedZoneQualities())
+	}
+}
+
+func TestZoneAudioQuality_RejectsWhenTranscoderUnavailable(t *testing.T) {
+	mgr := NewManager(4320, "http://127.0.0.1:4320", nil)
+	mgr.SetTranscodeAvailable(false)
+	defer mgr.Close()
+
+	mgr.RegisterRenderer(newFakeRenderer("zone-no-ff", "Speaker"))
+
+	if _, err := mgr.SetZoneQuality("zone-no-ff", AudioQualityOpus160); !errors.Is(err, ErrCapabilityUnsupported) {
+		t.Fatalf("expected ErrCapabilityUnsupported, got %v", err)
+	}
+	if _, err := mgr.SetZoneQuality("zone-no-ff", AudioQualityWAV); !errors.Is(err, ErrCapabilityUnsupported) {
+		t.Fatalf("expected ErrCapabilityUnsupported for wav, got %v", err)
+	}
+	if _, err := mgr.SetZoneQuality("zone-no-ff", AudioQualityOriginal); err != nil {
+		t.Fatalf("original should always succeed: %v", err)
+	}
+}

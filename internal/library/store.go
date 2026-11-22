@@ -25,6 +25,7 @@ const (
 	PrefStreamMode      = "stream_mode"
 	PrefQobuzMaxQuality = "qobuz_max_quality"
 	PrefManualRenderers = "manual_renderers"
+	PrefZoneQualities   = "zone_qualities"
 )
 
 const (
