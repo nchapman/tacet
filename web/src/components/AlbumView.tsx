@@ -1,13 +1,14 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, Clock3, Layers, ListPlus, Play, Plus, SkipForward, Sparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { tacetClient } from "@/api/client";
-import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes, truncateAtSentence } from "@/api/format";
+import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type { Album, AlbumVersion, QueuePosition, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EditorialNote } from "@/components/ui/EditorialNote";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { QOBUZ_ALBUM_GC_TIME_MS, QOBUZ_ALBUM_STALE_TIME_MS, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
@@ -82,13 +83,8 @@ export function AlbumView({
   const similarAlbums = (similarQuery.data?.items ?? []).filter((a) => a.id !== album.id).slice(0, 6);
   const [busyLibrary, setBusyLibrary] = useState(false);
   const [busyPrimary, setBusyPrimary] = useState(false);
-  const [descExpanded, setDescExpanded] = useState(false);
   const [addedTrackIds, setAddedTrackIds] = useState<Record<string, boolean>>({});
   const [actionErr, setActionErr] = useState("");
-
-  useEffect(() => {
-    setDescExpanded(false);
-  }, [album.id]);
 
   const isRemote = album.sourceType === "remote" || album.source !== "local";
   const provider = (album.provider || album.source || "local").toLowerCase();
@@ -248,25 +244,15 @@ export function AlbumView({
                 </Button>
               )}
             </div>
-            {album.description && (() => {
-              const { preview, truncated } = truncateAtSentence(album.description, 35);
-              return (
-                <div className="mt-5 max-w-2xl text-left">
-                  <p className="whitespace-pre-line text-sm leading-relaxed text-foreground/75">
-                    {descExpanded ? album.description : preview}
-                  </p>
-                  {truncated && (
-                    <button
-                      type="button"
-                      onClick={() => setDescExpanded((v) => !v)}
-                      className="mt-1.5 text-xs font-medium text-muted-foreground hover:text-white transition-colors cursor-pointer"
-                    >
-                      {descExpanded ? "Show less" : "Read more"}
-                    </button>
-                  )}
-                </div>
-              );
-            })()}
+            {album.description && (
+              <EditorialNote
+                text={album.description}
+                title={album.title}
+                subtitle={[album.artist, album.year, album.label].filter(Boolean).join(" · ")}
+                targetWords={35}
+                className="mt-5 max-w-2xl"
+              />
+            )}
           </div>
         </div>
 

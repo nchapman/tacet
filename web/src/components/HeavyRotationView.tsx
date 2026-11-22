@@ -5,6 +5,7 @@ import { Link } from "react-router";
 import { tacetClient } from "@/api/client";
 import type { Album, HeavyRotationAlbum, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { queryErrorMessage, queryKeys } from "@/lib/query";
 
 interface HeavyRotationViewProps {
@@ -25,24 +26,27 @@ export const HeavyRotationView = memo(function HeavyRotationView({
   const errMsg = queryErrorMessage(rotationQuery.error);
 
   return (
-    <div className="mx-auto max-w-7xl px-4 sm:px-8 py-6 sm:py-8 space-y-6">
-      <div className="space-y-2">
+    <div className="min-h-full pb-12">
+      <PageHeader>
         <Link
           to="/"
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-foreground/85 hover:text-white transition-colors"
         >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          <span>Back to Home</span>
+          <ArrowLeft className="h-4 w-4" />
+          <span>Home</span>
         </Link>
+      </PageHeader>
 
-        <div className="flex items-center gap-2.5">
-          <Flame className="h-5 w-5 text-amber-400" />
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Heavy Rotation</h1>
+      <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6 space-y-6">
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2.5">
+            <Flame className="h-5 w-5 text-amber-400" />
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Heavy Rotation</h1>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Albums you've been spinning most recently and frequently
+          </p>
         </div>
-        <p className="text-sm text-muted-foreground">
-          Albums you've been spinning most recently and frequently
-        </p>
-      </div>
 
       {errMsg && (
         <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
@@ -76,6 +80,7 @@ export const HeavyRotationView = memo(function HeavyRotationView({
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 });

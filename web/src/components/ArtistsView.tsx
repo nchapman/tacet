@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, SkipForward, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TacetAPIError, tacetClient } from "@/api/client";
-import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes, truncateAtSentence } from "@/api/format";
+import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type {
   Album,
   ArtistSummary,
@@ -14,6 +14,7 @@ import type {
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EditorialNote } from "@/components/ui/EditorialNote";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { QOBUZ_ARTIST_GC_TIME_MS, QOBUZ_ARTIST_STALE_TIME_MS, queryErrorMessage, queryKeys } from "@/lib/query";
 import { useScrollRestoration } from "@/lib/scroll";
@@ -58,7 +59,6 @@ export function ArtistsView({
 }: ArtistsViewProps) {
   const [selectedArtist, setSelectedArtist] = useState(initialArtist ?? "");
   const [selectedQobuzId, setSelectedQobuzId] = useState<number | undefined>(initialQobuzArtistId);
-  const [bioExpanded, setBioExpanded] = useState(false);
   const [showAllPopular, setShowAllPopular] = useState(false);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(Boolean(initialArtist));
 
@@ -98,7 +98,6 @@ export function ArtistsView({
   const effectiveArtist = selectedArtist || artists[0]?.name || "";
 
   useEffect(() => {
-    setBioExpanded(false);
     setShowAllPopular(false);
   }, [effectiveArtist, selectedQobuzId]);
 
@@ -304,25 +303,14 @@ export function ArtistsView({
                 </div>
               </div>
 
-              {remoteDetail?.artist.biography && (() => {
-                const { preview, truncated } = truncateAtSentence(remoteDetail.artist.biography, 30);
-                return (
-                  <div className="mt-4 max-w-3xl">
-                    <p className="whitespace-pre-line text-sm leading-relaxed text-foreground/75">
-                      {bioExpanded ? remoteDetail.artist.biography : preview}
-                    </p>
-                    {truncated && (
-                      <button
-                        type="button"
-                        onClick={() => setBioExpanded((v) => !v)}
-                        className="mt-1 text-xs font-medium text-muted-foreground hover:text-white transition-colors cursor-pointer"
-                      >
-                        {bioExpanded ? "Show less" : "Read more"}
-                      </button>
-                    )}
-                  </div>
-                );
-              })()}
+              {remoteDetail?.artist.biography && (
+                <EditorialNote
+                  text={remoteDetail.artist.biography}
+                  title={`About ${effectiveArtist}`}
+                  targetWords={30}
+                  className="mt-4 max-w-3xl"
+                />
+              )}
 
               {errMsg && (
                 <div role="alert" className="mt-4 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
@@ -345,7 +333,7 @@ export function ArtistsView({
                         <button
                           type="button"
                           onClick={() => setShowAllPopular((v) => !v)}
-                          className="text-xs font-medium text-muted-foreground hover:text-white transition-colors cursor-pointer"
+                          className="text-xs font-medium text-muted-foreground hover:text-white focus:outline-none focus-visible:underline transition-colors cursor-pointer"
                         >
                           {showAllPopular ? "Show less" : `Show all ${popularTracks.length}`}
                         </button>
@@ -359,7 +347,7 @@ export function ArtistsView({
                           <div
                             key={tr.id}
                             onClick={() => onPlay({ type: "tracks", trackIds: popularIds }, idx)}
-                            className="group grid grid-cols-[24px_40px_1fr_auto] sm:grid-cols-[24px_40px_1fr_140px_48px_68px] items-center gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-white/[0.06] cursor-pointer"
+                            className="group grid grid-cols-[24px_40px_1fr_auto] sm:grid-cols-[24px_40px_1fr_172px_48px_68px] items-center gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-white/[0.06] cursor-pointer"
                           >
                             <div className="flex items-center justify-center">
                               <span className="font-mono text-xs text-muted-foreground group-hover:hidden">
@@ -378,7 +366,7 @@ export function ArtistsView({
                                 <div className="truncate text-xs text-muted-foreground">{tr.album}</div>
                               )}
                             </div>
-                            <div className="hidden sm:flex items-center justify-end gap-1.5">
+                            <div className="hidden sm:flex items-center justify-start gap-1.5 whitespace-nowrap">
                               {qual && <span className="font-mono text-[11px] text-muted-foreground/75">{qual}</span>}
                               {hiRes && (
                                 <span

@@ -6,6 +6,7 @@ import { tacetClient } from "@/api/client";
 import type { Album, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { QOBUZ_SEARCH_GC_TIME_MS, QOBUZ_SEARCH_STALE_TIME_MS, queryErrorMessage, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -63,28 +64,31 @@ export const DiscoverShelfView = memo(function DiscoverShelfView({
   }, [shelfQuery.data?.pages]);
 
   return (
-    <div className="mx-auto max-w-7xl px-4 sm:px-8 py-6 sm:py-8 space-y-6">
-      <div className="space-y-2">
+    <div className="min-h-full pb-12">
+      <PageHeader>
         <Link
           to="/"
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-foreground/85 hover:text-white transition-colors"
         >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          <span>Back to Home</span>
+          <ArrowLeft className="h-4 w-4" />
+          <span>Home</span>
         </Link>
+      </PageHeader>
 
-        <div className="flex items-center gap-3">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
-            {firstPage?.title ?? slug.replace(/-/g, " ")}
-          </h1>
-          {shelfQuery.isFetching && !shelfQuery.isFetchingNextPage && (
-            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+      <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6 space-y-6">
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
+              {firstPage?.title ?? slug.replace(/-/g, " ")}
+            </h1>
+            {shelfQuery.isFetching && !shelfQuery.isFetchingNextPage && (
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            )}
+          </div>
+          {firstPage?.subtitle && (
+            <p className="text-sm text-muted-foreground">{firstPage.subtitle}</p>
           )}
         </div>
-        {firstPage?.subtitle && (
-          <p className="text-sm text-muted-foreground">{firstPage.subtitle}</p>
-        )}
-      </div>
 
       {shelfQuery.error && (
         <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
@@ -145,6 +149,7 @@ export const DiscoverShelfView = memo(function DiscoverShelfView({
           </Button>
         </div>
       )}
+      </div>
     </div>
   );
 });
