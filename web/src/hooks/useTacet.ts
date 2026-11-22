@@ -454,13 +454,14 @@ export function useTacet(defaultZoneId?: string | null) {
       const now = Date.now();
       const targetSec = Math.max(0, Math.round(sec));
       const optimisticUpdatedAt = new Date(now - clockOffsetMsRef.current).toISOString();
-      pendingSeekRef.current = {
+      const pending: PendingSeek = {
         zoneId: activeZoneId,
         itemId: activeZone?.currentItemId,
         targetSec,
         setAtMs: now,
         expiresAtMs: now + SEEK_GRACE_MS,
       };
+      pendingSeekRef.current = pending;
       setNowMs(now);
       setZones((prev) =>
         prev.map((z) =>
@@ -468,7 +469,7 @@ export function useTacet(defaultZoneId?: string | null) {
         ),
       );
       const res = await runAction(() => tacetClient.zone(activeZoneId).seek(targetSec), upsertZone);
-      if (!res && pendingSeekRef.current?.zoneId === activeZoneId) {
+      if (!res && pendingSeekRef.current === pending) {
         pendingSeekRef.current = null;
       }
       return res;
@@ -481,14 +482,15 @@ export function useTacet(defaultZoneId?: string | null) {
       if (!activeZoneId) return undefined;
       const now = Date.now();
       const targetVol = Math.max(0, Math.min(100, Math.round(vol)));
-      pendingVolumeRef.current = {
+      const pending: PendingVolume = {
         zoneId: activeZoneId,
         targetVol,
         expiresAtMs: now + VOLUME_GRACE_MS,
       };
+      pendingVolumeRef.current = pending;
       setZones((prev) => prev.map((z) => (z.zoneId === activeZoneId ? { ...z, volume: targetVol } : z)));
       const res = await runAction(() => tacetClient.zone(activeZoneId).setVolume(targetVol), upsertZone);
-      if (!res && pendingVolumeRef.current?.zoneId === activeZoneId) {
+      if (!res && pendingVolumeRef.current === pending) {
         pendingVolumeRef.current = null;
       }
       return res;
