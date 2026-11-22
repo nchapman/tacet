@@ -123,6 +123,43 @@ export function isHiRes(bitDepth?: number, sampleRate?: number): boolean {
   return (bitDepth ?? 0) > 16 || sampleRate > 48000;
 }
 
+/**
+ * Truncates editorial copy (album reviews, artist bios) cleanly on a sentence
+ * boundary near targetWords so previews end on a complete thought instead of
+ * mid-word ellipses.
+ */
+export function truncateAtSentence(text: string, targetWords = 35): { preview: string; truncated: boolean } {
+  const trimmed = text.trim();
+  if (!trimmed) return { preview: "", truncated: false };
+
+  const allWords = trimmed.split(/\s+/);
+  if (allWords.length <= targetWords) {
+    return { preview: trimmed, truncated: false };
+  }
+
+  // Split first paragraph (or whole text) into sentences ending with . ! or ?
+  const sentences = trimmed.match(/[^.!?\n]+(?:[.!?]+["'”’)]*|$)/g)?.map((s) => s.trim()).filter(Boolean) ?? [];
+  if (sentences.length > 1) {
+    const picked: string[] = [];
+    let wordCount = 0;
+    for (const s of sentences) {
+      const sw = s.split(/\s+/).length;
+      if (picked.length > 0 && wordCount >= targetWords) break;
+      if (picked.length > 0 && wordCount + sw > targetWords * 1.65) break;
+      picked.push(s);
+      wordCount += sw;
+    }
+    const preview = picked.join(" ");
+    if (preview.length < trimmed.length) {
+      return { preview, truncated: true };
+    }
+    return { preview: trimmed, truncated: false };
+  }
+
+  // Fallback for a single run-on sentence: stop at word boundary.
+  return { preview: `${allWords.slice(0, targetWords).join(" ")}…`, truncated: true };
+}
+
 export function streamModeLabel(mode: StreamMode): string {
   return mode === "relay" ? "Quiet Relay" : "Direct Handoff";
 }

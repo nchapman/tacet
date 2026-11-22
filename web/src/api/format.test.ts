@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { AUDIO_QUALITY_STOPS, audioQualityIndex, fmtOutputQuality, isHiResOutput } from "./format";
+import {
+  AUDIO_QUALITY_STOPS,
+  audioQualityIndex,
+  fmtOutputQuality,
+  isHiResOutput,
+  truncateAtSentence,
+} from "./format";
 
 describe("audio quality helpers", () => {
   it("orders 6 stops with Original at index 4 and WAV on the far right", () => {
@@ -31,5 +37,25 @@ describe("audio quality helpers", () => {
     expect(isHiResOutput(hiResFlac, "wav")).toBe(true);
     expect(fmtOutputQuality(hiResFlac, "original")).toBe("FLAC 24-bit / 96 kHz");
     expect(isHiResOutput(hiResFlac, "original")).toBe(true);
+  });
+});
+
+describe("truncateAtSentence", () => {
+  it("stops cleanly at a sentence boundary near the word target", () => {
+    const review =
+      "Fiona Apple demonstrates considerable talent on her debut album, Tidal, but it is unformed, unfocused talent. " +
+      "Her voice is surprisingly rich and supple for a teenager, and her jazzy, sophisticated piano playing also belies her age. " +
+      "Given the right material, such talents could have flourished, but she has concentrated on her own compositions.";
+    const res = truncateAtSentence(review, 35);
+    expect(res.truncated).toBe(true);
+    expect(res.preview).toBe(
+      "Fiona Apple demonstrates considerable talent on her debut album, Tidal, but it is unformed, unfocused talent. " +
+        "Her voice is surprisingly rich and supple for a teenager, and her jazzy, sophisticated piano playing also belies her age.",
+    );
+  });
+
+  it("does not truncate short copy", () => {
+    const res = truncateAtSentence("Short editorial note.", 35);
+    expect(res).toEqual({ preview: "Short editorial note.", truncated: false });
   });
 });

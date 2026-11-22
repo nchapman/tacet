@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, SkipForward, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TacetAPIError, tacetClient } from "@/api/client";
-import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
+import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes, truncateAtSentence } from "@/api/format";
 import type {
   Album,
   ArtistSummary,
@@ -304,27 +304,25 @@ export function ArtistsView({
                 </div>
               </div>
 
-              {remoteDetail?.artist.biography && (
-                <div className="mt-4 max-w-3xl">
-                  <p
-                    className={cn(
-                      "whitespace-pre-line text-sm leading-relaxed text-foreground/75",
-                      !bioExpanded && "line-clamp-2",
+              {remoteDetail?.artist.biography && (() => {
+                const { preview, truncated } = truncateAtSentence(remoteDetail.artist.biography, 30);
+                return (
+                  <div className="mt-4 max-w-3xl">
+                    <p className="whitespace-pre-line text-sm leading-relaxed text-foreground/75">
+                      {bioExpanded ? remoteDetail.artist.biography : preview}
+                    </p>
+                    {truncated && (
+                      <button
+                        type="button"
+                        onClick={() => setBioExpanded((v) => !v)}
+                        className="mt-1 text-xs font-medium text-muted-foreground hover:text-white transition-colors cursor-pointer"
+                      >
+                        {bioExpanded ? "Show less" : "Read more"}
+                      </button>
                     )}
-                  >
-                    {remoteDetail.artist.biography}
-                  </p>
-                  {(remoteDetail.artist.biography.length > 180 || remoteDetail.artist.biography.includes("\n")) && (
-                    <button
-                      type="button"
-                      onClick={() => setBioExpanded((v) => !v)}
-                      className="mt-1 text-xs font-medium text-muted-foreground hover:text-white transition-colors cursor-pointer"
-                    >
-                      {bioExpanded ? "Show less" : "Read more"}
-                    </button>
-                  )}
-                </div>
-              )}
+                  </div>
+                );
+              })()}
 
               {errMsg && (
                 <div role="alert" className="mt-4 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">

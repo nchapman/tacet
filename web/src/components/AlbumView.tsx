@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, Clock3, Layers, ListPlus, Play, Plus, SkipForward, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { tacetClient } from "@/api/client";
-import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
+import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes, truncateAtSentence } from "@/api/format";
 import type { Album, AlbumVersion, QueuePosition, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
@@ -171,7 +171,7 @@ export function AlbumView({
         )}
 
         {/* Hero header: Cover + Typography + Actions */}
-        <div className="flex flex-col sm:flex-row items-center sm:items-end gap-6 sm:gap-8">
+        <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6 sm:gap-8">
           <div className="h-48 w-48 sm:h-52 sm:w-52 lg:h-60 lg:w-60 shrink-0 overflow-hidden rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.65)] ring-1 ring-white/15">
             <AlbumArt artworkUrl={album.artworkUrl} alt={album.title} size="lg" className="h-full w-full" priority />
           </div>
@@ -248,27 +248,25 @@ export function AlbumView({
                 </Button>
               )}
             </div>
-            {album.description && (
-              <div className="mt-5 max-w-2xl text-left">
-                <p
-                  className={cn(
-                    "whitespace-pre-line text-sm leading-relaxed text-foreground/75",
-                    !descExpanded && "line-clamp-3",
+            {album.description && (() => {
+              const { preview, truncated } = truncateAtSentence(album.description, 35);
+              return (
+                <div className="mt-5 max-w-2xl text-left">
+                  <p className="whitespace-pre-line text-sm leading-relaxed text-foreground/75">
+                    {descExpanded ? album.description : preview}
+                  </p>
+                  {truncated && (
+                    <button
+                      type="button"
+                      onClick={() => setDescExpanded((v) => !v)}
+                      className="mt-1.5 text-xs font-medium text-muted-foreground hover:text-white transition-colors cursor-pointer"
+                    >
+                      {descExpanded ? "Show less" : "Read more"}
+                    </button>
                   )}
-                >
-                  {album.description}
-                </p>
-                {(album.description.length > 220 || album.description.includes("\n")) && (
-                  <button
-                    type="button"
-                    onClick={() => setDescExpanded((v) => !v)}
-                    className="mt-1.5 text-xs font-medium text-muted-foreground hover:text-white transition-colors cursor-pointer"
-                  >
-                    {descExpanded ? "Show less" : "Read more"}
-                  </button>
-                )}
-              </div>
-            )}
+                </div>
+              );
+            })()}
           </div>
         </div>
 
