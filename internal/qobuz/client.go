@@ -112,11 +112,12 @@ type Artist struct {
 	Biography   string `json:"biography,omitempty"`
 }
 
-// ArtistDetail pairs a Qobuz artist profile with their remote discography and popular tracks.
+// ArtistDetail pairs a Qobuz artist profile with their remote discography, popular tracks, and similar artists.
 type ArtistDetail struct {
-	Artist Artist          `json:"artist"`
-	Albums []library.Album `json:"albums"`
-	Tracks []library.Track `json:"tracks,omitempty"`
+	Artist         Artist          `json:"artist"`
+	Albums         []library.Album `json:"albums"`
+	Tracks         []library.Track `json:"tracks,omitempty"`
+	SimilarArtists []Artist        `json:"similarArtists,omitempty"`
 }
 
 // SearchResult holds Qobuz search matches mapped to unified library types.
@@ -460,16 +461,12 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 		} `json:"albums"`
 	}
 
-	// Fetch /artist/page (popular top_tracks) concurrently with /artist/get so
-	// cold-cache artist loads pay one round-trip instead of two.
-	type topTracksRes struct {
-		tracks []library.Track
-		ok     bool
-	}
-	topCh := make(chan topTracksRes, 1)
+	// Fetch /artist/page (popular top_tracks, portrait, similar_artists) concurrently
+	// with /artist/get so cold-cache artist loads pay one round-trip and eliminate
+	// the separate /artist/getSimilarArtists request.
+	pageCh := make(chan artistPageExtras, 1)
 	go func() {
-		tr, ok := c.fetchArtistTopTracks(ctx, artistID, "")
-		topCh <- topTracksRes{tracks: tr, ok: ok}
+		pageCh <- c.fetchArtistPageExtras(ctx, artistID)
 	}()
 
 	if err := c.getJSON(ctx, "/artist/get", params, true, &resp); err != nil {
@@ -498,8 +495,8 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 		}
 		albums = append(albums, alb)
 	}
-	topRes := <-topCh
-	tracks, topTracksOK := topRes.tracks, topRes.ok
+	pageRes := <-pageCh
+	tracks := pageRes.tracks
 	for i := range tracks {
 		if tracks[i].Artist == "" {
 			tracks[i].Artist = art.Name
@@ -509,33 +506,82 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 		}
 	}
 	c.cacheTracks(tracks)
+	if art.ArtworkURL == "" && pageRes.portraitURL != "" {
+		art.ArtworkURL = pageRes.portraitURL
+	}
 	if art.ArtworkURL == "" && len(albums) > 0 {
 		art.ArtworkURL = albums[0].ArtworkURL
 	}
-	detail := ArtistDetail{Artist: art, Albums: albums, Tracks: tracks}
+	detail := ArtistDetail{
+		Artist:         art,
+		Albums:         albums,
+		Tracks:         tracks,
+		SimilarArtists: pageRes.similarArtists,
+	}
 	if c.authGen.Load() == gen {
 		if art.Name != "" {
 			c.cacheArtistName(art.Name, art.ID, true)
 		}
-		if topTracksOK {
+		if pageRes.ok {
 			c.putCachedArtist(artistID, limit, detail)
 		}
 	}
 	return detail, nil
 }
 
-// fetchArtistTopTracks queries Qobuz's /artist/page endpoint for the artist's
-// curated popular tracks (top_tracks). Returns ok=false on transient errors so
-// callers avoid caching a degraded artist profile for 24h.
-func (c *Client) fetchArtistTopTracks(ctx context.Context, artistID int64, fallbackArtist string) ([]library.Track, bool) {
+type artistPageExtras struct {
+	tracks         []library.Track
+	portraitURL    string
+	similarArtists []Artist
+	ok             bool
+}
+
+type qArtistPortrait struct {
+	Hash   string `json:"hash"`
+	Format string `json:"format"`
+}
+
+func (p *qArtistPortrait) url() string {
+	if p == nil {
+		return ""
+	}
+	h := strings.TrimSpace(p.Hash)
+	if h == "" {
+		return ""
+	}
+	ext := strings.TrimSpace(p.Format)
+	if ext == "" {
+		ext = "jpg"
+	}
+	return fmt.Sprintf("https://static.qobuz.com/images/artists/covers/large/%s.%s", h, ext)
+}
+
+// fetchArtistPageExtras queries Qobuz's /artist/page endpoint for curated popular
+// tracks, artist portrait, and similar artists in a single request. Returns ok=false
+// on transient errors so callers avoid caching a degraded artist profile.
+func (c *Client) fetchArtistPageExtras(ctx context.Context, artistID int64) artistPageExtras {
 	if artistID <= 0 {
-		return nil, true
+		return artistPageExtras{ok: true}
 	}
 	params := url.Values{
 		"artist_id": {strconv.FormatInt(artistID, 10)},
 		"sort":      {"relevant"},
 	}
 	var page struct {
+		Images struct {
+			Portrait *qArtistPortrait `json:"portrait"`
+		} `json:"images"`
+		SimilarArtists struct {
+			Items []struct {
+				ID   int64 `json:"id"`
+				Name struct {
+					Display string `json:"display"`
+				} `json:"name"`
+				Images struct {
+					Portrait *qArtistPortrait `json:"portrait"`
+				} `json:"images"`
+			} `json:"items"`
+		} `json:"similar_artists"`
 		TopTracks []struct {
 			ID        int64  `json:"id"`
 			Title     string `json:"title"`
@@ -563,9 +609,9 @@ func (c *Client) fetchArtistTopTracks(ctx context.Context, artistID int64, fallb
 	if err := c.getJSON(ctx, "/artist/page", params, true, &page); err != nil {
 		var ae *apiError
 		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
-			return nil, true
+			return artistPageExtras{ok: true}
 		}
-		return nil, false
+		return artistPageExtras{ok: false}
 	}
 	const maxPopularTracks = 10
 	out := make([]library.Track, 0, min(len(page.TopTracks), maxPopularTracks))
@@ -581,9 +627,6 @@ func (c *Client) fetchArtistTopTracks(ctx context.Context, artistID int64, fallb
 			title = title + " (" + pt.Version + ")"
 		}
 		artistName := strings.TrimSpace(pt.Artist.Name.Display)
-		if artistName == "" {
-			artistName = fallbackArtist
-		}
 		albumID := ""
 		if pt.Album.ID != "" {
 			albumID = "qobuz:" + pt.Album.ID
@@ -610,7 +653,26 @@ func (c *Client) fetchArtistTopTracks(ctx context.Context, artistID int64, fallb
 			Available:    true,
 		})
 	}
-	return out, true
+
+	similar := make([]Artist, 0, len(page.SimilarArtists.Items))
+	for _, sa := range page.SimilarArtists.Items {
+		name := strings.TrimSpace(sa.Name.Display)
+		if sa.ID <= 0 || name == "" {
+			continue
+		}
+		similar = append(similar, Artist{
+			ID:         sa.ID,
+			Name:       name,
+			ArtworkURL: sa.Images.Portrait.url(),
+		})
+	}
+
+	return artistPageExtras{
+		tracks:         out,
+		portraitURL:    page.Images.Portrait.url(),
+		similarArtists: similar,
+		ok:             true,
+	}
 }
 
 // AlbumLookup identifies a local album to match against Qobuz editorial metadata.
@@ -1384,22 +1446,35 @@ type qLabel struct {
 	Name string `json:"name"`
 }
 
+type qAward struct {
+	Name string `json:"name"`
+}
+
+type qGoody struct {
+	Name         string `json:"name"`
+	URL          string `json:"url"`
+	OriginalURL  string `json:"original_url"`
+	FileFormatID int    `json:"file_format_id"`
+}
+
 type qAlbum struct {
-	ID                  string  `json:"id"`
-	Title               string  `json:"title"`
-	Version             string  `json:"version"`
-	ReleaseType         string  `json:"release_type"`
-	Artist              qArtist `json:"artist"`
-	Genre               qGenre  `json:"genre"`
-	Label               *qLabel `json:"label"`
-	Description         string  `json:"description"`
-	Copyright           string  `json:"copyright"`
-	Image               qImage  `json:"image"`
-	TracksCount         int     `json:"tracks_count"`
-	ReleaseDateOriginal string  `json:"release_date_original"`
-	MaximumBitDepth     int     `json:"maximum_bit_depth"`
-	MaximumSamplingRate float64 `json:"maximum_sampling_rate"`
-	Streamable          *bool   `json:"streamable"`
+	ID                  string   `json:"id"`
+	Title               string   `json:"title"`
+	Version             string   `json:"version"`
+	ReleaseType         string   `json:"release_type"`
+	Artist              qArtist  `json:"artist"`
+	Genre               qGenre   `json:"genre"`
+	Label               *qLabel  `json:"label"`
+	Description         string   `json:"description"`
+	Copyright           string   `json:"copyright"`
+	Awards              []qAward `json:"awards"`
+	Goodies             []qGoody `json:"goodies"`
+	Image               qImage   `json:"image"`
+	TracksCount         int      `json:"tracks_count"`
+	ReleaseDateOriginal string   `json:"release_date_original"`
+	MaximumBitDepth     int      `json:"maximum_bit_depth"`
+	MaximumSamplingRate float64  `json:"maximum_sampling_rate"`
+	Streamable          *bool    `json:"streamable"`
 	Tracks              struct {
 		Items []qTrack `json:"items"`
 	} `json:"tracks"`
@@ -1416,6 +1491,7 @@ type qTrack struct {
 	MaximumSamplingRate float64 `json:"maximum_sampling_rate"`
 	Streamable          *bool   `json:"streamable"`
 	Performer           qArtist `json:"performer"`
+	Performers          string  `json:"performers"`
 	Album               *qAlbum `json:"album"`
 }
 
@@ -1480,6 +1556,31 @@ func (qa qAlbum) toLibraryAlbum(includeTracks bool) library.Album {
 	if qa.Label != nil {
 		labelName = strings.TrimSpace(qa.Label.Name)
 	}
+	var awards []string
+	seenAwards := make(map[string]struct{}, len(qa.Awards))
+	for _, aw := range qa.Awards {
+		name := strings.TrimSpace(aw.Name)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, dup := seenAwards[key]; dup {
+			continue
+		}
+		seenAwards[key] = struct{}{}
+		awards = append(awards, name)
+	}
+	var bookletURL string
+	for _, g := range qa.Goodies {
+		u := strings.TrimSpace(g.URL)
+		if u == "" {
+			u = strings.TrimSpace(g.OriginalURL)
+		}
+		if strings.HasPrefix(u, "https://") && strings.HasSuffix(strings.ToLower(u), ".pdf") {
+			bookletURL = u
+			break
+		}
+	}
 	alb := library.Album{
 		ID:            "qobuz:" + qa.ID,
 		Source:        library.SourceQobuz,
@@ -1492,6 +1593,9 @@ func (qa qAlbum) toLibraryAlbum(includeTracks bool) library.Album {
 		Label:         labelName,
 		Description:   cleanQobuzText(qa.Description),
 		Copyright:     strings.TrimSpace(qa.Copyright),
+		ReleaseDate:   strings.TrimSpace(qa.ReleaseDateOriginal),
+		Awards:        awards,
+		BookletURL:    bookletURL,
 		Year:          year,
 		TrackCount:    qa.TracksCount,
 		ArtworkURL:    qa.Image.best(),
@@ -1507,11 +1611,99 @@ func (qa qAlbum) toLibraryAlbum(includeTracks bool) library.Album {
 			alb.Tracks = append(alb.Tracks, tr)
 			alb.DurationSec += tr.DurationSec
 		}
+		alb.Credits = parseAlbumCredits(qa.Tracks.Items)
 		if alb.TrackCount == 0 {
 			alb.TrackCount = len(alb.Tracks)
 		}
 	}
 	return alb
+}
+
+// parseAlbumCredits aggregates and deduplicates Qobuz's track-level performers
+// strings ("Name, Role1, Role2 - Name2, Role3") into clean album-level credits.
+func parseAlbumCredits(tracks []qTrack) []library.AlbumCredit {
+	type acc struct {
+		name      string
+		roles     []string
+		seenRoles map[string]struct{}
+	}
+	var order []string
+	byKey := make(map[string]*acc)
+	for _, qt := range tracks {
+		if strings.TrimSpace(qt.Performers) == "" {
+			continue
+		}
+		for _, seg := range strings.Split(qt.Performers, " - ") {
+			parts := strings.Split(seg, ",")
+			if len(parts) < 2 {
+				continue
+			}
+			name := strings.TrimSpace(parts[0])
+			if name == "" {
+				continue
+			}
+			key := strings.ToLower(name)
+			entry, ok := byKey[key]
+			if !ok {
+				entry = &acc{name: name, seenRoles: make(map[string]struct{})}
+				byKey[key] = entry
+				order = append(order, key)
+			}
+			for _, rawRole := range parts[1:] {
+				role := formatCreditRole(rawRole)
+				if role == "" {
+					continue
+				}
+				rk := strings.ToLower(role)
+				if _, dup := entry.seenRoles[rk]; dup {
+					continue
+				}
+				entry.seenRoles[rk] = struct{}{}
+				entry.roles = append(entry.roles, role)
+			}
+		}
+	}
+	out := make([]library.AlbumCredit, 0, len(order))
+	for _, key := range order {
+		entry := byKey[key]
+		if len(entry.roles) == 0 {
+			continue
+		}
+		out = append(out, library.AlbumCredit{
+			Name:  entry.name,
+			Roles: entry.roles,
+		})
+	}
+	return out
+}
+
+func formatCreditRole(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	switch s {
+	case "MainArtist":
+		return "Main Artist"
+	case "FeaturedArtist":
+		return "Featured Artist"
+	case "AssociatedPerformer":
+		return "Performer"
+	case "ComposerLyricist":
+		return "Composer / Lyricist"
+	case "MixingEngineer":
+		return "Mixing Engineer"
+	case "MasteringEngineer":
+		return "Mastering Engineer"
+	case "RecordingEngineer":
+		return "Recording Engineer"
+	case "AssistantRecordingEngineer":
+		return "Assistant Engineer"
+	case "StudioPersonnel", "MusicPublisher":
+		return "" // noisy label/generic tags
+	default:
+		return s
+	}
 }
 
 func (qt qTrack) toLibraryTrack(parentAlbum *qAlbum) library.Track {

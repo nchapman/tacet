@@ -104,6 +104,11 @@ export interface AlbumVersion {
   available: boolean;
 }
 
+export interface AlbumCredit {
+  name: string;
+  roles: string[];
+}
+
 export interface Album {
   id: string;
   source: TrackSource;
@@ -116,6 +121,10 @@ export interface Album {
   label?: string;
   description?: string;
   copyright?: string;
+  releaseDate?: string;
+  awards?: string[];
+  bookletUrl?: string;
+  credits?: AlbumCredit[];
   qobuzAlbumId?: string;
   year?: number;
   trackCount: number;
@@ -296,6 +305,7 @@ export interface QobuzArtistDetail {
   artist: QobuzArtist;
   albums: Album[];
   tracks?: Track[];
+  similarArtists?: QobuzArtist[];
 }
 
 export interface QobuzSearchResult {

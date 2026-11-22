@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, Clock3, Layers, ListPlus, Play, Plus, SkipForward, Sparkles } from "lucide-react";
+import { ArrowLeft, Award, Check, Clock3, FileText, Layers, ListPlus, Play, Plus, SkipForward, Sparkles, Users } from "lucide-react";
 import { useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
@@ -8,6 +8,7 @@ import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { EditorialNote } from "@/components/ui/EditorialNote";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { QOBUZ_ALBUM_GC_TIME_MS, QOBUZ_ALBUM_STALE_TIME_MS, queryKeys } from "@/lib/query";
@@ -55,6 +56,14 @@ function totalAlbumDuration(album: Album): string {
   return `${h} hr ${m} min`;
 }
 
+function fmtReleaseDate(iso?: string): string {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "";
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (Number.isNaN(dt.getTime())) return "";
+  return dt.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
+}
+
 export function AlbumView({
   album,
   backLabel,
@@ -88,6 +97,7 @@ export function AlbumView({
     .slice(0, 6);
   const [busyLibrary, setBusyLibrary] = useState(false);
   const [busyPrimary, setBusyPrimary] = useState(false);
+  const [creditsOpen, setCreditsOpen] = useState(false);
   const [addedTrackIds, setAddedTrackIds] = useState<Record<string, boolean>>({});
   const [actionErr, setActionErr] = useState("");
 
@@ -249,6 +259,20 @@ export function AlbumView({
                 </Button>
               )}
             </div>
+            {album.awards && album.awards.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center justify-center sm:justify-start gap-1.5">
+                {album.awards.slice(0, 2).map((aw) => (
+                  <span
+                    key={aw}
+                    className="inline-flex items-center gap-1 rounded-full border border-[#d4af68]/25 bg-[#d4af68]/10 px-2.5 py-0.5 text-[11px] font-medium text-[#d4af68]"
+                  >
+                    <Award className="h-3 w-3 shrink-0" />
+                    {aw}
+                  </span>
+                ))}
+              </div>
+            )}
+
             {album.description && (
               <EditorialNote
                 text={album.description}
@@ -440,8 +464,61 @@ export function AlbumView({
             })}
           </div>
 
-          {album.copyright && (
-            <p className="mt-5 px-3 text-[11px] text-muted-foreground/60">{album.copyright}</p>
+          {(album.releaseDate || album.label || album.copyright || album.bookletUrl || (album.credits?.length ?? 0) > 0) && (
+            <div className="mt-5 px-3 space-y-1.5 text-[11px] text-muted-foreground/65">
+              {(fmtReleaseDate(album.releaseDate) || album.label) && (
+                <p>
+                  {[fmtReleaseDate(album.releaseDate), album.label].filter(Boolean).join(" · ")}
+                </p>
+              )}
+              {album.copyright && <p className="text-muted-foreground/55">{album.copyright}</p>}
+              {(album.bookletUrl || (album.credits?.length ?? 0) > 0) && (
+                <div className="flex flex-wrap items-center gap-4 pt-1.5">
+                  {album.bookletUrl && (
+                    <a
+                      href={album.bookletUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-white transition-colors"
+                    >
+                      <FileText className="h-3.5 w-3.5" />
+                      Digital Booklet
+                    </a>
+                  )}
+                  {album.credits && album.credits.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setCreditsOpen(true)}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-white focus:outline-none focus-visible:underline transition-colors cursor-pointer"
+                    >
+                      <Users className="h-3.5 w-3.5" />
+                      Credits
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {album.credits && album.credits.length > 0 && (
+            <Dialog open={creditsOpen} onOpenChange={setCreditsOpen}>
+              <DialogContent className="max-w-lg p-6">
+                <div className="pr-8">
+                  <DialogTitle className="text-lg font-bold tracking-tight text-white">Credits</DialogTitle>
+                  <DialogDescription className="mt-0.5 text-xs">
+                    {album.title} · {album.artist}
+                  </DialogDescription>
+                </div>
+                <div className="mt-4 max-h-[60vh] overflow-y-auto pr-2 divide-y divide-white/[0.06]">
+                  {album.credits.map((c) => (
+                    <div key={c.name} className="flex items-baseline justify-between gap-4 py-2.5 text-sm">
+                      <span className="font-medium text-foreground">{c.name}</span>
+                      <span className="text-right text-xs text-muted-foreground">{c.roles.join(", ")}</span>
+                    </div>
+                  ))}
+                </div>
+              </DialogContent>
+            </Dialog>
           )}
         </div>
 

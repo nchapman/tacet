@@ -100,6 +100,12 @@ type AlbumVersion struct {
 	Available     bool   `json:"available"`
 }
 
+// AlbumCredit represents a deduplicated contributor and their roles on an album.
+type AlbumCredit struct {
+	Name  string   `json:"name"`
+	Roles []string `json:"roles"`
+}
+
 // Album groups tracks belonging to the same source-specific album copy.
 type Album struct {
 	ID             string         `json:"id"`
@@ -113,6 +119,10 @@ type Album struct {
 	Label          string         `json:"label,omitempty"`
 	Description    string         `json:"description,omitempty"`
 	Copyright      string         `json:"copyright,omitempty"`
+	ReleaseDate    string         `json:"releaseDate,omitempty"`
+	Awards         []string       `json:"awards,omitempty"`
+	BookletURL     string         `json:"bookletUrl,omitempty"`
+	Credits        []AlbumCredit  `json:"credits,omitempty"`
 	QobuzAlbumID   string         `json:"qobuzAlbumId,omitempty"`
 	Year           int            `json:"year,omitempty"`
 	TrackCount     int            `json:"trackCount"`

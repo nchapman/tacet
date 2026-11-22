@@ -151,14 +151,19 @@ export function ArtistsView({
   const remoteErr = queryErrorMessage(remoteQuery.error);
 
   const similarArtistId = remoteDetail?.artist?.id ?? initialQobuzArtistId;
+  const inlineSimilar = remoteDetail?.similarArtists ?? [];
   const similarArtistsQuery = useQuery({
     queryKey: queryKeys.discover.similarArtists(similarArtistId ?? 0),
     queryFn: ({ signal }) => tacetClient.getSimilarArtists(similarArtistId!, 12, { signal }),
-    enabled: qobuzConnected && Boolean(similarArtistId && similarArtistId > 0),
+    enabled:
+      qobuzConnected &&
+      Boolean(similarArtistId && similarArtistId > 0) &&
+      inlineSimilar.length === 0 &&
+      !loadingRemote,
     staleTime: QOBUZ_ARTIST_STALE_TIME_MS,
     gcTime: QOBUZ_ARTIST_GC_TIME_MS,
   });
-  const similarArtists = (similarArtistsQuery.data?.items ?? [])
+  const similarArtists = (inlineSimilar.length > 0 ? inlineSimilar : (similarArtistsQuery.data?.items ?? []))
     .filter((a) => a.id !== similarArtistId)
     .slice(0, 10);
 
@@ -173,9 +178,9 @@ export function ArtistsView({
 
   const currentSummary = artists.find((a) => a.name.toLowerCase() === effectiveArtist.toLowerCase());
   const heroArt =
+    remoteDetail?.artist.artworkUrl ||
     albums[0]?.artworkUrl ||
     currentSummary?.artworkUrl ||
-    remoteDetail?.artist.artworkUrl ||
     remoteOnlyAlbums[0]?.artworkUrl;
 
   return (

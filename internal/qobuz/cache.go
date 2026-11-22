@@ -30,7 +30,7 @@ type cachedAlbumMatch struct {
 }
 
 func albumCacheKey(rawID string) string {
-	return "album:" + strings.TrimSpace(rawID)
+	return "album:v2:" + strings.TrimSpace(rawID)
 }
 
 func albumMatchCacheKey(artist, title string) string {
@@ -38,7 +38,7 @@ func albumMatchCacheKey(artist, title string) string {
 }
 
 func artistCacheKey(artistID int64, limit int) string {
-	return fmt.Sprintf("artist:v2:%d:%d", artistID, limit)
+	return fmt.Sprintf("artist:v3:%d:%d", artistID, limit)
 }
 
 func artistNameCacheKey(name string) string {

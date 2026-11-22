@@ -337,7 +337,23 @@ func TestGetArtist_FiltersToPrimaryAlbumsAndEPs(t *testing.T) {
 				},
 			})
 		case "/artist/page":
-			_ = json.NewEncoder(w).Encode(map[string]any{"top_tracks": []any{}})
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"images": map[string]any{
+					"portrait": map[string]any{"hash": "abc123", "format": "jpg"},
+				},
+				"similar_artists": map[string]any{
+					"items": []map[string]any{
+						{
+							"id":   90,
+							"name": map[string]any{"display": "Amy Winehouse"},
+							"images": map[string]any{
+								"portrait": map[string]any{"hash": "amy456", "format": "jpg"},
+							},
+						},
+					},
+				},
+				"top_tracks": []any{},
+			})
 		default:
 			http.NotFound(w, r)
 		}
@@ -353,6 +369,67 @@ func TestGetArtist_FiltersToPrimaryAlbumsAndEPs(t *testing.T) {
 	}
 	if len(detail.Albums) != 2 || detail.Albums[0].Title != "30" || detail.Albums[1].Title != "Cold Shoulder" {
 		t.Fatalf("expected [30, Cold Shoulder], got %+v", detail.Albums)
+	}
+	if detail.Artist.ArtworkURL != "https://static.qobuz.com/images/artists/covers/large/abc123.jpg" {
+		t.Fatalf("expected portrait URL from /artist/page, got %q", detail.Artist.ArtworkURL)
+	}
+	if len(detail.SimilarArtists) != 1 || detail.SimilarArtists[0].Name != "Amy Winehouse" {
+		t.Fatalf("expected similar artists from /artist/page, got %+v", detail.SimilarArtists)
+	}
+}
+
+func TestGetAlbum_AwardsBookletReleaseDateAndCredits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/album/get" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":                    "kob",
+				"title":                 "Kind Of Blue",
+				"release_date_original": "1959-08-17",
+				"artist":                map[string]any{"id": 1, "name": "Miles Davis"},
+				"awards": []map[string]any{
+					{"name": "The Qobuz Ideal Discography"},
+					{"name": "The Qobuz Ideal Discography"},
+				},
+				"goodies": []map[string]any{
+					{"name": "Livret numérique", "url": "https://static.qobuz.com/goodies/28/000129082.pdf", "file_format_id": 21},
+				},
+				"tracks": map[string]any{
+					"items": []map[string]any{
+						{
+							"id":           10,
+							"title":        "So What",
+							"track_number": 1,
+							"duration":     562,
+							"streamable":   true,
+							"performers":   "Miles Davis, MainArtist, Trumpet - Jim Abbiss, Producer, MixingEngineer - Studio Guy, StudioPersonnel",
+						},
+					},
+				},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, AppID: "app", AppSecret: "sec", AuthToken: "tok"})
+	defer func() { _ = c.Close() }()
+
+	alb, err := c.GetAlbum(context.Background(), "kob")
+	if err != nil {
+		t.Fatalf("GetAlbum: %v", err)
+	}
+	if alb.ReleaseDate != "1959-08-17" {
+		t.Fatalf("ReleaseDate = %q, want 1959-08-17", alb.ReleaseDate)
+	}
+	if len(alb.Awards) != 1 || alb.Awards[0] != "The Qobuz Ideal Discography" {
+		t.Fatalf("Awards = %+v, want [The Qobuz Ideal Discography]", alb.Awards)
+	}
+	if alb.BookletURL != "https://static.qobuz.com/goodies/28/000129082.pdf" {
+		t.Fatalf("BookletURL = %q", alb.BookletURL)
+	}
+	if len(alb.Credits) != 2 || alb.Credits[0].Name != "Miles Davis" || alb.Credits[1].Roles[1] != "Mixing Engineer" {
+		t.Fatalf("Credits = %+v", alb.Credits)
 	}
 }
 

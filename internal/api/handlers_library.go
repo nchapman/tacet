@@ -106,6 +106,18 @@ func (s *Server) handleLibraryAlbum(w http.ResponseWriter, r *http.Request) {
 			if alb.Copyright == "" {
 				alb.Copyright = qAlb.Copyright
 			}
+			if alb.ReleaseDate == "" {
+				alb.ReleaseDate = qAlb.ReleaseDate
+			}
+			if len(alb.Awards) == 0 {
+				alb.Awards = qAlb.Awards
+			}
+			if alb.BookletURL == "" {
+				alb.BookletURL = qAlb.BookletURL
+			}
+			if len(alb.Credits) == 0 {
+				alb.Credits = qAlb.Credits
+			}
 			if alb.QobuzAlbumID == "" {
 				alb.QobuzAlbumID = strings.TrimPrefix(strings.TrimSpace(qAlb.ID), "qobuz:")
 			}
