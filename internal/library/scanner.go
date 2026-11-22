@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/dhowden/tag"
 )
@@ -911,6 +912,154 @@ func (c *Catalog) Album(id string) (Album, bool) {
 		return Album{}, false
 	}
 	return a, ok
+}
+
+// PreferLocalAlbums returns a copy of albums where any remote album that also
+// exists in the local library (by normalized artist + title, including base
+// title before parenthetical edition suffixes) is replaced by the local album.
+// Remaining albums have InLibrary populated from the catalog.
+func (c *Catalog) PreferLocalAlbums(albums []Album) []Album {
+	if len(albums) == 0 {
+		return albums
+	}
+	out := make([]Album, len(albums))
+	copy(out, albums)
+
+	localAlbs, _, err := c.store.queryAlbums(context.Background(), AlbumFilter{
+		SourceType: "local",
+		Limit:      100000,
+	})
+	localByKey := make(map[string]Album, len(localAlbs))
+	if err == nil {
+		for _, la := range localAlbs {
+			k := normMediaKey(la.Artist) + "|" + normMediaKey(la.Title)
+			if k == "|" {
+				continue
+			}
+			if _, exists := localByKey[k]; !exists {
+				la.InLibrary = true
+				localByKey[k] = la
+			}
+		}
+	}
+
+	for i := range out {
+		a := out[i]
+		if a.Source == SourceLocal {
+			out[i].InLibrary = true
+			continue
+		}
+		if matched, ok := matchLocalAlbum(localByKey, a.Artist, a.Title); ok {
+			out[i] = matched
+			continue
+		}
+		out[i].InLibrary = c.HasAlbum(a.ID)
+	}
+	return out
+}
+
+func matchLocalAlbum(localByKey map[string]Album, artist, title string) (Album, bool) {
+	na := normMediaKey(artist)
+	nt := normMediaKey(title)
+	if na == "" || nt == "" {
+		return Album{}, false
+	}
+	if la, ok := localByKey[na+"|"+nt]; ok {
+		return la, true
+	}
+	if idx := strings.IndexAny(title, "(["); idx > 0 {
+		if base := normMediaKey(title[:idx]); base != "" {
+			if la, ok := localByKey[na+"|"+base]; ok {
+				return la, true
+			}
+		}
+	}
+	return Album{}, false
+}
+
+// PreferLocalTracks returns a copy of tracks where any remote track that also
+// exists in the local library (by normalized artist + title, preferring same
+// album then higher resolution) is replaced by the local track.
+// Remaining tracks have InLibrary, PlayCount, and LastPlayedAt populated.
+func (c *Catalog) PreferLocalTracks(tracks []Track) []Track {
+	if len(tracks) == 0 {
+		return tracks
+	}
+	out := make([]Track, len(tracks))
+	copy(out, tracks)
+
+	localTracks, _, err := c.store.queryTracks(context.Background(), TrackFilter{
+		SourceType: "local",
+		Limit:      100000,
+	})
+	byArtistTitle := make(map[string][]Track, len(localTracks))
+	if err == nil {
+		for _, lt := range localTracks {
+			if !lt.Available {
+				continue
+			}
+			k := normMediaKey(lt.Artist) + "|" + normMediaKey(lt.Title)
+			if k == "|" {
+				continue
+			}
+			lt.InLibrary = true
+			byArtistTitle[k] = append(byArtistTitle[k], lt)
+		}
+	}
+
+	for i := range out {
+		tr := out[i]
+		if tr.Source == SourceLocal {
+			out[i].InLibrary = true
+			continue
+		}
+		k := normMediaKey(tr.Artist) + "|" + normMediaKey(tr.Title)
+		if cands := byArtistTitle[k]; len(cands) > 0 {
+			best := pickBestLocalTrack(cands, tr.Album)
+			if best.ArtworkURL == "" {
+				best.ArtworkURL = tr.ArtworkURL
+			}
+			out[i] = best
+			continue
+		}
+		if libTr, ok := c.Track(tr.ID); ok {
+			out[i].InLibrary = libTr.Available
+			out[i].PlayCount = libTr.PlayCount
+			out[i].LastPlayedAt = libTr.LastPlayedAt
+		}
+	}
+	return out
+}
+
+func pickBestLocalTrack(cands []Track, wantAlbum string) Track {
+	wantAlbKey := normMediaKey(wantAlbum)
+	best := cands[0]
+	bestAlbMatch := wantAlbKey != "" && normMediaKey(best.Album) == wantAlbKey
+	for _, c := range cands[1:] {
+		albMatch := wantAlbKey != "" && normMediaKey(c.Album) == wantAlbKey
+		if albMatch && !bestAlbMatch {
+			best = c
+			bestAlbMatch = true
+			continue
+		}
+		if albMatch == bestAlbMatch {
+			if c.SampleRate > best.SampleRate || (c.SampleRate == best.SampleRate && c.BitDepth > best.BitDepth) {
+				best = c
+			}
+		}
+	}
+	return best
+}
+
+func normMediaKey(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // AlbumsPage filters, sorts, and slices albums with total count for pagination.

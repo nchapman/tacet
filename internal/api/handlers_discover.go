@@ -30,12 +30,7 @@ func (s *Server) markAlbumsInLibrary(albums []library.Album) []library.Album {
 	if s.catalog == nil || len(albums) == 0 {
 		return albums
 	}
-	out := make([]library.Album, len(albums))
-	copy(out, albums)
-	for i := range out {
-		out[i].InLibrary = s.catalog.HasAlbum(out[i].ID)
-	}
-	return out
+	return s.catalog.PreferLocalAlbums(albums)
 }
 
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {

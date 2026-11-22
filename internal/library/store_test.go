@@ -694,3 +694,60 @@ func TestHeavyRotationFrecencyRanking(t *testing.T) {
 		}
 	}
 }
+
+func TestPreferLocalAlbumsAndTracks(t *testing.T) {
+	musicDir := t.TempDir()
+	writeTaggedFLAC(t, musicDir, "Adele/19/04 - Chasing Pavements.flac", 16, 44100, map[string]string{
+		"ARTIST":      "Adele",
+		"ALBUMARTIST": "Adele",
+		"ALBUM":       "19",
+		"TITLE":       "Chasing Pavements",
+	})
+
+	cat, err := NewCatalogWithDB(":memory:", musicDir)
+	if err != nil {
+		t.Fatalf("NewCatalogWithDB: %v", err)
+	}
+	defer func() { _ = cat.Close() }()
+
+	if n, scanErr := cat.Scan(); scanErr != nil || n != 1 {
+		t.Fatalf("Scan = (%d, %v), want (1, nil)", n, scanErr)
+	}
+	localAlbs := cat.Albums()
+	localTracks := cat.Tracks()
+	if len(localAlbs) != 1 || len(localTracks) != 1 {
+		t.Fatalf("expected 1 local album & track, got %d/%d", len(localAlbs), len(localTracks))
+	}
+	localAlbumID := localAlbs[0].ID
+	localTrackID := localTracks[0].ID
+
+	// Remote album matching local (including parenthetical edition suffix) resolves to local.
+	gotAlbs := cat.PreferLocalAlbums([]Album{
+		{ID: "qobuz:q19", Source: SourceQobuz, Artist: "Adele", Title: "19 (Deluxe Edition)"},
+		{ID: "qobuz:q30", Source: SourceQobuz, Artist: "Adele", Title: "30"},
+	})
+	if len(gotAlbs) != 2 {
+		t.Fatalf("len(gotAlbs) = %d, want 2", len(gotAlbs))
+	}
+	if gotAlbs[0].ID != localAlbumID || gotAlbs[0].Source != SourceLocal || !gotAlbs[0].InLibrary {
+		t.Fatalf("expected local album substitution, got %+v", gotAlbs[0])
+	}
+	if gotAlbs[1].ID != "qobuz:q30" || gotAlbs[1].InLibrary {
+		t.Fatalf("expected unmatched remote album untouched, got %+v", gotAlbs[1])
+	}
+
+	// Remote track matching local resolves to local (inheriting Qobuz art if local has none).
+	gotTracks := cat.PreferLocalTracks([]Track{
+		{ID: "qobuz:999", Source: SourceQobuz, Artist: "Adele", Title: "Chasing Pavements", Album: "19", ArtworkURL: "https://qobuz/art.jpg"},
+		{ID: "qobuz:888", Source: SourceQobuz, Artist: "Adele", Title: "Skyfall", Album: "Skyfall"},
+	})
+	if gotTracks[0].ID != localTrackID || gotTracks[0].Source != SourceLocal || !gotTracks[0].InLibrary {
+		t.Fatalf("expected local track substitution, got %+v", gotTracks[0])
+	}
+	if gotTracks[0].ArtworkURL != "https://qobuz/art.jpg" {
+		t.Fatalf("expected fallback artwork preserved, got %q", gotTracks[0].ArtworkURL)
+	}
+	if gotTracks[1].ID != "qobuz:888" || gotTracks[1].Source != SourceQobuz {
+		t.Fatalf("expected unmatched remote track untouched, got %+v", gotTracks[1])
+	}
+}
