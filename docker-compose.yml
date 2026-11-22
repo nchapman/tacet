@@ -10,21 +10,21 @@ services:
     # automatically with LAN renderers (e.g. WiiM Ultra).
     #
     # On macOS / Docker Desktop (where host networking isn't bridged to LAN),
-    # comment out `network_mode: host`, expose `ports: ["8080:8080"]`, and set
+    # comment out `network_mode: host`, expose `ports: ["4320:4320"]`, and set
     # `TACET_PUBLIC_URL` + `TACET_RENDERER_URL` below.
     network_mode: host
     volumes:
       # Set MUSIC_DIR in your shell or .env (e.g. MUSIC_DIR=/volume1/music)
       - ${MUSIC_DIR:-./music}:/music:ro
       - ${DATA_DIR:-tacet-data}:/data
-    # All defaults are baked into the image (/music, /data, port 8080, direct mode).
+    # All defaults are baked into the image (/music, /data, port 4320, direct mode).
     # Uncomment any overrides you need:
     # environment:
-    #   TACET_PORT: "8080"
+    #   TACET_PORT: "4320"
     #   TACET_DATA_DIR: /data
     #   TACET_MUSIC_DIR: /music
     #   TACET_STREAM_MODE: direct
-    #   TACET_PUBLIC_URL: http://192.168.1.10:8080
+    #   TACET_PUBLIC_URL: http://192.168.1.10:4320
     #   TACET_RENDERER_URL: http://192.168.1.50:49152/description.xml
     #   QOBUZ_AUTH_TOKEN: ""
 

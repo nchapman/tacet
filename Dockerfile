@@ -43,16 +43,16 @@ RUN apk add --no-cache ca-certificates tzdata \
 
 COPY --from=go-builder /out/tacet /usr/local/bin/tacet
 
-ENV TACET_PORT=8080 \
+ENV TACET_PORT=4320 \
     TACET_DATA_DIR=/data \
     TACET_MUSIC_DIR=/music
 
 VOLUME ["/data", "/music"]
-EXPOSE 8080
+EXPOSE 4320
 
 USER tacet
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --spider -q "http://127.0.0.1:${TACET_PORT:-8080}/api/health" || exit 1
+    CMD wget --spider -q "http://127.0.0.1:${TACET_PORT:-4320}/api/health" || exit 1
 
 ENTRYPOINT ["/usr/local/bin/tacet"]

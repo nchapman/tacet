@@ -56,21 +56,21 @@ MUSIC_DIR=/path/to/music docker compose up -d
 
 Inside the container, `TACET_MUSIC_DIR` defaults to `/music` and accepts comma-separated paths if you mount multiple directories (e.g. `TACET_MUSIC_DIR=/music/flac,/music/dsd`).
 
-> **Note:** `--network host` is recommended on Linux/NAS hosts so UPnP/DLNA SSDP discovery (`239.255.255.250:1900`) and GENA event callbacks work out of the box. On bridge networks (such as Docker Desktop on macOS), publish `-p 8080:8080` and set `TACET_PUBLIC_URL` + `TACET_RENDERER_URL`.
+> **Note:** `--network host` is recommended on Linux/NAS hosts so UPnP/DLNA SSDP discovery (`239.255.255.250:1900`) and GENA event callbacks work out of the box. On bridge networks (such as Docker Desktop on macOS), publish `-p 4320:4320` and set `TACET_PUBLIC_URL` + `TACET_RENDERER_URL`.
 
-For frontend development with hot reload against a running Go server on `:8080`:
+For frontend development with hot reload against a running Go server on `:4320`:
 
 ```bash
 cd web && npm install && npm run dev
 ```
 
-Open `http://localhost:8080` (or `http://<your-lan-ip>:8080` from your phone/tablet).
+Open `http://localhost:4320` (or `http://<your-lan-ip>:4320` from your phone/tablet).
 
 ### Flags & Environment Variables
 
 | Flag | Env Var | Default | Description |
 |---|---|---|---|
-| `--port` | `TACET_PORT` | `8080` | HTTP server port (media, API, web remote) |
+| `--port` | `TACET_PORT` | `4320` | HTTP server port (media, API, web remote) |
 | `--music-dir` | `TACET_MUSIC_DIR` | *(empty)* | Comma-separated local music directories |
 | `--data-dir` | `TACET_DATA_DIR` | OS user config dir | Persistent data directory for `library.db` (SQLite catalog, prefs, saved Qobuz session) |
 | `--missing-retention-days` | `TACET_MISSING_RETENTION_DAYS` | `30` | Days to retain soft-deleted missing music before purging on scan (`0` = never purge) |

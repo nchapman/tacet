@@ -31,11 +31,11 @@ func main() {
 }
 
 func run() error {
-	port := flag.Int("port", envInt("TACET_PORT", 8080), "HTTP port for media serving, API, and web remote")
+	port := flag.Int("port", envInt("TACET_PORT", 4320), "HTTP port for media serving, API, and web remote")
 	musicDir := flag.String("music-dir", os.Getenv("TACET_MUSIC_DIR"), "Comma-separated local music directories to index")
 	dataDir := flag.String("data-dir", envDefault("TACET_DATA_DIR", defaultDataDir()), "Persistent data directory for the SQLite unified library")
 	missingDays := flag.Int("missing-retention-days", envNonNegInt("TACET_MISSING_RETENTION_DAYS", 30), "Days to retain soft-deleted missing music before purging on scan (0 = never purge)")
-	publicURL := flag.String("public-url", os.Getenv("TACET_PUBLIC_URL"), "Optional base URL override for renderers (e.g. http://192.168.1.10:8080)")
+	publicURL := flag.String("public-url", os.Getenv("TACET_PUBLIC_URL"), "Optional base URL override for renderers (e.g. http://192.168.1.10:4320)")
 	rendererURL := flag.String("renderer-url", os.Getenv("TACET_RENDERER_URL"), "Optional UPnP description XML URL to connect directly (e.g. http://<wiim-ip>:49152/description.xml)")
 	streamMode := flag.String("stream-mode", envDefault("TACET_STREAM_MODE", "direct"), "Default Qobuz delivery mode: direct or relay")
 	corsOrigin := flag.String("cors-origin", os.Getenv("TACET_CORS_ORIGIN"), "Optional CORS Allow-Origin header for external web/hybrid clients (e.g. * or http://localhost:5173)")
