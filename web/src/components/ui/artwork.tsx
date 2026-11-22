@@ -1,6 +1,11 @@
 import { Disc3 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { tacetClient } from "@/api/client";
+import {
+  extractUltraBlurPalette,
+  getCachedUltraBlurPalette,
+  type UltraBlurPalette,
+} from "@/lib/ultrablur";
 import { cn } from "@/lib/utils";
 
 interface AlbumArtProps {
@@ -31,87 +36,180 @@ export function AlbumArt({ artworkUrl, alt, className, iconClassName, priority }
   );
 }
 
+const DEFAULT_PALETTE: UltraBlurPalette = {
+  primary: "rgb(42, 98, 128)",
+  secondary: "rgb(36, 112, 92)",
+  accent: "rgb(52, 68, 116)",
+  deep: "rgb(26, 36, 56)",
+};
+
+// Tiny fractal noise SVG data URI for subtle 8-bit dark-mode anti-banding dither.
+const NOISE_DATA_URI =
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E\")";
+
+function meshBackground(p: UltraBlurPalette): string {
+  return [
+    `radial-gradient(64% 58% at 15% 12%, ${p.primary} 0%, transparent 72%)`,
+    `radial-gradient(58% 52% at 86% 14%, ${p.secondary} 0%, transparent 70%)`,
+    `radial-gradient(54% 58% at 20% 72%, ${p.accent} 0%, transparent 72%)`,
+    `radial-gradient(60% 56% at 84% 78%, ${p.deep} 0%, transparent 76%)`,
+  ].join(", ");
+}
+
 interface AmbientBackdropProps {
   artworkUrl?: string;
   className?: string;
   intensity?: "subtle" | "hero" | "full";
 }
 
+interface ResolvedLayer {
+  key: string;
+  palette: UltraBlurPalette | null;
+  fallbackSrc: string;
+}
+
+function initialLayer(src: string): ResolvedLayer {
+  if (!src) {
+    return { key: "default", palette: DEFAULT_PALETTE, fallbackSrc: "" };
+  }
+  const cached = getCachedUltraBlurPalette(src);
+  if (cached) {
+    return { key: `pal:${src}`, palette: cached, fallbackSrc: "" };
+  }
+  if (cached === null) {
+    return { key: `img:${src}`, palette: null, fallbackSrc: src };
+  }
+  return { key: "default", palette: DEFAULT_PALETTE, fallbackSrc: "" };
+}
+
 /**
- * Plexamp / Apple Music-style album-art-driven ambient backdrop.
- * Renders a smooth crossfading, heavily blurred full-bleed color wash that
- * tints the entire app shell (including translucent sidebar, headers, and player bar)
- * while keeping dark obsidian contrast crisp and readable everywhere.
+ * Plexamp-style UltraBlur ambient backdrop.
+ * Samples 4 perceptually normalized dominant colors from the active cover art
+ * into a lush, multi-point radial mesh gradient that smoothly crossfades across
+ * the entire app shell (with subtle noise dithering to eliminate banding and an
+ * automatic blurred-image fallback if a remote CDN blocks CORS canvas reads).
  */
 export function AmbientBackdrop({ artworkUrl, className, intensity = "hero" }: AmbientBackdropProps) {
-  const nextSrc = tacetClient.resolveUrl(artworkUrl) || "";
-  const [activeSrc, setActiveSrc] = useState(nextSrc);
-  const [prevSrc, setPrevSrc] = useState("");
+  const src = tacetClient.resolveUrl(artworkUrl) || "";
+  const [active, setActive] = useState<ResolvedLayer>(() => initialLayer(src));
+  const [prev, setPrev] = useState<ResolvedLayer | null>(null);
   const [entering, setEntering] = useState(false);
+  const activeRef = useRef<ResolvedLayer>(active);
 
   useEffect(() => {
-    if (nextSrc === activeSrc) return;
-    setPrevSrc(activeSrc);
-    setActiveSrc(nextSrc);
-    setEntering(true);
-    const raf = window.requestAnimationFrame(() => setEntering(false));
-    const timer = window.setTimeout(() => setPrevSrc(""), 800);
-    return () => {
-      window.cancelAnimationFrame(raf);
-      window.clearTimeout(timer);
-    };
-  }, [nextSrc, activeSrc]);
+    let cancelled = false;
+    let raf = 0;
+    let clearTimer = 0;
 
-  const opacityClass =
+    const commit = (next: ResolvedLayer) => {
+      if (cancelled || activeRef.current.key === next.key) return;
+      setPrev(activeRef.current);
+      activeRef.current = next;
+      setActive(next);
+      setEntering(true);
+      raf = window.requestAnimationFrame(() => setEntering(false));
+      clearTimer = window.setTimeout(() => setPrev(null), 900);
+    };
+
+    if (!src) {
+      commit({ key: "default", palette: DEFAULT_PALETTE, fallbackSrc: "" });
+      return () => {
+        cancelled = true;
+        window.cancelAnimationFrame(raf);
+        window.clearTimeout(clearTimer);
+      };
+    }
+
+    const cached = getCachedUltraBlurPalette(src);
+    if (cached) {
+      commit({ key: `pal:${src}`, palette: cached, fallbackSrc: "" });
+    } else if (cached === null) {
+      commit({ key: `img:${src}`, palette: null, fallbackSrc: src });
+    } else {
+      void extractUltraBlurPalette(src).then((pal) => {
+        if (pal) {
+          commit({ key: `pal:${src}`, palette: pal, fallbackSrc: "" });
+        } else {
+          commit({ key: `img:${src}`, palette: null, fallbackSrc: src });
+        }
+      });
+    }
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(clearTimer);
+    };
+  }, [src]);
+
+  const meshOpacity =
+    intensity === "full"
+      ? "opacity-95"
+      : intensity === "hero"
+        ? "opacity-80"
+        : "opacity-55";
+
+  const imgOpacity =
     intensity === "full"
       ? "opacity-55"
       : intensity === "hero"
         ? "opacity-45"
         : "opacity-30";
 
-  const imgClass =
-    "absolute inset-0 h-full w-full scale-125 object-cover object-center blur-[100px] saturate-[1.7] brightness-90 transition-opacity duration-700 ease-out will-change-[opacity]";
+  const renderLayer = (layer: ResolvedLayer, visible: boolean) => {
+    if (layer.palette) {
+      return (
+        <div
+          key={layer.key}
+          style={{ backgroundImage: meshBackground(layer.palette) }}
+          className={cn(
+            "absolute inset-0 transition-opacity duration-700 ease-out will-change-[opacity]",
+            visible ? meshOpacity : "opacity-0",
+          )}
+        />
+      );
+    }
+    return (
+      <img
+        key={layer.key}
+        src={layer.fallbackSrc}
+        alt=""
+        onError={() => {
+          if (activeRef.current.key === layer.key) {
+            const fallback: ResolvedLayer = { key: "default", palette: DEFAULT_PALETTE, fallbackSrc: "" };
+            activeRef.current = fallback;
+            setActive(fallback);
+          }
+        }}
+        className={cn(
+          "absolute inset-0 h-full w-full scale-125 object-cover object-center blur-[100px] saturate-[1.7] brightness-90 transition-opacity duration-700 ease-out will-change-[opacity]",
+          visible ? imgOpacity : "opacity-0",
+        )}
+      />
+    );
+  };
 
   return (
     <div aria-hidden="true" className={cn("pointer-events-none absolute inset-0 overflow-hidden select-none", className)}>
-      {/* Quiet atmospheric fallback when no artwork is active */}
-      <div
-        className={cn(
-          "absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgba(56,189,248,0.14),rgba(16,185,129,0.07)_42%,transparent_75%)] transition-opacity duration-700",
-          activeSrc ? "opacity-0" : "opacity-100",
-        )}
-      />
+      {prev && renderLayer(prev, entering)}
+      {renderLayer(active, !entering)}
 
-      {/* Outgoing artwork layer for seamless crossfades */}
-      {prevSrc && (
-        <img
-          key={`prev:${prevSrc}`}
-          src={prevSrc}
-          alt=""
-          className={cn(imgClass, entering ? opacityClass : "opacity-0")}
-        />
-      )}
-
-      {/* Active artwork layer */}
-      {activeSrc && (
-        <img
-          key={`curr:${activeSrc}`}
-          src={activeSrc}
-          alt=""
-          className={cn(imgClass, entering ? "opacity-0" : opacityClass)}
-        />
-      )}
-
-      {/* Smooth vertical + radial obsidian scrim to keep text contrast crisp without hard seams */}
+      {/* Smooth vertical + radial obsidian scrim to keep text contrast crisp */}
       <div
         className={cn(
           "absolute inset-0",
           intensity === "full"
-            ? "bg-gradient-to-b from-black/25 via-[#09090b]/55 to-[#09090b]/92"
-            : "bg-gradient-to-b from-black/15 via-[#09090b]/58 to-[#09090b]/94",
+            ? "bg-gradient-to-b from-black/20 via-[#09090b]/45 to-[#09090b]/88"
+            : "bg-gradient-to-b from-black/15 via-[#09090b]/50 to-[#09090b]/90",
         )}
       />
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,transparent_0%,rgba(9,9,11,0.45)_75%,rgba(9,9,11,0.75)_100%)]" />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,transparent_0%,rgba(9,9,11,0.38)_75%,rgba(9,9,11,0.72)_100%)]" />
+
+      {/* Subtle anti-banding film grain */}
+      <div
+        className="absolute inset-0 opacity-[0.03] mix-blend-overlay"
+        style={{ backgroundImage: NOISE_DATA_URI, backgroundRepeat: "repeat" }}
+      />
     </div>
   );
 }
