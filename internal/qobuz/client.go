@@ -73,7 +73,8 @@ type Config struct {
 	AppID     string
 	AppSecret string
 	AuthToken string
-	FormatID  int // Defaults to FormatFLAC192 (27)
+	FormatID  int    // Defaults to FormatFLAC192 (27)
+	CachePath string // Optional JSON disk cache path for slow-changing catalog metadata
 }
 
 // Status reports current Qobuz authentication state.
@@ -120,20 +121,20 @@ type SearchResult struct {
 
 // Client talks to the Qobuz v0.2 REST API.
 type Client struct {
-	mu              sync.RWMutex
-	baseURL         string
-	http            *http.Client
-	appID           string
-	appSecret       string
-	privateKey      string
-	altSecrets      []string
-	authToken       string
-	userName        string
-	subscription    string
-	formatID        int
-	urlCache        map[int64]StreamInfo
-	trackCache      map[int64]library.Track
-	artistNameCache map[string]int64
+	mu           sync.RWMutex
+	baseURL      string
+	http         *http.Client
+	appID        string
+	appSecret    string
+	privateKey   string
+	altSecrets   []string
+	authToken    string
+	userName     string
+	subscription string
+	formatID     int
+	urlCache     map[int64]StreamInfo
+	trackCache   map[int64]library.Track
+	cache        *catalogCache
 }
 
 // NewClient initializes a Qobuz client.
@@ -147,16 +148,32 @@ func NewClient(cfg Config) *Client {
 		fmtID = FormatFLAC192
 	}
 	return &Client{
-		baseURL:         base,
-		http:            &http.Client{Timeout: 15 * time.Second},
-		appID:           strings.TrimSpace(cfg.AppID),
-		appSecret:       strings.TrimSpace(cfg.AppSecret),
-		authToken:       strings.TrimSpace(cfg.AuthToken),
-		formatID:        fmtID,
-		urlCache:        make(map[int64]StreamInfo),
-		trackCache:      make(map[int64]library.Track),
-		artistNameCache: make(map[string]int64),
+		baseURL:    base,
+		http:       &http.Client{Timeout: 15 * time.Second},
+		appID:      strings.TrimSpace(cfg.AppID),
+		appSecret:  strings.TrimSpace(cfg.AppSecret),
+		authToken:  strings.TrimSpace(cfg.AuthToken),
+		formatID:   fmtID,
+		urlCache:   make(map[int64]StreamInfo),
+		trackCache: make(map[int64]library.Track),
+		cache:      newCatalogCache(cfg.CachePath),
 	}
+}
+
+// Close flushes any pending Qobuz catalog cache writes to disk.
+func (c *Client) Close() error {
+	if c.cache == nil {
+		return nil
+	}
+	return c.cache.Close()
+}
+
+// CacheStats returns the number of cached albums, artists, artist names, and searches.
+func (c *Client) CacheStats() (albums, artists, artistNames, searches int) {
+	if c.cache == nil {
+		return 0, 0, 0, 0
+	}
+	return c.cache.stats()
 }
 
 // Status returns the current Qobuz auth/config state.
@@ -193,7 +210,7 @@ func (c *Client) SetMaxQuality(quality string) error {
 	return nil
 }
 
-// Logout clears the active user session and cached stream URLs.
+// Logout clears the active user session and cached stream/catalog entries.
 func (c *Client) Logout() Status {
 	c.mu.Lock()
 	c.authToken = ""
@@ -207,6 +224,9 @@ func (c *Client) Logout() Status {
 		MaxQuality:    QualityLabel(c.formatID),
 	}
 	c.mu.Unlock()
+	if c.cache != nil {
+		c.cache.clear()
+	}
 	return st
 }
 
@@ -294,6 +314,12 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 	if err := c.requireAuth(); err != nil {
 		return empty, err
 	}
+	if cached, ok := c.cache.getSearch(query, limit, off); ok {
+		for _, tr := range cached.Tracks {
+			c.cacheTrack(tr)
+		}
+		return cached, nil
+	}
 
 	params := url.Values{
 		"query":  {query},
@@ -340,6 +366,7 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 		}
 		res.Albums = append(res.Albums, qa.toLibraryAlbum(false))
 	}
+	c.cache.putSearch(query, limit, off, res)
 	return res, nil
 }
 
@@ -353,6 +380,9 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 	}
 	if limit <= 0 || limit > 200 {
 		limit = 50
+	}
+	if cached, ok := c.cache.getArtist(artistID, limit); ok {
+		return cached, nil
 	}
 	params := url.Values{
 		"artist_id": {strconv.FormatInt(artistID, 10)},
@@ -394,7 +424,9 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 	if art.ArtworkURL == "" && len(albums) > 0 {
 		art.ArtworkURL = albums[0].ArtworkURL
 	}
-	return ArtistDetail{Artist: art, Albums: albums}, nil
+	detail := ArtistDetail{Artist: art, Albums: albums}
+	c.cache.putArtist(artistID, limit, detail)
+	return detail, nil
 }
 
 // GetArtistByName resolves an artist name via Qobuz /artist/search (exact normalized match, cached)
@@ -407,12 +439,11 @@ func (c *Client) GetArtistByName(ctx context.Context, name string, limit int) (A
 	if name == "" {
 		return ArtistDetail{}, fmt.Errorf("%w: empty artist name", ErrNotFound)
 	}
-	key := strings.ToLower(name)
 
-	c.mu.RLock()
-	cachedID, ok := c.artistNameCache[key]
-	c.mu.RUnlock()
-	if ok && cachedID > 0 {
+	if cachedID, ok := c.cache.getArtistName(name); ok {
+		if cachedID == 0 {
+			return ArtistDetail{}, fmt.Errorf("%w: artist %q", ErrNotFound, name)
+		}
 		return c.GetArtist(ctx, cachedID, limit)
 	}
 
@@ -441,25 +472,18 @@ func (c *Client) GetArtistByName(ctx context.Context, name string, limit int) (A
 		}
 	}
 	if matchedID == 0 {
+		c.cache.putArtistName(name, 0)
 		return ArtistDetail{}, fmt.Errorf("%w: artist %q", ErrNotFound, name)
 	}
 	c.cacheArtistName(name, matchedID)
 	return c.GetArtist(ctx, matchedID, limit)
 }
 
-const maxArtistNameCacheEntries = 256
-
 func (c *Client) cacheArtistName(name string, id int64) {
-	key := strings.ToLower(strings.TrimSpace(name))
-	if key == "" || id <= 0 {
+	if c.cache == nil || id <= 0 {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.artistNameCache) >= maxArtistNameCacheEntries {
-		clear(c.artistNameCache)
-	}
-	c.artistNameCache[key] = id
+	c.cache.putArtistName(name, id)
 }
 
 // GetAlbum fetches a Qobuz album and its track listing. Accepts bare or "qobuz:"-prefixed IDs.
@@ -468,6 +492,12 @@ func (c *Client) GetAlbum(ctx context.Context, albumID string) (library.Album, e
 		return library.Album{}, err
 	}
 	rawID := strings.TrimPrefix(strings.TrimSpace(albumID), "qobuz:")
+	if cached, ok := c.cache.getAlbum(rawID); ok {
+		for _, tr := range cached.Tracks {
+			c.cacheTrack(tr)
+		}
+		return cached, nil
+	}
 	params := url.Values{
 		"album_id": {rawID},
 		"limit":    {"500"},
@@ -484,6 +514,7 @@ func (c *Client) GetAlbum(ctx context.Context, albumID string) (library.Album, e
 	for _, tr := range alb.Tracks {
 		c.cacheTrack(tr)
 	}
+	c.cache.putAlbum(rawID, alb)
 	return alb, nil
 }
 

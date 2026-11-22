@@ -18,7 +18,13 @@ import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { QOBUZ_REMOTE_STALE_TIME_MS, queryErrorMessage, queryKeys, useDebouncedValue } from "@/lib/query";
+import {
+  QOBUZ_SEARCH_GC_TIME_MS,
+  QOBUZ_SEARCH_STALE_TIME_MS,
+  queryErrorMessage,
+  queryKeys,
+  useDebouncedValue,
+} from "@/lib/query";
 import { cn } from "@/lib/utils";
 
 interface SearchViewProps {
@@ -77,7 +83,8 @@ export function SearchView({
     queryKey: queryKeys.qobuz.search(debouncedQobuz),
     queryFn: ({ signal }) => tacetClient.qobuzSearch(debouncedQobuz, { limit: 12 }, { signal }),
     enabled: Boolean(debouncedQobuz && qobuzConnected),
-    staleTime: QOBUZ_REMOTE_STALE_TIME_MS,
+    staleTime: QOBUZ_SEARCH_STALE_TIME_MS,
+    gcTime: QOBUZ_SEARCH_GC_TIME_MS,
   });
 
   const libRes = trimmed ? (libQuery.data ?? null) : null;

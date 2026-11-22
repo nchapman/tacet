@@ -14,7 +14,7 @@ import type {
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { QOBUZ_REMOTE_STALE_TIME_MS, queryErrorMessage, queryKeys } from "@/lib/query";
+import { QOBUZ_ARTIST_GC_TIME_MS, QOBUZ_ARTIST_STALE_TIME_MS, queryErrorMessage, queryKeys } from "@/lib/query";
 import { useScrollRestoration } from "@/lib/scroll";
 import { cn } from "@/lib/utils";
 
@@ -133,7 +133,8 @@ export function ArtistsView({
       }
     },
     enabled: Boolean(effectiveArtist && qobuzConnected),
-    staleTime: QOBUZ_REMOTE_STALE_TIME_MS,
+    staleTime: QOBUZ_ARTIST_STALE_TIME_MS,
+    gcTime: QOBUZ_ARTIST_GC_TIME_MS,
   });
 
   const loadingArtists = artistsQuery.isPending;

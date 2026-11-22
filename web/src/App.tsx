@@ -28,7 +28,13 @@ import { AmbientBackdrop } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
 import { useBrowserPlayer } from "@/hooks/useBrowserPlayer";
 import { useTacet } from "@/hooks/useTacet";
-import { invalidateLibraryQueries, queryErrorMessage, queryKeys } from "@/lib/query";
+import {
+  invalidateLibraryQueries,
+  QOBUZ_ALBUM_GC_TIME_MS,
+  QOBUZ_ALBUM_STALE_TIME_MS,
+  queryErrorMessage,
+  queryKeys,
+} from "@/lib/query";
 import { useScrollRestoration } from "@/lib/scroll";
 import { albumPath, artistPath, decodeAlbumKey, SECTION_LABELS, SECTION_PATHS, sectionFromPathname } from "@/routes";
 
@@ -533,6 +539,8 @@ function AlbumRoute({
 
   const isOutOfLibraryQobuz = Boolean(hint && hint.source === "qobuz" && hint.inLibrary === false);
 
+  const isQobuzAlbum = Boolean(albumId?.startsWith("qobuz:"));
+
   const albumQuery = useQuery<Album>({
     queryKey: queryKeys.album(albumId ?? ""),
     queryFn: ({ signal }) => {
@@ -548,7 +556,8 @@ function AlbumRoute({
       });
     },
     enabled: Boolean(albumId),
-    staleTime: 60_000,
+    staleTime: isQobuzAlbum ? QOBUZ_ALBUM_STALE_TIME_MS : 60_000,
+    gcTime: isQobuzAlbum ? QOBUZ_ALBUM_GC_TIME_MS : undefined,
     placeholderData: hint,
   });
 

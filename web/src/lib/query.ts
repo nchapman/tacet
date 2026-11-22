@@ -4,7 +4,12 @@ import { TacetAPIError } from "@/api/client";
 
 export const DEFAULT_STALE_TIME_MS = 30_000;
 export const DEFAULT_GC_TIME_MS = 10 * 60_000;
-export const QOBUZ_REMOTE_STALE_TIME_MS = 5 * 60_000;
+export const QOBUZ_ARTIST_STALE_TIME_MS = 60 * 60_000;
+export const QOBUZ_ARTIST_GC_TIME_MS = 4 * 60 * 60_000;
+export const QOBUZ_ALBUM_STALE_TIME_MS = 60 * 60_000;
+export const QOBUZ_ALBUM_GC_TIME_MS = 4 * 60 * 60_000;
+export const QOBUZ_SEARCH_STALE_TIME_MS = 15 * 60_000;
+export const QOBUZ_SEARCH_GC_TIME_MS = 60 * 60_000;
 
 export function shouldRetryQuery(failureCount: number, error: unknown): boolean {
   if (error instanceof TacetAPIError) {

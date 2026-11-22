@@ -79,12 +79,21 @@ func run() error {
 	}
 
 	// 2. Qobuz client (env vars take precedence; otherwise restore saved session from SQLite).
+	var qobuzCachePath string
+	if dir := strings.TrimSpace(*dataDir); dir != "" {
+		qobuzCachePath = filepath.Join(dir, "qobuz-cache.json")
+	}
 	qb := qobuz.NewClient(qobuz.Config{
 		AppID:     os.Getenv("QOBUZ_APP_ID"),
 		AppSecret: os.Getenv("QOBUZ_APP_SECRET"),
 		AuthToken: os.Getenv("QOBUZ_AUTH_TOKEN"),
 		FormatID:  qobuz.FormatFLAC192,
+		CachePath: qobuzCachePath,
 	})
+	defer func() { _ = qb.Close() }()
+	if albs, arts, _, searches := qb.CacheStats(); albs+arts+searches > 0 {
+		log.Printf("loaded Qobuz disk cache (%d albums, %d artists, %d searches)", albs, arts, searches)
+	}
 	var savedQobuz qobuz.PersistedCredentials
 	if found, credErr := cat.GetProviderCredentials(ctx, "qobuz", &savedQobuz); credErr != nil {
 		log.Printf("warning: failed to load saved Qobuz credentials: %v", credErr)
