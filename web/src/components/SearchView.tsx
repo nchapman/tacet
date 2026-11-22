@@ -158,11 +158,7 @@ export function SearchView({
                   onQueryChange("");
                 }
               }}
-              placeholder={
-                qobuzConnected
-                  ? "What do you want to listen to? (Library + Qobuz)"
-                  : "What do you want to listen to?"
-              }
+              placeholder="What do you want to listen to?"
               aria-label="Global search"
               className="h-12 w-full rounded-full border border-white/[0.12] bg-white/[0.06] pl-11 pr-12 text-[15px] text-foreground placeholder:text-muted-foreground/75 transition-colors focus:border-white/25 focus:bg-white/[0.08] focus:outline-none"
             />
@@ -336,7 +332,6 @@ export function SearchView({
                                   : "Qobuz Artist"
                               }
                               artworkUrl={artist.artworkUrl}
-                              remote
                               onClick={() => onOpenArtist(artist.name, artist.id)}
                             />
                           ))}
@@ -564,13 +559,11 @@ function ArtistResultCard({
   name,
   subtitle,
   artworkUrl,
-  remote,
   onClick,
 }: {
   name: string;
   subtitle: string;
   artworkUrl?: string;
-  remote?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -589,14 +582,7 @@ function ArtistResultCard({
         )}
       </div>
       <div className="mt-3 w-full truncate text-sm font-medium text-white">{name}</div>
-      <div className="mt-0.5 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
-        <span className="truncate">{subtitle}</span>
-        {remote && (
-          <Badge variant="qobuz" className="px-1.5 py-0 text-[9px]">
-            Qobuz
-          </Badge>
-        )}
-      </div>
+      <div className="mt-0.5 w-full truncate text-xs text-muted-foreground">{subtitle}</div>
     </button>
   );
 }
@@ -662,8 +648,8 @@ function TrackResultRow({
 
       {qual && (
         <span className="hidden sm:inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground/75 shrink-0">
-          {hiRes && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/75" title="Hi-Res Audio" />}
           {qual}
+          {hiRes && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/75" title="Hi-Res Audio" />}
         </span>
       )}
 

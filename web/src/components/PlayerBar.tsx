@@ -299,14 +299,14 @@ export function PlayerBar({
                 className={cn(
                   "inline-flex h-8 max-w-[175px] items-center gap-2 rounded-full border px-2.5 text-xs font-medium transition-colors cursor-pointer",
                   hasZone
-                    ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15"
-                    : "border-white/10 bg-white/[0.05] text-muted-foreground hover:text-foreground",
+                    ? "border-white/[0.08] bg-white/[0.04] text-foreground/85 hover:bg-white/[0.08] hover:text-white"
+                    : "border-white/[0.06] bg-white/[0.03] text-muted-foreground hover:text-foreground",
                 )}
               >
                 {isBrowserActive ? (
-                  <Laptop className="h-3.5 w-3.5 shrink-0" />
+                  <Laptop className={cn("h-3.5 w-3.5 shrink-0", playing ? "text-emerald-400" : "text-muted-foreground")} />
                 ) : (
-                  <Speaker className="h-3.5 w-3.5 shrink-0" />
+                  <Speaker className={cn("h-3.5 w-3.5 shrink-0", playing ? "text-emerald-400" : "text-muted-foreground")} />
                 )}
                 <span className="truncate">{activeDeviceName}</span>
               </button>

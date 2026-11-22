@@ -178,10 +178,16 @@ export function DeviceList({
                 "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
                 browserPlayer.enabled && browserPlayer.zoneId === activeZoneId
                   ? "bg-emerald-500/20 text-emerald-300"
-                  : "bg-white/[0.06] text-muted-foreground",
+                  : browserZone?.state === "playing"
+                    ? "bg-emerald-500/12 text-emerald-400 ring-1 ring-emerald-500/35"
+                    : "bg-white/[0.06] text-muted-foreground",
               )}
             >
-              <Laptop className="h-4 w-4" />
+              {browserZone?.state === "playing" ? (
+                <Volume2 className="h-4 w-4 animate-pulse" />
+              ) : (
+                <Laptop className="h-4 w-4" />
+              )}
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
@@ -262,7 +268,11 @@ export function DeviceList({
                       <div
                         className={cn(
                           "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
-                          active ? "bg-emerald-500/20 text-emerald-300" : "bg-white/[0.06] text-muted-foreground",
+                          active
+                            ? "bg-emerald-500/20 text-emerald-300"
+                            : playing
+                              ? "bg-emerald-500/12 text-emerald-400 ring-1 ring-emerald-500/35"
+                              : "bg-white/[0.06] text-muted-foreground",
                         )}
                       >
                         {playing ? <Volume2 className="h-4 w-4 animate-pulse" /> : <Speaker className="h-4 w-4" />}

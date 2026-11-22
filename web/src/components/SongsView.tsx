@@ -212,8 +212,8 @@ export function SongsView({
                   <div className="hidden md:flex items-center gap-1.5">
                     {qual && (
                       <>
-                        {hiRes && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/75" title="Hi-Res Audio" />}
                         <span className="font-mono text-[11px] text-muted-foreground/75">{qual}</span>
+                        {hiRes && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/75" title="Hi-Res Audio" />}
                       </>
                     )}
                   </div>
