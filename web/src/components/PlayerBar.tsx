@@ -488,27 +488,18 @@ export function PlayerBar({
                   </button>
                 </div>
 
-                {/* Metadata + Quality */}
-                <div className="space-y-1.5">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <h2 className="truncate text-xl font-semibold tracking-tight text-foreground">
-                        {track?.title || "Nothing Playing"}
-                      </h2>
-                      <p className="truncate text-sm text-muted-foreground">
-                        {track ? `${track.artist}${track.album ? ` · ${track.album}` : ""}` : "Select an album to begin"}
-                      </p>
-                    </div>
-                    {qualLabel && (
-                      <Badge variant={hiRes ? "hires" : "muted"} className="shrink-0 whitespace-nowrap">
-                        {qualLabel}
-                      </Badge>
-                    )}
-                  </div>
+                {/* Metadata */}
+                <div className="min-w-0 space-y-0.5">
+                  <h2 className="truncate text-xl font-semibold tracking-tight text-foreground">
+                    {track?.title || "Nothing Playing"}
+                  </h2>
+                  <p className="truncate text-sm text-muted-foreground">
+                    {track ? `${track.artist}${track.album ? ` · ${track.album}` : ""}` : "Select an album to begin"}
+                  </p>
                 </div>
 
-                {/* Seek slider */}
-                <div className="space-y-1">
+                {/* Seek slider + centered quality badge */}
+                <div className="space-y-1.5">
                   <Slider
                     aria-label="Seek position"
                     min={0}
@@ -522,9 +513,16 @@ export function PlayerBar({
                       onSeek(v);
                     }}
                   />
-                  <div className="flex justify-between text-[11px] font-mono tabular-nums text-muted-foreground">
+                  <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-[11px] font-mono tabular-nums text-muted-foreground">
                     <span>{fmtDuration(shownPos)}</span>
-                    <span>{fmtDuration(duration)}</span>
+                    {qualLabel ? (
+                      <Badge variant={hiRes ? "hires" : "muted"} className="px-2 py-0 text-[10px] leading-4 whitespace-nowrap">
+                        {qualLabel}
+                      </Badge>
+                    ) : (
+                      <span />
+                    )}
+                    <span className="text-right">{fmtDuration(duration)}</span>
                   </div>
                 </div>
 
