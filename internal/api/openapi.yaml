@@ -427,6 +427,70 @@ paths:
         "400": { $ref: "#/components/responses/ErrorResponse" }
         "404": { $ref: "#/components/responses/ErrorResponse" }
         "422": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/zones/{zoneId}/quality:
+    put:
+      summary: Set per-zone audio delivery quality (applies on next track)
+      parameters: [$ref: "#/components/parameters/ZoneId"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quality]
+              properties:
+                quality: { $ref: "#/components/schemas/AudioQuality" }
+      responses:
+        "200":
+          description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "422": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/zones/{zoneId}/shuffle:
+    put:
+      summary: Toggle shuffle for a zone queue
+      parameters: [$ref: "#/components/parameters/ZoneId"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/zones/{zoneId}/repeat:
+    put:
+      summary: Set repeat mode for a zone queue
+      parameters: [$ref: "#/components/parameters/ZoneId"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode: { $ref: "#/components/schemas/RepeatMode" }
+      responses:
+        "200":
+          description: Updated zone snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ZoneSnapshot" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/library/status:
     get:
       summary: Unified library counts, missing counts, and per-provider sync status
@@ -1084,12 +1148,19 @@ components:
     PlaybackState:
       type: string
       enum: [idle, playing, paused, buffering, stopped]
+    AudioQuality:
+      type: string
+      enum: [opus_96, opus_128, opus_160, opus_256, original, wav]
+    RepeatMode:
+      type: string
+      enum: [off, all, one]
     Settings:
       type: object
-      required: [streamMode, qobuzMaxQuality]
+      required: [streamMode, qobuzMaxQuality, transcodeAvailable]
       properties:
         streamMode: { $ref: "#/components/schemas/StreamMode" }
         qobuzMaxQuality: { $ref: "#/components/schemas/QobuzQuality" }
+        transcodeAvailable: { type: boolean }
     ServerInfo:
       type: object
       required: [name, version, apiVersion, capabilities]
@@ -1361,6 +1432,10 @@ components:
         currentTrack: { $ref: "#/components/schemas/Track" }
         gaplessArmed: { type: boolean }
         eventsActive: { type: boolean }
+        audioQuality: { $ref: "#/components/schemas/AudioQuality" }
+        activeQuality: { $ref: "#/components/schemas/AudioQuality" }
+        shuffle: { type: boolean }
+        repeat: { $ref: "#/components/schemas/RepeatMode" }
     RegisterPlayerRequest:
       type: object
       properties:
@@ -1415,6 +1490,8 @@ components:
         durationSec: { type: integer }
         sampleRate: { type: integer }
         bitDepth: { type: integer }
+        seekable: { type: boolean }
+        transcoded: { type: boolean }
     PlayerCommand:
       type: object
       required: [id, type]
@@ -1467,6 +1544,10 @@ components:
         currentTrack: { $ref: "#/components/schemas/Track" }
         gaplessArmed: { type: boolean }
         eventsActive: { type: boolean }
+        audioQuality: { $ref: "#/components/schemas/AudioQuality" }
+        activeQuality: { $ref: "#/components/schemas/AudioQuality" }
+        shuffle: { type: boolean }
+        repeat: { $ref: "#/components/schemas/RepeatMode" }
     ErrorEnvelope:
       type: object
       required: [error]

@@ -179,7 +179,7 @@ func TestArtTranscode_NoUpscaleAndCoalescing(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		data, mime, hit := cache.getOrBuild(hash, artSizeSmall, artFormatJPEG, load)
+		data, mime, hit := cache.getOrBuild(context.Background(), hash, artSizeSmall, artFormatJPEG, load)
 		if !hit || mime != "image/jpeg" || len(data) == 0 {
 			t.Errorf("unexpected leader result: hit=%v mime=%q len=%d", hit, mime, len(data))
 		}
@@ -190,7 +190,7 @@ func TestArtTranscode_NoUpscaleAndCoalescing(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			data, mime, hit := cache.getOrBuild(hash, artSizeSmall, artFormatJPEG, load)
+			data, mime, hit := cache.getOrBuild(context.Background(), hash, artSizeSmall, artFormatJPEG, load)
 			if !hit || mime != "image/jpeg" || len(data) == 0 {
 				t.Errorf("unexpected coalesced result: hit=%v mime=%q len=%d", hit, mime, len(data))
 			}
@@ -236,7 +236,7 @@ func TestAcceptsWebPAndPPM(t *testing.T) {
 	// If cwebp is installed on the host, verify real WebP transcoding end-to-end.
 	if enc := DetectArtEncoders(); enc.CWebPPath != "" {
 		raw := makeTestPNG(t, 300, 300)
-		data, mime, ok := transcodeArt(raw, artSizeSmall, artFormatWebP, enc)
+		data, mime, ok := transcodeArt(context.Background(), raw, artSizeSmall, artFormatWebP, enc)
 		if !ok || mime != "image/webp" || len(data) < 12 || string(data[8:12]) != "WEBP" {
 			t.Fatalf("cwebp transcode failed: ok=%v mime=%q len=%d", ok, mime, len(data))
 		}

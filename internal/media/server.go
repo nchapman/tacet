@@ -41,6 +41,8 @@ type Handler struct {
 	relayHTTP     *http.Client
 	prewarmMu     sync.Mutex
 	prewarmCancel context.CancelFunc
+	prewarmClosed bool
+	prewarmWG     sync.WaitGroup
 }
 
 // NewHandler creates a media HTTP handler.
@@ -88,15 +90,17 @@ func (h *Handler) SetArtCacheDir(dir string) {
 	h.art = newArtCache(dir)
 }
 
-// Close cancels any background cover-art prewarming.
+// Close cancels any background cover-art prewarming and waits for workers to exit.
 func (h *Handler) Close() {
 	h.prewarmMu.Lock()
+	h.prewarmClosed = true
 	cancel := h.prewarmCancel
 	h.prewarmCancel = nil
 	h.prewarmMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	h.prewarmWG.Wait()
 }
 
 // PrewarmArt asynchronously pre-encodes uncached 400px thumbnails (WebP when
@@ -109,16 +113,22 @@ func (h *Handler) PrewarmArt(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	runCtx, cancel := context.WithCancel(ctx)
 	h.prewarmMu.Lock()
+	if h.prewarmClosed {
+		h.prewarmMu.Unlock()
+		return
+	}
+	runCtx, cancel := context.WithCancel(ctx)
 	prev := h.prewarmCancel
 	h.prewarmCancel = cancel
+	h.prewarmWG.Add(1)
 	h.prewarmMu.Unlock()
 	if prev != nil {
 		prev()
 	}
 
 	go func() {
+		defer h.prewarmWG.Done()
 		defer cancel()
 		h.prewarmArtSync(runCtx)
 	}()
@@ -165,7 +175,7 @@ func (h *Handler) prewarmArtSync(ctx context.Context) int {
 				if ctx.Err() != nil {
 					return
 				}
-				if _, _, ok := art.getOrBuild(hash, artSizeSmall, format, func() ([]byte, string, bool) {
+				if _, _, ok := art.getOrBuild(ctx, hash, artSizeSmall, format, func() ([]byte, string, bool) {
 					return h.catalog.CoverArtByHash(hash)
 				}); ok {
 					built.Add(1)
@@ -275,19 +285,36 @@ func (h *Handler) serveArt(w http.ResponseWriter, r *http.Request) {
 		ok       bool
 	)
 	if hashed {
-		etag := fmt.Sprintf(`"art-%s-%d-%s"`, id, bucket, format.ext)
+		expectedETag := fmt.Sprintf(`"art-%s-%d-%s"`, id, bucket, format.ext)
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		w.Header().Set("ETag", etag)
-		if r.Header.Get("If-None-Match") == etag {
+		if etagMatches(r.Header.Get("If-None-Match"), expectedETag) {
+			w.Header().Set("ETag", expectedETag)
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
-		data, mimeType, ok = h.art.getOrBuild(id, bucket, format, func() ([]byte, string, bool) {
+		data, mimeType, ok = h.art.getOrBuild(r.Context(), id, bucket, format, func() ([]byte, string, bool) {
 			return h.catalog.CoverArtByHash(id)
 		})
+		if ok {
+			var actualExt string
+			switch mimeType {
+			case artFormatWebP.mime:
+				actualExt = artFormatWebP.ext
+			case artFormatJPEG.mime:
+				actualExt = artFormatJPEG.ext
+			default:
+				actualExt = "raw"
+			}
+			actualETag := fmt.Sprintf(`"art-%s-%d-%s"`, id, bucket, actualExt)
+			w.Header().Set("ETag", actualETag)
+			if actualETag != expectedETag && etagMatches(r.Header.Get("If-None-Match"), actualETag) {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+		}
 	} else {
 		w.Header().Set("Cache-Control", "public, max-age=86400")
-		data, mimeType, ok = h.art.getOrBuild("", bucket, format, func() ([]byte, string, bool) {
+		data, mimeType, ok = h.art.getOrBuild(r.Context(), "", bucket, format, func() ([]byte, string, bool) {
 			return h.catalog.CoverArt(id)
 		})
 	}

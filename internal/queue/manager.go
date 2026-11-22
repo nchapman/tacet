@@ -200,6 +200,22 @@ type zone struct {
 	loadedAt           time.Time
 	playRecordedItemID string
 	generation         uint64
+	preloadGen         uint64
+}
+
+// invalidatePreloadLocked resets all gapless preload state and bumps preloadGen
+// so any concurrent in-flight preloadNext() discards its stale SetNextURI.
+// Returns true if a previously preloaded URI should be cleared on the renderer.
+func invalidatePreloadLocked(z *zone) bool {
+	wasPreloaded := z.nextPreloaded
+	z.preloadGen++
+	z.nextPreloaded = false
+	z.nextPreloading = false
+	z.nextFailed = false
+	z.nextURI = ""
+	z.nextQuality = ""
+	z.nextIndex = -1
+	return wasPreloaded
 }
 
 // ErrorClassifier maps external controller errors onto structured zone.error
@@ -449,14 +465,10 @@ func (m *Manager) SetZoneQuality(zoneID string, quality AudioQuality) (ZoneSnaps
 		m.savedQualities[zoneID] = q
 	}
 	var toClear upnp.Controller
-	if z.nextPreloaded || z.nextFailed {
-		if z.nextPreloaded {
+	if z.nextPreloaded || z.nextPreloading || z.nextFailed {
+		if invalidatePreloadLocked(z) {
 			toClear = z.ctrl
 		}
-		z.nextPreloaded = false
-		z.nextFailed = false
-		z.nextURI = ""
-		z.nextQuality = ""
 	}
 	z.revision++
 	snap := m.snapshotLocked(z)

@@ -433,6 +433,7 @@ func (m *Manager) pollTick(ctx context.Context) {
 
 type updateResult struct {
 	preloadTrack       *library.Track
+	preloadGen         uint64
 	playedTrack        *library.Track
 	fallbackAdvanceIdx int
 	gen                uint64
@@ -553,7 +554,7 @@ func (m *Manager) finishUpdate(ctx context.Context, z *zone, zoneID string, res 
 	}
 	if res.preloadTrack != nil {
 		pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		m.preloadNext(pctx, z, *res.preloadTrack, res.gen)
+		m.preloadNext(pctx, z, *res.preloadTrack, res.gen, res.preloadGen)
 		cancel()
 	}
 	if res.fallbackAdvanceIdx >= 0 {
@@ -667,6 +668,7 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 			nextIdx >= 0 && nextIdx != z.currentIndex {
 			t := z.queue[nextIdx].Track
 			res.preloadTrack = &t
+			res.preloadGen = z.preloadGen
 			z.nextIndex = nextIdx
 			z.nextPreloading = true
 		}
@@ -730,7 +732,7 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 	return res
 }
 
-func (m *Manager) preloadNext(ctx context.Context, z *zone, track library.Track, gen uint64) {
+func (m *Manager) preloadNext(ctx context.Context, z *zone, track library.Track, gen, pgen uint64) {
 	m.mu.RLock()
 	ctrl := z.ctrl
 	zoneID := ctrl.Info().ID
@@ -741,7 +743,7 @@ func (m *Manager) preloadNext(ctx context.Context, z *zone, track library.Track,
 	if err != nil {
 		log.Printf("gapless preload skipped (resolve failed): %v", err)
 		m.mu.Lock()
-		if z.generation == gen {
+		if z.generation == gen && z.preloadGen == pgen {
 			z.nextPreloading = false
 			z.nextFailed = true
 		}
@@ -751,7 +753,7 @@ func (m *Manager) preloadNext(ctx context.Context, z *zone, track library.Track,
 
 	if err := ctrl.SetNextURI(ctx, media); err != nil {
 		m.mu.Lock()
-		if z.generation == gen {
+		if z.generation == gen && z.preloadGen == pgen {
 			z.nextPreloading = false
 			if upnp.IsActionUnsupported(err) {
 				z.setNextUnsupported = true
@@ -767,9 +769,10 @@ func (m *Manager) preloadNext(ctx context.Context, z *zone, track library.Track,
 
 	m.mu.Lock()
 	var pbEv *PlaybackEvent
-	if z.generation == gen {
-		if z.currentIndex+1 < len(z.queue) {
-			z.queue[z.currentIndex+1].Track = resolved
+	stale := z.generation != gen || z.preloadGen != pgen
+	if !stale {
+		if z.nextIndex >= 0 && z.nextIndex < len(z.queue) && z.queue[z.nextIndex].Track.ID == resolved.ID {
+			z.queue[z.nextIndex].Track = resolved
 		}
 		z.nextURI = media.URL
 		z.nextQuality = effQuality
@@ -780,6 +783,13 @@ func (m *Manager) preloadNext(ctx context.Context, z *zone, track library.Track,
 		pbEv = &ev
 	}
 	m.mu.Unlock()
+
+	if stale {
+		// Queue/shuffle/repeat/quality changed while SetNextURI was in flight;
+		// clear the stale URI on the renderer so it does not gapless-advance to it.
+		m.clearNextPreloadAsync(ctrl)
+		return
+	}
 
 	if pbEv != nil {
 		m.emit("zone.playback", zoneID, *pbEv)

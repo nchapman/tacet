@@ -531,7 +531,7 @@ func (s *Server) handleZoneQuality(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
-	if req.Quality == nil {
+	if req.Quality == nil || strings.TrimSpace(string(*req.Quality)) == "" {
 		writeDomainError(w, fmt.Errorf("%w: quality is required", queue.ErrInvalidArgument))
 		return
 	}
@@ -580,7 +580,7 @@ func (s *Server) handleZoneRepeat(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
-	if req.Mode == nil {
+	if req.Mode == nil || strings.TrimSpace(string(*req.Mode)) == "" {
 		writeDomainError(w, fmt.Errorf("%w: mode is required", queue.ErrInvalidArgument))
 		return
 	}

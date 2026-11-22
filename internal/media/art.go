@@ -230,7 +230,7 @@ func encodePPM(img *image.RGBA) []byte {
 	return out
 }
 
-func encodeArtWebP(dst *image.RGBA, cwebpPath string) ([]byte, bool) {
+func encodeArtWebP(ctx context.Context, dst *image.RGBA, cwebpPath string) ([]byte, bool) {
 	if cwebpPath == "" {
 		return nil, false
 	}
@@ -239,10 +239,10 @@ func encodeArtWebP(dst *image.RGBA, cwebpPath string) ([]byte, bool) {
 	if err := enc.Encode(&pngBuf, dst); err != nil {
 		return nil, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), artEncodeLimit)
+	cmdCtx, cancel := context.WithTimeout(ctx, artEncodeLimit)
 	defer cancel()
 	//nolint:gosec // cwebpPath resolved via LookPath; all args are static constants
-	cmd := exec.CommandContext(ctx, cwebpPath, "-quiet", "-q", strconv.Itoa(artWebPQuality), "-m", "4", "-mt", "-sharp_yuv", "-o", "-", "--", "-")
+	cmd := exec.CommandContext(cmdCtx, cwebpPath, "-quiet", "-q", strconv.Itoa(artWebPQuality), "-m", "4", "-mt", "-sharp_yuv", "-o", "-", "--", "-")
 	cmd.Stdin = &pngBuf
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -256,13 +256,13 @@ func encodeArtWebP(dst *image.RGBA, cwebpPath string) ([]byte, bool) {
 	return data, true
 }
 
-func encodeArtJPEG(dst *image.RGBA, cjpegPath string) ([]byte, bool) {
+func encodeArtJPEG(ctx context.Context, dst *image.RGBA, cjpegPath string) ([]byte, bool) {
 	if cjpegPath != "" {
 		ppm := encodePPM(dst)
-		ctx, cancel := context.WithTimeout(context.Background(), artEncodeLimit)
+		cmdCtx, cancel := context.WithTimeout(ctx, artEncodeLimit)
 		defer cancel()
 		//nolint:gosec // cjpegPath resolved via LookPath or fixed Homebrew mozjpeg path; args are static constants
-		cmd := exec.CommandContext(ctx, cjpegPath, "-quality", strconv.Itoa(artJPEGQuality), "-optimize")
+		cmd := exec.CommandContext(cmdCtx, cjpegPath, "-quality", strconv.Itoa(artJPEGQuality), "-optimize")
 		cmd.Stdin = bytes.NewReader(ppm)
 		var out bytes.Buffer
 		cmd.Stdout = &out
@@ -283,17 +283,20 @@ func encodeArtJPEG(dst *image.RGBA, cjpegPath string) ([]byte, bool) {
 // transcodeArt decodes and resizes raw cover art and encodes it in the
 // negotiated target format (WebP via cwebp when requested and available,
 // otherwise MozJPEG/libjpeg cjpeg with pure-Go JPEG fallback).
-func transcodeArt(raw []byte, maxDim int, format artFormat, enc ArtEncoders) ([]byte, string, bool) {
+func transcodeArt(ctx context.Context, raw []byte, maxDim int, format artFormat, enc ArtEncoders) ([]byte, string, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	dst, ok := decodeAndResizeArt(raw, maxDim)
 	if !ok {
 		return nil, "", false
 	}
 	if format == artFormatWebP {
-		if webp, encoded := encodeArtWebP(dst, enc.CWebPPath); encoded {
+		if webp, encoded := encodeArtWebP(ctx, dst, enc.CWebPPath); encoded {
 			return webp, artFormatWebP.mime, true
 		}
 	}
-	if jpg, encoded := encodeArtJPEG(dst, enc.CJPEGPath); encoded {
+	if jpg, encoded := encodeArtJPEG(ctx, dst, enc.CJPEGPath); encoded {
 		return jpg, artFormatJPEG.mime, true
 	}
 	return nil, "", false
@@ -301,7 +304,7 @@ func transcodeArt(raw []byte, maxDim int, format artFormat, enc ArtEncoders) ([]
 
 // transcodeArtJPEG is kept for callers/tests requesting JPEG output directly.
 func transcodeArtJPEG(raw []byte, maxDim int) ([]byte, bool) {
-	data, _, ok := transcodeArt(raw, maxDim, artFormatJPEG, DetectArtEncoders())
+	data, _, ok := transcodeArt(context.Background(), raw, maxDim, artFormatJPEG, DetectArtEncoders())
 	return data, ok
 }
 
@@ -411,7 +414,10 @@ func (c *artCache) writeDisk(hash string, bucket int, format artFormat, data []b
 
 // getOrBuild returns a cached resized image for (hash, bucket, format) or
 // invokes loadRaw once across concurrent callers, encodes, and persists to disk.
-func (c *artCache) getOrBuild(hash string, bucket int, format artFormat, loadRaw func() ([]byte, string, bool)) ([]byte, string, bool) {
+func (c *artCache) getOrBuild(ctx context.Context, hash string, bucket int, format artFormat, loadRaw func() ([]byte, string, bool)) ([]byte, string, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if hash != "" {
 		if data, ok := c.readDisk(hash, bucket, format); ok {
 			return data, format.mime, true
@@ -423,8 +429,12 @@ func (c *artCache) getOrBuild(hash string, bucket int, format artFormat, loadRaw
 		c.mu.Lock()
 		if fl, exists := c.inflight[key]; exists {
 			c.mu.Unlock()
-			<-fl.done
-			return fl.data, fl.mime, fl.ok
+			select {
+			case <-fl.done:
+				return fl.data, fl.mime, fl.ok
+			case <-ctx.Done():
+				return nil, "", false
+			}
 		}
 		fl := &artFlight{done: make(chan struct{})}
 		c.inflight[key] = fl
@@ -447,7 +457,7 @@ func (c *artCache) getOrBuild(hash string, bucket int, format artFormat, loadRaw
 		if !ok {
 			return nil, "", false
 		}
-		if encoded, mime, ok := transcodeArt(raw, bucket, format, c.enc); ok {
+		if encoded, mime, ok := transcodeArt(ctx, raw, bucket, format, c.enc); ok {
 			actualFmt := artFormatJPEG
 			if mime == artFormatWebP.mime {
 				actualFmt = artFormatWebP
@@ -469,7 +479,7 @@ func (c *artCache) getOrBuild(hash string, bucket int, format artFormat, loadRaw
 	if data, hit := c.readDisk(derivedHash, bucket, format); hit {
 		return data, format.mime, true
 	}
-	if encoded, mime, ok := transcodeArt(raw, bucket, format, c.enc); ok {
+	if encoded, mime, ok := transcodeArt(ctx, raw, bucket, format, c.enc); ok {
 		actualFmt := artFormatJPEG
 		if mime == artFormatWebP.mime {
 			actualFmt = artFormatWebP
@@ -478,4 +488,21 @@ func (c *artCache) getOrBuild(hash string, bucket int, format artFormat, loadRaw
 		return encoded, mime, true
 	}
 	return raw, safeImageMIME(rawMIME), true
+}
+
+func etagMatches(header, target string) bool {
+	if header == "" || target == "" {
+		return false
+	}
+	for _, part := range strings.Split(header, ",") {
+		part = strings.TrimSpace(part)
+		if part == "*" {
+			return true
+		}
+		part = strings.TrimPrefix(part, "W/")
+		if part == target {
+			return true
+		}
+	}
+	return false
 }

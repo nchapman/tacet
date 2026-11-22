@@ -347,6 +347,16 @@ func parseByteRange(hdr string, total int64) (start, end int64, ranged, invalid 
 	return s, e, true, false
 }
 
+func clearStreamHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Del("Content-Type")
+	h.Del("Content-Length")
+	h.Del("Content-Range")
+	h.Del("Accept-Ranges")
+	h.Del("transferMode.dlna.org")
+	h.Del("contentFeatures.dlna.org")
+}
+
 func (h *Handler) streamTranscode(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -477,6 +487,7 @@ func (h *Handler) streamTranscode(
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		clearStreamHeaders(w)
 		http.Error(w, "transcoder pipe failed", http.StatusInternalServerError)
 		return
 	}
@@ -484,6 +495,7 @@ func (h *Handler) streamTranscode(
 	cmd.Stderr = errBuf
 
 	if err := cmd.Start(); err != nil {
+		clearStreamHeaders(w)
 		http.Error(w, "failed to start transcoder", http.StatusServiceUnavailable)
 		return
 	}
@@ -494,6 +506,7 @@ func (h *Handler) streamTranscode(
 			_ = stdout.Close()
 			_ = cmd.Wait()
 			if r.Context().Err() == nil {
+				clearStreamHeaders(w)
 				http.Error(w, "audio seek failed", http.StatusBadGateway)
 			}
 			return

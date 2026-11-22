@@ -192,11 +192,7 @@ func (m *Manager) AddQueueItems(ctx context.Context, zoneID string, tracks []lib
 		updated = append(updated, z.queue[insertAt:]...)
 		z.queue = updated
 		// Next track changed, so clear any previously preloaded URI.
-		clearedPreload = z.nextPreloaded
-		z.nextPreloaded = false
-		z.nextPreloading = false
-		z.nextFailed = false
-		z.nextURI = ""
+		clearedPreload = invalidatePreloadLocked(z)
 	} else {
 		insertAt := len(z.queue)
 		z.queue = append(z.queue, added...)
@@ -293,28 +289,32 @@ func (m *Manager) RemoveItem(ctx context.Context, zoneID, itemID string) (ZoneSn
 		return ZoneSnapshot{}, fmt.Errorf("%w: %q", ErrQueueItemNotFound, itemID)
 	}
 	removingCurrent := idx == z.currentIndex
-	removingNext := idx == z.currentIndex+1
-	clearedPreload := removingNext && z.nextPreloaded
+	removingNext := idx == z.currentIndex+1 || (z.nextIndex >= 0 && idx == z.nextIndex)
+	clearedPreload := false
 	z.queue = append(z.queue[:idx], z.queue[idx+1:]...)
 
 	switch {
-	case idx < z.currentIndex:
-		z.currentIndex--
 	case removingCurrent:
-		z.nextPreloaded = false
-		z.nextPreloading = false
-		z.nextFailed = false
-		z.nextURI = ""
+		invalidatePreloadLocked(z)
 		if len(z.queue) == 0 {
 			z.currentIndex = -1
 		} else if z.currentIndex >= len(z.queue) {
 			z.currentIndex = len(z.queue) - 1
 		}
 	case removingNext:
-		z.nextPreloaded = false
-		z.nextPreloading = false
-		z.nextFailed = false
-		z.nextURI = ""
+		if idx < z.currentIndex {
+			z.currentIndex--
+		}
+		clearedPreload = invalidatePreloadLocked(z)
+	case idx < z.currentIndex:
+		z.currentIndex--
+		if z.nextIndex > idx {
+			z.nextIndex--
+		}
+	default:
+		if z.nextIndex > idx {
+			z.nextIndex--
+		}
 	}
 	z.revision++
 	nextIdx := z.currentIndex
@@ -400,11 +400,7 @@ func (m *Manager) MoveItem(zoneID, itemID string, toIndex int) (ZoneSnapshot, er
 			z.currentIndex = findItemIndexLocked(z.queue, curItemID)
 		}
 		// Order around next track may have changed; re-arm gapless cleanly on next tick.
-		clearedPreload = z.nextPreloaded
-		z.nextPreloaded = false
-		z.nextPreloading = false
-		z.nextFailed = false
-		z.nextURI = ""
+		clearedPreload = invalidatePreloadLocked(z)
 		z.revision++
 	}
 	ctrl := z.ctrl
@@ -808,12 +804,7 @@ func (m *Manager) SetShuffle(_ context.Context, zoneID string, enabled bool) (Zo
 		}
 	}
 
-	clearedPreload := z.nextPreloaded
-	z.nextPreloaded = false
-	z.nextPreloading = false
-	z.nextFailed = false
-	z.nextURI = ""
-	z.nextIndex = -1
+	clearedPreload := invalidatePreloadLocked(z)
 	z.revision++
 	ctrl := z.ctrl
 	qEv := m.queueEventLocked(z)
@@ -854,12 +845,7 @@ func (m *Manager) SetRepeat(_ context.Context, zoneID string, mode RepeatMode) (
 	}
 
 	z.repeat = norm
-	clearedPreload := z.nextPreloaded
-	z.nextPreloaded = false
-	z.nextPreloading = false
-	z.nextFailed = false
-	z.nextURI = ""
-	z.nextIndex = -1
+	clearedPreload := invalidatePreloadLocked(z)
 	z.revision++
 	ctrl := z.ctrl
 	pbEv := m.playbackEventLocked(z)
