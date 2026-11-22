@@ -15,7 +15,7 @@ export function Slider({
       )}
       {...props}
     >
-      <SliderPrimitive.Track className="relative h-1 w-full grow overflow-hidden rounded-full bg-white/[0.14] group-hover:h-1.5 transition-[height]">
+      <SliderPrimitive.Track className="relative h-1 w-full grow overflow-hidden rounded-full bg-white/[0.14]">
         <SliderPrimitive.Range className="absolute h-full rounded-full bg-white/85 group-hover:bg-emerald-400 transition-colors" />
       </SliderPrimitive.Track>
       <SliderPrimitive.Thumb

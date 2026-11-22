@@ -35,7 +35,7 @@ function EndpointQualityPanel({ zone, transcodeAvailable, onChange }: EndpointQu
 
   return (
     <div
-      className="mx-1.5 mb-1.5 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2.5"
+      className="mx-1.5 mt-2 mb-1.5 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2.5"
       onClick={(e) => e.stopPropagation()}
     >
       <div className="flex items-baseline justify-between gap-2 mb-2.5">
@@ -87,16 +87,14 @@ function EndpointQualityPanel({ zone, transcodeAvailable, onChange }: EndpointQu
       </div>
 
       {!transcodeAvailable ? (
-        <p className="mt-2 text-[11px] text-amber-300/80">
-          Install ffmpeg with libopus on the server to enable Opus and WAV transcoding.
+        <p className="mt-2 text-[11px] leading-4 text-amber-300/80">
+          Install ffmpeg with libopus on the server to enable transcoding.
         </p>
-      ) : isOpus && isUPnP ? (
-        <p className="mt-2 text-[11px] text-muted-foreground">
-          Applies on next track · Some UPnP speakers may not support Opus.
+      ) : (
+        <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
+          {isOpus && isUPnP ? "Applies on next track · Opus requires speaker support." : "Applies on next track."}
         </p>
-      ) : current !== "original" ? (
-        <p className="mt-2 text-[11px] text-muted-foreground">Applies on next track.</p>
-      ) : null}
+      )}
     </div>
   );
 }
