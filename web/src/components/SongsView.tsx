@@ -155,7 +155,7 @@ export function SongsView({
                 <div
                   key={tr.id}
                   className={cn(
-                    "group grid grid-cols-[1fr_auto] md:grid-cols-[minmax(0,2fr)_minmax(0,1.2fr)_auto_60px_68px] items-center gap-3 rounded-xl px-2.5 py-2 transition-colors",
+                    "group grid grid-cols-[1fr_auto] md:grid-cols-[minmax(0,2fr)_minmax(0,1.2fr)_175px_60px_68px] items-center gap-3 rounded-xl px-2.5 py-2 transition-colors",
                     active ? "bg-white/[0.08]" : "hover:bg-white/[0.05]",
                   )}
                 >

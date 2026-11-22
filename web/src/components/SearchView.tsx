@@ -647,7 +647,7 @@ function TrackResultRow({
       </div>
 
       {qual && (
-        <span className="hidden sm:inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground/75 shrink-0">
+        <span className="hidden sm:inline-flex w-44 items-center gap-1.5 font-mono text-[11px] text-muted-foreground/75 shrink-0">
           {qual}
           {hiRes && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/75" title="Hi-Res Audio" />}
         </span>
