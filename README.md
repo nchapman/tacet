@@ -33,7 +33,10 @@ make build
 
 ### Docker (Linux / NAS)
 
-Multi-architecture images (`linux/amd64`, `linux/arm64`) are published to GitHub Container Registry on every `main` build and release tag:
+Multi-architecture images (`linux/amd64`, `linux/arm64`) are published to GitHub Container Registry:
+
+- `:latest` (and semver tags like `:1.0.0`, `:1.0`, `:1`) — latest stable Git release tag (`v*`)
+- `:dev` — latest commit on `main`
 
 ```bash
 docker run -d \
