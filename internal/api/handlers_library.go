@@ -379,6 +379,84 @@ func (s *Server) handleQobuzStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.qobuz.Status())
 }
 
+var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
+
+var localOAuthSuffixes = []string{
+	".localhost",
+	".local",
+	".lan",
+	".home",
+	".home.arpa",
+	".internal",
+	".localdomain",
+	".ts.net",
+}
+
+func isValidDNSLabel(label string) bool {
+	if len(label) == 0 || len(label) > 63 {
+		return false
+	}
+	if label[0] == '-' || label[len(label)-1] == '-' {
+		return false
+	}
+	for i := 0; i < len(label); i++ {
+		c := label[i]
+		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		isDigit := c >= '0' && c <= '9'
+		if !isAlpha && !isDigit && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidHostname(host string) bool {
+	if len(host) == 0 || len(host) > 253 {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	for _, label := range labels {
+		if !isValidDNSLabel(label) {
+			return false
+		}
+	}
+	return true
+}
+
+// isLocalOAuthHost returns true for loopback, private/CGNAT LAN IPs, single-label
+// LAN/MagicDNS hostnames (e.g. "kamek"), and local-only DNS suffixes (e.g. ".local",
+// ".lan", ".ts.net") while rejecting public internet domains and public IPs.
+func isLocalOAuthHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		addr = addr.Unmap()
+		return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || cgnatPrefix.Contains(addr)
+	}
+	if !isValidHostname(host) {
+		return false
+	}
+	// Single-label hostnames (e.g. "kamek", "nas") are never publicly routable.
+	if !strings.Contains(host, ".") {
+		return true
+	}
+	for _, suffix := range localOAuthSuffixes {
+		if strings.HasSuffix(host, suffix) && len(host) > len(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRequestHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
 func (s *Server) resolveOAuthCallbackURL(r *http.Request) (string, error) {
 	if s.manager != nil {
 		if base := strings.TrimRight(s.manager.PublicBaseURL(), "/"); base != "" {
@@ -390,18 +468,18 @@ func (s *Server) resolveOAuthCallbackURL(r *http.Request) (string, error) {
 		return "", errors.New("missing Host header")
 	}
 	host := hostport
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
+	if h, portStr, err := net.SplitHostPort(hostport); err == nil {
+		if p, pErr := strconv.Atoi(portStr); pErr != nil || p < 1 || p > 65535 {
+			return "", fmt.Errorf("invalid OAuth callback port in Host %q", hostport)
+		}
 		host = h
 	}
 	host = strings.Trim(host, "[]")
-	if !strings.EqualFold(host, "localhost") {
-		addr, err := netip.ParseAddr(host)
-		if err != nil || (!addr.IsLoopback() && !addr.IsPrivate()) {
-			return "", fmt.Errorf("OAuth callback host %q is not localhost or a private LAN IP; set --public-url to allow custom hosts", host)
-		}
+	if !isLocalOAuthHost(host) {
+		return "", fmt.Errorf("OAuth callback host %q is not a local/LAN host; set --public-url (TACET_PUBLIC_URL) to allow custom hosts", host)
 	}
 	scheme := "http"
-	if r.TLS != nil {
+	if isRequestHTTPS(r) {
 		scheme = "https"
 	}
 	return fmt.Sprintf("%s://%s/api/v1/qobuz/oauth/callback", scheme, hostport), nil
@@ -468,7 +546,7 @@ func (s *Server) handleQobuzOAuthStart(w http.ResponseWriter, r *http.Request) {
 		Path:     "/api/v1/qobuz/oauth/callback",
 		MaxAge:   600,
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   isRequestHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 	http.Redirect(w, r, parsed.String(), http.StatusFound) //nolint:gosec // validated https://www.qobuz.com OAuth URL
@@ -486,7 +564,7 @@ func (s *Server) handleQobuzOAuthCallback(w http.ResponseWriter, r *http.Request
 		Path:     "/api/v1/qobuz/oauth/callback",
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   isRequestHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 	if err != nil || !s.consumeOAuthState(cookie.Value) {

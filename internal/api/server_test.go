@@ -324,7 +324,8 @@ func TestAPIv1_SSEMultiZoneFilterAndQobuzLifecycle(t *testing.T) {
 		t.Fatal("expected qobuz to be logged out")
 	}
 
-	// OAuth start rejects untrusted Host header and sets HttpOnly state cookie on loopback.
+	// OAuth start rejects untrusted public Host header, allows single-label LAN hostnames
+	// (e.g. "kamek:4320"), and sets HttpOnly state cookie on loopback.
 	noRedirectClient := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
@@ -335,6 +336,20 @@ func TestAPIv1_SSEMultiZoneFilterAndQobuzLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertErrorCode(t, evilResp, http.StatusBadRequest, "INVALID_REQUEST")
+
+	lanHostReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/qobuz/oauth/start", nil)
+	lanHostReq.Host = "kamek:4320"
+	lanHostResp, err := noRedirectClient.Do(lanHostReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lanHostResp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 from oauth/start for LAN hostname kamek:4320, got %d", lanHostResp.StatusCode)
+	}
+	if loc := lanHostResp.Header.Get("Location"); !strings.Contains(loc, "http%3A%2F%2Fkamek%3A4320%2Fapi%2Fv1%2Fqobuz%2Foauth%2Fcallback") {
+		t.Fatalf("unexpected OAuth redirect location for LAN hostname: %q", loc)
+	}
+	lanHostResp.Body.Close()
 
 	okStartResp, err := noRedirectClient.Get(ts.URL + "/api/v1/qobuz/oauth/start")
 	if err != nil {
@@ -653,4 +668,46 @@ func TestAPI_CSRFAndZoneRemovalAndTrackCap(t *testing.T) {
 	}
 	delResp.Body.Close()
 	assertErrorCode(t, doReq(t, http.MethodGet, ts.URL+"/api/v1/zones/uuid:living", ""), http.StatusNotFound, "ZONE_NOT_FOUND")
+}
+
+func TestIsLocalOAuthHost(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"localhost", true},
+		{"tacet.localhost", true},
+		{"127.0.0.1", true},
+		{"::1", true},
+		{"192.168.1.50", true},
+		{"10.0.0.5", true},
+		{"172.16.0.10", true},
+		{"100.64.0.42", true},
+		{"fd00::1", true},
+		{"fe80::1", true},
+		{"kamek", true},
+		{"Kamek", true},
+		{"nas-01", true},
+		{"kamek.local", true},
+		{"nas.lan", true},
+		{"tacet.home", true},
+		{"tacet.home.arpa", true},
+		{"tacet.internal", true},
+		{"kamek.tail1234.ts.net", true},
+		{"evil.example", false},
+		{"attacker.com", false},
+		{"foo.local.evil.com", false},
+		{"203.0.113.1", false},
+		{"8.8.8.8", false},
+		{"", false},
+		{"-bad", false},
+		{"bad-", false},
+		{"bad/host", false},
+		{"kamek..local", false},
+	}
+	for _, tc := range tests {
+		if got := isLocalOAuthHost(tc.host); got != tc.want {
+			t.Errorf("isLocalOAuthHost(%q) = %v, want %v", tc.host, got, tc.want)
+		}
+	}
 }
