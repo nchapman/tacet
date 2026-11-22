@@ -48,11 +48,13 @@ docker run -d \
   ghcr.io/nchapman/tacet:latest
 ```
 
-Or use the included `docker-compose.yml`:
+Or use the included `docker-compose.yml` with `MUSIC_DIR` (via shell or `.env`):
 
 ```bash
-docker compose up -d
+MUSIC_DIR=/path/to/music docker compose up -d
 ```
+
+Inside the container, `TACET_MUSIC_DIR` defaults to `/music` and accepts comma-separated paths if you mount multiple directories (e.g. `TACET_MUSIC_DIR=/music/flac,/music/dsd`).
 
 > **Note:** `--network host` is recommended on Linux/NAS hosts so UPnP/DLNA SSDP discovery (`239.255.255.250:1900`) and GENA event callbacks work out of the box. On bridge networks (such as Docker Desktop on macOS), publish `-p 8080:8080` and set `TACET_PUBLIC_URL` + `TACET_RENDERER_URL`.
 
