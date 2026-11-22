@@ -26,7 +26,7 @@ import { SongsView } from "@/components/SongsView";
 import { Button } from "@/components/ui/button";
 import { useBrowserPlayer } from "@/hooks/useBrowserPlayer";
 import { useTacet } from "@/hooks/useTacet";
-import { albumPath, artistPath, SECTION_LABELS, SECTION_PATHS, sectionFromPathname } from "@/routes";
+import { albumPath, artistPath, decodeAlbumKey, SECTION_LABELS, SECTION_PATHS, sectionFromPathname } from "@/routes";
 
 interface AlbumLocationState {
   album?: Album;
@@ -114,7 +114,8 @@ export function App() {
         backLabel: SECTION_LABELS[section],
         fromApp: true,
       };
-      void routerNavigate(albumPath(albumId), { state });
+      const meta = hint ? { artist: hint.artist, title: hint.title } : undefined;
+      void routerNavigate(albumPath(albumId, meta), { state });
     },
     [routerNavigate, section],
   );
@@ -204,7 +205,33 @@ export function App() {
               }
             />
             <Route
-              path="/albums/:albumId"
+              path="/albums/:artistSlug/:albumSlug/:albumKey"
+              element={
+                <AlbumRoute
+                  currentTrackId={tacet.activeZone?.currentTrack?.id}
+                  isPlaying={tacet.activeZone?.state === "playing"}
+                  onOpenAlbum={(id) => openAlbumById(id)}
+                  onOpenArtist={openArtist}
+                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                />
+              }
+            />
+            <Route
+              path="/albums/:albumSlug/:albumKey"
+              element={
+                <AlbumRoute
+                  currentTrackId={tacet.activeZone?.currentTrack?.id}
+                  isPlaying={tacet.activeZone?.state === "playing"}
+                  onOpenAlbum={(id) => openAlbumById(id)}
+                  onOpenArtist={openArtist}
+                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                />
+              }
+            />
+            <Route
+              path="/albums/:albumKey"
               element={
                 <AlbumRoute
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
@@ -480,7 +507,8 @@ function AlbumRoute({
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
 }) {
-  const { albumId } = useParams<{ albumId: string }>();
+  const { albumKey } = useParams<{ albumKey: string }>();
+  const albumId = albumKey ? decodeAlbumKey(albumKey) : undefined;
   const location = useLocation();
   const routerNavigate = useNavigate();
   const state = (location.state as AlbumLocationState | null) ?? null;
@@ -490,14 +518,18 @@ function AlbumRoute({
   const [loading, setLoading] = useState(!hint);
   const [errMsg, setErrMsg] = useState("");
 
+  const latestRef = useRef({ hint, pathname: location.pathname, state });
+  latestRef.current = { hint, pathname: location.pathname, state };
+
   useEffect(() => {
     if (!albumId) return;
+    const { hint: curHint } = latestRef.current;
     const ctrl = new AbortController();
-    setAlbum(hint ?? null);
-    setLoading(!hint);
+    setAlbum(curHint ?? null);
+    setLoading(!curHint);
     setErrMsg("");
 
-    const isOutOfLibraryQobuz = hint && hint.source === "qobuz" && hint.inLibrary === false;
+    const isOutOfLibraryQobuz = curHint && curHint.source === "qobuz" && curHint.inLibrary === false;
     const load = isOutOfLibraryQobuz
       ? tacetClient.qobuzAlbum(albumId, { signal: ctrl.signal })
       : tacetClient.getLibraryAlbum(albumId, { signal: ctrl.signal }).catch(async () => {
@@ -512,6 +544,11 @@ function AlbumRoute({
         if (!ctrl.signal.aborted) {
           setAlbum(full);
           setLoading(false);
+          // Silently canonicalize short/legacy album URLs to /albums/<artist>/<album>/<key>
+          const canonical = albumPath(full.id, { artist: full.artist, title: full.title });
+          if (latestRef.current.pathname !== canonical) {
+            void routerNavigate(canonical, { replace: true, state: latestRef.current.state });
+          }
         }
       })
       .catch((err) => {
@@ -522,7 +559,7 @@ function AlbumRoute({
       });
 
     return () => ctrl.abort();
-  }, [albumId, hint]);
+  }, [albumId, routerNavigate]);
 
   const handleBack = useCallback(() => {
     if (state?.fromApp) {

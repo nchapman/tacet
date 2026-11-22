@@ -30,8 +30,58 @@ export function sectionFromPathname(pathname: string): AppSection {
   return "home";
 }
 
-export function albumPath(albumId: string): string {
-  return `/albums/${encodeURIComponent(albumId)}`;
+export function slugify(text: string): string {
+  const slug = text
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "album";
+}
+
+/**
+ * Converts an internal album ID (`local:e9c2...`, `qobuz:0060...`) into a
+ * URL-friendly segment without `%3A` (`local-e9c2...`, `qobuz-0060...`).
+ */
+export function encodeAlbumKey(albumId: string): string {
+  const colon = albumId.indexOf(":");
+  if (colon > 0 && /^[a-z0-9_]+$/.test(albumId.slice(0, colon))) {
+    const source = albumId.slice(0, colon);
+    const rest = albumId.slice(colon + 1);
+    return `${source}-${encodeURIComponent(rest)}`;
+  }
+  return encodeURIComponent(albumId);
+}
+
+/**
+ * Restores an internal album ID from a URL segment (`local-e9c2...` -> `local:e9c2...`),
+ * while also accepting legacy colon-separated IDs.
+ */
+export function decodeAlbumKey(rawParam: string): string {
+  if (rawParam.includes(":")) return rawParam;
+  const dash = rawParam.indexOf("-");
+  if (dash > 0) {
+    const source = rawParam.slice(0, dash);
+    if (/^[a-z0-9_]+$/.test(source)) {
+      return `${source}:${rawParam.slice(dash + 1)}`;
+    }
+  }
+  return rawParam;
+}
+
+export function albumPath(
+  albumId: string,
+  meta?: { artist?: string; title?: string },
+): string {
+  const key = encodeAlbumKey(albumId);
+  if (meta?.artist && meta?.title) {
+    return `/albums/${slugify(meta.artist)}/${slugify(meta.title)}/${key}`;
+  }
+  if (meta?.title) {
+    return `/albums/${slugify(meta.title)}/${key}`;
+  }
+  return `/albums/${key}`;
 }
 
 export function artistPath(artistName: string, qobuzArtistId?: number): string {
