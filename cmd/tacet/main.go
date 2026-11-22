@@ -81,7 +81,7 @@ func run() error {
 	// 2. Qobuz client (env vars take precedence; otherwise restore saved session from SQLite).
 	var qobuzCachePath string
 	if dir := strings.TrimSpace(*dataDir); dir != "" {
-		qobuzCachePath = filepath.Join(dir, "qobuz-cache.json")
+		qobuzCachePath = filepath.Join(dir, "cache", "qobuz.json")
 	}
 	qb := qobuz.NewClient(qobuz.Config{
 		AppID:     os.Getenv("QOBUZ_APP_ID"),
@@ -132,7 +132,7 @@ func run() error {
 	// are immediately reachable without waiting for disk scans or remote syncs.
 	apiServer := api.NewServer(cat, qb, mgr)
 	if dir := strings.TrimSpace(*dataDir); dir != "" {
-		apiServer.SetArtCacheDir(filepath.Join(dir, "art-cache"))
+		apiServer.SetArtCacheDir(filepath.Join(dir, "cache", "art"))
 	}
 	apiServer.SetGENA(gena)
 	if *corsOrigin != "" {
