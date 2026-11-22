@@ -473,6 +473,7 @@ export function PlayerBar({
                     <AlbumArt
                       artworkUrl={track?.artworkUrl}
                       alt={track?.album || track?.title || "Album cover"}
+                      size="lg"
                       className="h-full w-full"
                       priority
                     />

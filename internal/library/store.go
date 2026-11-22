@@ -1494,6 +1494,29 @@ FROM tracks WHERE id = ?`, id)
 	return items[0], true, nil
 }
 
+func (s *libraryStore) getTrackByArtworkURL(ctx context.Context, artworkURL string) (Track, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, album_id, source_type, provider, external_id,
+       title, artist, album_artist, album, genre,
+       disc_number, track_number, year, duration_sec,
+       sample_rate, bit_depth, channels, mime, ext, size_bytes,
+       artwork_url, file_path, file_mtime_ns, folder_art, has_embed_art, qobuz_track_id,
+       play_count, last_played_at, loved, available, added_at
+FROM tracks WHERE artwork_url = ? ORDER BY available DESC LIMIT 1`, artworkURL)
+	if err != nil {
+		return Track{}, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	items, err := scanTracks(rows)
+	if err != nil || len(items) == 0 {
+		return Track{}, false, err
+	}
+	return items[0], true, nil
+}
+
 func (s *libraryStore) hasAlbum(ctx context.Context, id string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

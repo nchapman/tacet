@@ -8,17 +8,33 @@ import {
 } from "@/lib/ultrablur";
 import { cn } from "@/lib/utils";
 
+export type ArtworkSize = "sm" | "lg";
+
+/**
+ * Resolves cover art URLs and appends a fixed width bucket (?w=400 or ?w=1000)
+ * for server-hosted /media/art/ endpoints while leaving external CDN URLs untouched.
+ */
+export function resolveArtworkSrc(artworkUrl?: string, size: ArtworkSize = "sm"): string {
+  const resolved = tacetClient.resolveUrl(artworkUrl);
+  if (!resolved) return "";
+  if (!resolved.includes("/media/art/")) return resolved;
+  const sep = resolved.includes("?") ? "&" : "?";
+  if (/[?&]w=/.test(resolved)) return resolved;
+  return `${resolved}${sep}w=${size === "lg" ? 1000 : 400}`;
+}
+
 interface AlbumArtProps {
   artworkUrl?: string;
   alt: string;
+  size?: ArtworkSize;
   className?: string;
   iconClassName?: string;
   priority?: boolean;
 }
 
 /** Crisp cover artwork with a quiet dark vinyl fallback. */
-export function AlbumArt({ artworkUrl, alt, className, iconClassName, priority }: AlbumArtProps) {
-  const src = tacetClient.resolveUrl(artworkUrl);
+export function AlbumArt({ artworkUrl, alt, size = "sm", className, iconClassName, priority }: AlbumArtProps) {
+  const src = resolveArtworkSrc(artworkUrl, size);
   return (
     <div className={cn("relative overflow-hidden bg-zinc-900/90 flex items-center justify-center", className)}>
       {src ? (
@@ -90,7 +106,7 @@ function initialLayer(src: string): ResolvedLayer {
  * automatic blurred-image fallback if a remote CDN blocks CORS canvas reads).
  */
 export function AmbientBackdrop({ artworkUrl, className, intensity = "hero" }: AmbientBackdropProps) {
-  const src = tacetClient.resolveUrl(artworkUrl) || "";
+  const src = resolveArtworkSrc(artworkUrl, "sm");
   const [active, setActive] = useState<ResolvedLayer>(() => initialLayer(src));
   const [prev, setPrev] = useState<ResolvedLayer | null>(null);
   const [entering, setEntering] = useState(false);

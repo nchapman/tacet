@@ -26,6 +26,7 @@ const relayReadIdleTimeout = 30 * time.Second
 type Handler struct {
 	catalog   *library.Catalog
 	qobuz     *qobuz.Client
+	art       *artCache
 	relayHTTP *http.Client
 }
 
@@ -34,6 +35,7 @@ func NewHandler(cat *library.Catalog, qb *qobuz.Client) *Handler {
 	return &Handler{
 		catalog: cat,
 		qobuz:   qb,
+		art:     newArtCache(""),
 		relayHTTP: &http.Client{
 			// No total request timeout because lossless tracks stream for minutes;
 			// transport timeouts and per-read idle watchdog guard stalls.
@@ -59,6 +61,11 @@ func NewHandler(cat *library.Catalog, qb *qobuz.Client) *Handler {
 			},
 		},
 	}
+}
+
+// SetArtCacheDir configures the on-disk directory used to cache resized JPEG cover art.
+func (h *Handler) SetArtCacheDir(dir string) {
+	h.art = newArtCache(dir)
 }
 
 // Register mounts media routes onto mux.
@@ -119,14 +126,39 @@ func (h *Handler) serveArt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, mimeType, ok := h.catalog.CoverArt(id)
+	bucket := parseArtBucket(r.URL.Query().Get("w"))
+	hashed := isArtHash(id)
+
+	var (
+		data     []byte
+		mimeType string
+		ok       bool
+	)
+	if hashed {
+		etag := fmt.Sprintf(`"art-%s-%d"`, id, bucket)
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		data, mimeType, ok = h.art.getOrBuild(id, bucket, func() ([]byte, string, bool) {
+			return h.catalog.CoverArtByHash(id)
+		})
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		data, mimeType, ok = h.art.getOrBuild("", bucket, func() ([]byte, string, bool) {
+			return h.catalog.CoverArt(id)
+		})
+	}
 	if !ok {
+		w.Header().Del("Cache-Control")
+		w.Header().Del("ETag")
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", safeImageMIME(mimeType))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	if r.Method == http.MethodHead {
 		return

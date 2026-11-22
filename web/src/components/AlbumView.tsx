@@ -153,7 +153,7 @@ export function AlbumView({
         {/* Hero header: Cover + Typography + Actions */}
         <div className="flex flex-col sm:flex-row items-center sm:items-end gap-6 sm:gap-8">
           <div className="h-48 w-48 sm:h-52 sm:w-52 lg:h-60 lg:w-60 shrink-0 overflow-hidden rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.65)] ring-1 ring-white/15">
-            <AlbumArt artworkUrl={album.artworkUrl} alt={album.title} className="h-full w-full" priority />
+            <AlbumArt artworkUrl={album.artworkUrl} alt={album.title} size="lg" className="h-full w-full" priority />
           </div>
 
           <div className="flex flex-col items-center sm:items-start text-center sm:text-left min-w-0 flex-1">

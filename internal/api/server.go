@@ -109,6 +109,11 @@ func (s *Server) Close() {
 	}
 }
 
+// SetArtCacheDir configures the on-disk directory used to cache resized cover art.
+func (s *Server) SetArtCacheDir(dir string) {
+	s.media.SetArtCacheDir(dir)
+}
+
 // SetGENA attaches the UPnP GENA event receiver so renderers can deliver NOTIFY
 // callbacks to /upnp/event/{token}.
 func (s *Server) SetGENA(g *upnp.GENAClient) {

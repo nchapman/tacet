@@ -131,6 +131,9 @@ func run() error {
 	// 4. Bind HTTP server first so the API, web UI, and UPnP GENA NOTIFY callbacks
 	// are immediately reachable without waiting for disk scans or remote syncs.
 	apiServer := api.NewServer(cat, qb, mgr)
+	if dir := strings.TrimSpace(*dataDir); dir != "" {
+		apiServer.SetArtCacheDir(filepath.Join(dir, "art-cache"))
+	}
 	apiServer.SetGENA(gena)
 	if *corsOrigin != "" {
 		apiServer.SetCORSOrigin(*corsOrigin)

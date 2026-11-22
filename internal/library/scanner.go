@@ -354,7 +354,8 @@ func (c *Catalog) runScan(ctx context.Context) (int, error) {
 			}
 			seenPaths[cleanedPath] = struct{}{}
 			mtimeNS := fi.ModTime().UnixNano()
-			if cached, ok := fileCache[cleanedPath]; ok && cached.Mtime == mtimeNS && cached.Size == fi.Size() {
+			if cached, ok := fileCache[cleanedPath]; ok && cached.Mtime == mtimeNS && cached.Size == fi.Size() &&
+				!strings.HasPrefix(cached.Track.ArtworkURL, "/media/art/local:") {
 				tracks = append(tracks, cached.Track)
 				return nil
 			}
@@ -391,20 +392,29 @@ func (c *Catalog) runScan(ctx context.Context) (int, error) {
 			workers = len(jobs)
 		}
 
+		type dirArtInfo struct {
+			path string
+			hash string
+		}
 		var dirArtMu sync.Mutex
-		dirArtCache := make(map[string]string)
-		lookupDirArt := func(dir string) string {
+		dirArtCache := make(map[string]dirArtInfo)
+		lookupDirArt := func(dir string) (string, string) {
 			dirArtMu.Lock()
 			art, ok := dirArtCache[dir]
 			dirArtMu.Unlock()
 			if ok {
-				return art
+				return art.path, art.hash
 			}
-			art = findFolderArt(dir)
+			p := findFolderArt(dir)
+			h := ""
+			if p != "" {
+				h = hashCoverFile(p)
+			}
+			info := dirArtInfo{path: p, hash: h}
 			dirArtMu.Lock()
-			dirArtCache[dir] = art
+			dirArtCache[dir] = info
 			dirArtMu.Unlock()
-			return art
+			return info.path, info.hash
 		}
 
 		jobCh := make(chan probeJob, workers*2)
@@ -990,6 +1000,24 @@ func (c *Catalog) CoverArt(trackID string) ([]byte, string, bool) {
 	if !ok {
 		return nil, "", false
 	}
+	return loadTrackCoverArt(t)
+}
+
+// CoverArtByHash loads embedded or folder artwork bytes and MIME type for any local
+// track whose content-addressed ArtworkURL matches /media/art/<hash>.
+func (c *Catalog) CoverArtByHash(hash string) ([]byte, string, bool) {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil, "", false
+	}
+	t, ok, err := c.store.getTrackByArtworkURL(context.Background(), "/media/art/"+hash)
+	if err != nil || !ok {
+		return nil, "", false
+	}
+	return loadTrackCoverArt(t)
+}
+
+func loadTrackCoverArt(t Track) ([]byte, string, bool) {
 	if t.HasEmbedArt && t.FilePath != "" {
 		if f, err := os.Open(t.FilePath); err == nil {
 			defer func() { _ = f.Close() }()
@@ -1056,7 +1084,7 @@ func normalizeRemoteTrack(provider, albumID string, t *Track) {
 	t.InLibrary = true
 }
 
-func scanFileWithArt(path string, fi fs.FileInfo, lookupDirArt func(string) string) (Track, bool) {
+func scanFileWithArt(path string, fi fs.FileInfo, lookupDirArt func(string) (string, string)) (Track, bool) {
 	ext := strings.ToLower(filepath.Ext(path))
 	mimeType, ok := MIMEForExt(ext)
 	if !ok {
@@ -1067,7 +1095,7 @@ func scanFileWithArt(path string, fi fs.FileInfo, lookupDirArt func(string) stri
 	// configured roots never collide.
 	id := "local:" + shortHash("local:"+filepath.Clean(path))
 	dir := filepath.Dir(path)
-	folderArt := lookupDirArt(dir)
+	folderArt, folderArtHash := lookupDirArt(dir)
 
 	props := ProbeAudio(path)
 	baseName := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
@@ -1097,6 +1125,7 @@ func scanFileWithArt(path string, fi fs.FileInfo, lookupDirArt func(string) stri
 		InLibrary:   true,
 	}
 
+	var embedArtHash string
 	if f, err := os.Open(filepath.Clean(path)); err == nil { //nolint:gosec // local library path from configured music root
 		if m, err := tag.ReadFrom(f); err == nil {
 			if s := strings.TrimSpace(m.Title()); s != "" {
@@ -1123,8 +1152,9 @@ func scanFileWithArt(path string, fi fs.FileInfo, lookupDirArt func(string) stri
 			if y := m.Year(); y > 0 {
 				t.Year = y
 			}
-			if pic := m.Picture(); pic != nil && len(pic.Data) > 0 {
+			if pic := m.Picture(); pic != nil && len(pic.Data) > 0 && len(pic.Data) <= maxCoverArtBytes {
 				t.HasEmbedArt = true
+				embedArtHash = shortHashBytes(pic.Data)
 			}
 		}
 		_ = f.Close()
@@ -1136,11 +1166,38 @@ func scanFileWithArt(path string, fi fs.FileInfo, lookupDirArt func(string) stri
 	}
 	t.AlbumID = "local:" + shortHash("album:"+strings.ToLower(albArtist)+"\x00"+strings.ToLower(t.Album))
 
-	if t.HasEmbedArt || t.FolderArt != "" {
+	switch {
+	case embedArtHash != "":
+		t.ArtworkURL = "/media/art/" + embedArtHash
+	case folderArtHash != "":
+		t.ArtworkURL = "/media/art/" + folderArtHash
+	case t.HasEmbedArt || t.FolderArt != "":
 		t.ArtworkURL = "/media/art/" + t.ID
 	}
 
 	return t, true
+}
+
+func shortHashBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:8])
+}
+
+func hashCoverFile(path string) string {
+	f, err := os.Open(filepath.Clean(path)) //nolint:gosec // folder cover art under configured music root
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil || fi.Size() <= 0 || fi.Size() > maxCoverArtBytes {
+		return ""
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, io.LimitReader(f, maxCoverArtBytes)); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil)[:8])
 }
 
 func findFolderArt(dir string) string {
