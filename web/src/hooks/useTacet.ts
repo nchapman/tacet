@@ -36,7 +36,24 @@ function saveZoneId(id: string) {
   }
 }
 
-export function useTacet() {
+export function resolveActiveZone(
+  zones: ZoneSnapshot[],
+  savedZoneId: string,
+  defaultZoneId?: string | null,
+): ZoneSnapshot | null {
+  if (!zones.length) return null;
+  if (savedZoneId) {
+    const exact = zones.find((z) => z.zoneId === savedZoneId);
+    if (exact) return exact;
+  }
+  if (defaultZoneId) {
+    const fallbackLocal = zones.find((z) => z.zoneId === defaultZoneId);
+    if (fallbackLocal) return fallbackLocal;
+  }
+  return zones[0];
+}
+
+export function useTacet(defaultZoneId?: string | null) {
   const [zones, setZones] = useState<ZoneSnapshot[]>([]);
   const [selectedZoneId, setSelectedZoneId] = useState<string>(readSavedZoneId);
   const [settings, setSettings] = useState<Settings>({ streamMode: "direct", qobuzMaxQuality: "flac_24_192" });
@@ -47,8 +64,7 @@ export function useTacet() {
   const [discovering, setDiscovering] = useState(false);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
-  const selectedZoneIdRef = useRef(selectedZoneId);
-  selectedZoneIdRef.current = selectedZoneId;
+  const activeZoneIdRef = useRef(selectedZoneId);
   const clockOffsetMsRef = useRef(0);
 
   const syncClockOffset = useCallback((serverTime?: string) => {
@@ -71,6 +87,10 @@ export function useTacet() {
     });
   }, []);
 
+  // Never overwrite the persisted localStorage preference here: a temporarily
+  // absent zone (e.g. local browser player still registering, or UPnP renderer
+  // still being discovered after a server restart) will snap back automatically
+  // once it appears in `zones`.
   const replaceZones = useCallback((list: ZoneSnapshot[]) => {
     setZones((prev) => {
       const prevById = new Map(prev.map((z) => [z.zoneId, z]));
@@ -81,12 +101,6 @@ export function useTacet() {
         }
         return incoming;
       });
-    });
-    setSelectedZoneId((cur) => {
-      if (cur && list.some((z) => z.zoneId === cur)) return cur;
-      const fallback = list[0]?.zoneId ?? "";
-      saveZoneId(fallback);
-      return fallback;
     });
   }, []);
 
@@ -174,7 +188,7 @@ export function useTacet() {
         );
       },
       onZoneError: (ev) => {
-        if (ev.zoneId === selectedZoneIdRef.current) {
+        if (ev.zoneId === activeZoneIdRef.current) {
           setError(ev.error.message);
         }
       },
@@ -186,10 +200,11 @@ export function useTacet() {
     return unsubscribe;
   }, [replaceZones, syncClockOffset]);
 
-  const activeZone = useMemo<ZoneSnapshot | null>(() => {
-    if (!zones.length) return null;
-    return zones.find((z) => z.zoneId === selectedZoneId) ?? zones[0];
-  }, [zones, selectedZoneId]);
+  const activeZone = useMemo<ZoneSnapshot | null>(
+    () => resolveActiveZone(zones, selectedZoneId, defaultZoneId),
+    [zones, selectedZoneId, defaultZoneId],
+  );
+  activeZoneIdRef.current = activeZone?.zoneId ?? "";
 
   // Smooth client-side 1s progress interpolation while the active zone is playing,
   // avoiding unnecessary full-queue SSE frames every second.

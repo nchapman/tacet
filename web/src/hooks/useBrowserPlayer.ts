@@ -51,11 +51,20 @@ function loadPlayerName(): string {
   return defaultBrowserPlayerName();
 }
 
+/**
+ * Returns whether the local browser player should be active on startup.
+ * Defaults to enabled for first-time visitors; only disabled when the user
+ * explicitly turned it off ("0").
+ */
+export function shouldEnableBrowserPlayer(storedValue: string | null): boolean {
+  return storedValue !== "0";
+}
+
 function loadEnabled(): boolean {
   try {
-    return window.localStorage.getItem(PLAYER_ENABLED_KEY) === "1";
+    return shouldEnableBrowserPlayer(window.localStorage.getItem(PLAYER_ENABLED_KEY));
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -66,7 +75,7 @@ export interface BrowserPlayerController {
   name: string;
   needsUnlock: boolean;
   error: string | null;
-  enable: (selectAfter?: boolean) => Promise<void>;
+  enable: (selectAfter?: boolean) => Promise<string | null>;
   disable: () => Promise<void>;
   rename: (nextName: string) => Promise<void>;
   unlockAudio: () => Promise<void>;
@@ -101,7 +110,7 @@ export function useBrowserPlayer(onZoneRegistered?: (zoneId: string) => void): B
   }, []);
 
   const connect = useCallback(
-    async (playerName: string, unlockNow: boolean, selectAfter: boolean) => {
+    async (playerName: string, unlockNow: boolean, selectAfter: boolean): Promise<string | null> => {
       stopSession();
       setStatus("connecting");
       setError(null);
@@ -187,14 +196,13 @@ export function useBrowserPlayer(onZoneRegistered?: (zoneId: string) => void): B
             void activeEngine.handleCommand(cmd);
           },
           onReplaced: () => {
+            // Another tab in this browser took over the player session; stop
+            // locally without persisting "0" so the active tab stays enabled.
             stopSession();
             setEnabled(false);
             setStatus("off");
-            try {
-              window.localStorage.setItem(PLAYER_ENABLED_KEY, "0");
-            } catch {
-              // Ignore storage errors.
-            }
+            setZoneId(null);
+            zoneIdRef.current = null;
           },
           onError: () => {
             setStatus("reconnecting");
@@ -213,37 +221,49 @@ export function useBrowserPlayer(onZoneRegistered?: (zoneId: string) => void): B
         if (selectAfter) {
           onZoneRegisteredRef.current?.(reg.zoneId);
         }
+        return reg.zoneId;
       } catch (err) {
         stopSession();
         setEnabled(false);
         setStatus("off");
         setError(err instanceof Error ? err.message : "Failed to register browser player");
-        try {
-          window.localStorage.setItem(PLAYER_ENABLED_KEY, "0");
-        } catch {
-          // Ignore storage errors.
-        }
+        return null;
       }
     },
     [stopSession],
   );
 
-  // Auto-reattach on page reload if the user previously enabled this browser player.
+  // Auto-attach on load unless the user explicitly turned off this browser player.
   useEffect(() => {
     if (!loadEnabled()) return;
     void connect(loadPlayerName(), false, false);
     return () => stopSession();
   }, [connect, stopSession]);
 
+  // Synchronously unlock <audio> on the user's first pointer/keyboard gesture so
+  // clicking Play on an auto-attached browser player never hits autoplay blocks.
+  useEffect(() => {
+    if (!enabled) return;
+    const onGesture = () => {
+      engineRef.current?.unlock();
+    };
+    window.addEventListener("pointerdown", onGesture, { once: true, capture: true, passive: true });
+    window.addEventListener("keydown", onGesture, { once: true, capture: true, passive: true });
+    return () => {
+      window.removeEventListener("pointerdown", onGesture, { capture: true });
+      window.removeEventListener("keydown", onGesture, { capture: true });
+    };
+  }, [enabled, zoneId]);
+
   const enable = useCallback(
-    async (selectAfter = true) => {
+    async (selectAfter = true): Promise<string | null> => {
       setEnabled(true);
       try {
         window.localStorage.setItem(PLAYER_ENABLED_KEY, "1");
       } catch {
         // Ignore storage errors.
       }
-      await connect(name, true, selectAfter);
+      return connect(name, true, selectAfter);
     },
     [connect, name],
   );

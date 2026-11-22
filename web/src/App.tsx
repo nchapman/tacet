@@ -34,8 +34,8 @@ const SECTION_LABELS: Record<AppSection, string> = {
 };
 
 export function App() {
-  const tacet = useTacet();
-  const browserPlayer = useBrowserPlayer(tacet.selectZone);
+  const browserPlayer = useBrowserPlayer();
+  const tacet = useTacet(browserPlayer.zoneId);
 
   const [section, setSection] = useState<AppSection>(initialSection);
   const [searchQuery, setSearchQuery] = useState("");

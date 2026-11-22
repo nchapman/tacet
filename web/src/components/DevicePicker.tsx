@@ -56,7 +56,10 @@ export function DeviceList({
             onSelectZone(browserPlayer.zoneId);
             onDone?.();
           } else {
-            void browserPlayer.enable(true).then(() => onDone?.());
+            void browserPlayer.enable(false).then((zid) => {
+              if (zid) onSelectZone(zid);
+              onDone?.();
+            });
           }
         }}
         className={cn(
