@@ -113,6 +113,9 @@ export interface Album {
   title: string;
   artist: string;
   genre?: string;
+  label?: string;
+  description?: string;
+  copyright?: string;
   year?: number;
   trackCount: number;
   durationSec?: number;
@@ -285,11 +288,13 @@ export interface QobuzArtist {
   name: string;
   artworkUrl?: string;
   albumsCount?: number;
+  biography?: string;
 }
 
 export interface QobuzArtistDetail {
   artist: QobuzArtist;
   albums: Album[];
+  tracks?: Track[];
 }
 
 export interface QobuzSearchResult {

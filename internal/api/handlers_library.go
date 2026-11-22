@@ -82,6 +82,20 @@ func (s *Server) handleLibraryAlbum(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, fmt.Errorf("%w: %q", ErrAlbumNotFound, id))
 		return
 	}
+	// Best-effort enrich in-library Qobuz albums with cached editorial metadata.
+	if alb.Source == library.SourceQobuz && alb.ExternalID != "" && s.qobuz != nil && s.qobuz.Status().Authenticated {
+		if qAlb, err := s.qobuz.GetAlbum(r.Context(), alb.ExternalID); err == nil {
+			if alb.Label == "" {
+				alb.Label = qAlb.Label
+			}
+			if alb.Description == "" {
+				alb.Description = qAlb.Description
+			}
+			if alb.Copyright == "" {
+				alb.Copyright = qAlb.Copyright
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, alb)
 }
 
@@ -761,6 +775,13 @@ func (s *Server) handleQobuzArtist(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range detail.Albums {
 		detail.Albums[i].InLibrary = s.catalog.HasAlbum(detail.Albums[i].ID)
+	}
+	for i := range detail.Tracks {
+		if libTr, ok := s.catalog.Track(detail.Tracks[i].ID); ok {
+			detail.Tracks[i].InLibrary = libTr.Available
+			detail.Tracks[i].PlayCount = libTr.PlayCount
+			detail.Tracks[i].LastPlayedAt = libTr.LastPlayedAt
+		}
 	}
 	writeJSON(w, http.StatusOK, detail)
 }

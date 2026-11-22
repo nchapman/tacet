@@ -233,3 +233,104 @@ func TestClient_SecretFailoverCacheAndGetAlbum(t *testing.T) {
 		t.Fatalf("unexpected GetAlbum result: %+v", alb)
 	}
 }
+
+func TestRichEditorialMetadataAndPopularTracks(t *testing.T) {
+	if got := cleanQobuzText("<p>A <i>classic</i>&nbsp;record.<br/>Second line &amp; more.</p>"); got != "A classic\u00a0record.\nSecond line & more." {
+		t.Fatalf("unexpected cleanQobuzText output: %q", got)
+	}
+
+	var sawArtistPage bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/album/get":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":                    "alb-rich",
+				"title":                 "Kind of Blue",
+				"artist":                map[string]any{"id": 42, "name": "Miles Davis"},
+				"genre":                 map[string]any{"name": "Jazz"},
+				"label":                 map[string]any{"name": "Columbia Legacy"},
+				"description":           "<p>Landmark modal jazz.<br/>Recorded in 1959.</p>",
+				"copyright":             "℗ 1959 Sony Music Entertainment",
+				"release_date_original": "1959-08-17",
+				"tracks_count":          1,
+				"maximum_bit_depth":     24,
+				"maximum_sampling_rate": 192,
+				"tracks":                map[string]any{"items": []any{}},
+			})
+		case "/artist/get":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":           42,
+				"name":         "Miles Davis",
+				"albums_count": 120,
+				"biography": map[string]any{
+					"summary": "Short bio",
+					"content": "<p>Trumpeter &amp; bandleader.<br/>Icon of jazz.</p>",
+				},
+				"albums": map[string]any{"items": []any{}},
+			})
+		case "/artist/page":
+			sawArtistPage = true
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"top_tracks": []any{
+					map[string]any{
+						"id":       901,
+						"title":    "So What",
+						"duration": 562,
+						"audio_info": map[string]any{
+							"maximum_bit_depth":     24,
+							"maximum_sampling_rate": 192,
+						},
+						"rights": map[string]any{"streamable": true},
+						"artist": map[string]any{"name": map[string]any{"display": "Miles Davis"}},
+						"album": map[string]any{
+							"id":    "alb-rich",
+							"title": "Kind of Blue",
+						},
+					},
+					map[string]any{
+						"id":     902,
+						"title":  "Unavailable Track",
+						"rights": map[string]any{"streamable": false},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, AppID: "123456"})
+	c.authToken = "tok"
+
+	alb, err := c.GetAlbum(context.Background(), "alb-rich")
+	if err != nil {
+		t.Fatalf("GetAlbum failed: %v", err)
+	}
+	if alb.Label != "Columbia Legacy" {
+		t.Fatalf("expected label 'Columbia Legacy', got %q", alb.Label)
+	}
+	if alb.Description != "Landmark modal jazz.\nRecorded in 1959." {
+		t.Fatalf("unexpected description: %q", alb.Description)
+	}
+	if alb.Copyright != "℗ 1959 Sony Music Entertainment" {
+		t.Fatalf("unexpected copyright: %q", alb.Copyright)
+	}
+
+	detail, err := c.GetArtist(context.Background(), 42, 20)
+	if err != nil {
+		t.Fatalf("GetArtist failed: %v", err)
+	}
+	if !sawArtistPage {
+		t.Fatalf("expected /artist/page to be queried for top_tracks")
+	}
+	if detail.Artist.Biography != "Trumpeter & bandleader.\nIcon of jazz." {
+		t.Fatalf("unexpected artist biography: %q", detail.Artist.Biography)
+	}
+	if len(detail.Tracks) != 1 || detail.Tracks[0].Title != "So What" || detail.Tracks[0].QobuzTrackID != 901 {
+		t.Fatalf("expected 1 streamable popular track 'So What', got %+v", detail.Tracks)
+	}
+	if _, err := c.ResolveTrack(context.Background(), 901); err != nil {
+		t.Fatalf("expected popular track 901 to be cached in trackCache: %v", err)
+	}
+}

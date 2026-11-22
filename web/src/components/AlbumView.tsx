@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, Clock3, Layers, ListPlus, Play, Plus, SkipForward, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type { Album, AlbumVersion, QueuePosition, QueueSource } from "@/api/types";
@@ -82,8 +82,13 @@ export function AlbumView({
   const similarAlbums = (similarQuery.data?.items ?? []).filter((a) => a.id !== album.id).slice(0, 6);
   const [busyLibrary, setBusyLibrary] = useState(false);
   const [busyPrimary, setBusyPrimary] = useState(false);
+  const [descExpanded, setDescExpanded] = useState(false);
   const [addedTrackIds, setAddedTrackIds] = useState<Record<string, boolean>>({});
   const [actionErr, setActionErr] = useState("");
+
+  useEffect(() => {
+    setDescExpanded(false);
+  }, [album.id]);
 
   const isRemote = album.sourceType === "remote" || album.source !== "local";
   const provider = (album.provider || album.source || "local").toLowerCase();
@@ -194,6 +199,7 @@ export function AlbumView({
               {album.year ? <span className="text-muted-foreground">· {album.year}</span> : null}
               <span className="text-muted-foreground">· {album.trackCount || tracks.length} tracks</span>
               {totalTime && <span className="text-muted-foreground">· {totalTime}</span>}
+              {album.label && <span className="text-muted-foreground">· {album.label}</span>}
               {album.playCount ? <span className="text-muted-foreground">· {album.playCount} plays</span> : null}
             </div>
 
@@ -242,6 +248,27 @@ export function AlbumView({
                 </Button>
               )}
             </div>
+            {album.description && (
+              <div className="mt-5 max-w-2xl text-left">
+                <p
+                  className={cn(
+                    "whitespace-pre-line text-sm leading-relaxed text-foreground/75",
+                    !descExpanded && "line-clamp-3",
+                  )}
+                >
+                  {album.description}
+                </p>
+                {(album.description.length > 220 || album.description.includes("\n")) && (
+                  <button
+                    type="button"
+                    onClick={() => setDescExpanded((v) => !v)}
+                    className="mt-1.5 text-xs font-medium text-muted-foreground hover:text-white transition-colors cursor-pointer"
+                  >
+                    {descExpanded ? "Show less" : "Read more"}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -423,6 +450,10 @@ export function AlbumView({
               );
             })}
           </div>
+
+          {album.copyright && (
+            <p className="mt-5 px-3 text-[11px] text-muted-foreground/60">{album.copyright}</p>
+          )}
         </div>
 
         {/* Contextual "More Like This" recommendations */}

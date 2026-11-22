@@ -527,6 +527,7 @@ func cloneArtistDetail(d ArtistDetail) ArtistDetail {
 		}
 		d.Albums = albums
 	}
+	d.Tracks = slices.Clone(d.Tracks)
 	return d
 }
 

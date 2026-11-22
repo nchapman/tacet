@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, Sparkles } from "lucide-react";
+import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, SkipForward, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TacetAPIError, tacetClient } from "@/api/client";
-import { fmtAlbumQuality, isHiRes } from "@/api/format";
+import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type {
   Album,
   ArtistSummary,
@@ -58,6 +58,8 @@ export function ArtistsView({
 }: ArtistsViewProps) {
   const [selectedArtist, setSelectedArtist] = useState(initialArtist ?? "");
   const [selectedQobuzId, setSelectedQobuzId] = useState<number | undefined>(initialQobuzArtistId);
+  const [bioExpanded, setBioExpanded] = useState(false);
+  const [showAllPopular, setShowAllPopular] = useState(false);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(Boolean(initialArtist));
 
   const railRef = useRef<HTMLDivElement | null>(null);
@@ -94,6 +96,11 @@ export function ArtistsView({
 
   // Default to the first artist on desktop when no artist is selected yet.
   const effectiveArtist = selectedArtist || artists[0]?.name || "";
+
+  useEffect(() => {
+    setBioExpanded(false);
+    setShowAllPopular(false);
+  }, [effectiveArtist, selectedQobuzId]);
 
   // Fetch library albums for the selected artist.
   const albumsQuery = useQuery({
@@ -297,11 +304,125 @@ export function ArtistsView({
                 </div>
               </div>
 
+              {remoteDetail?.artist.biography && (
+                <div className="mt-4 max-w-3xl">
+                  <p
+                    className={cn(
+                      "whitespace-pre-line text-sm leading-relaxed text-foreground/75",
+                      !bioExpanded && "line-clamp-2",
+                    )}
+                  >
+                    {remoteDetail.artist.biography}
+                  </p>
+                  {(remoteDetail.artist.biography.length > 180 || remoteDetail.artist.biography.includes("\n")) && (
+                    <button
+                      type="button"
+                      onClick={() => setBioExpanded((v) => !v)}
+                      className="mt-1 text-xs font-medium text-muted-foreground hover:text-white transition-colors cursor-pointer"
+                    >
+                      {bioExpanded ? "Show less" : "Read more"}
+                    </button>
+                  )}
+                </div>
+              )}
+
               {errMsg && (
                 <div role="alert" className="mt-4 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
                   {errMsg}
                 </div>
               )}
+
+              {/* Popular Tracks from Qobuz */}
+              {qobuzConnected && (remoteDetail?.tracks?.length ?? 0) > 0 && (() => {
+                const popularTracks = remoteDetail!.tracks!;
+                const visibleTracks = showAllPopular ? popularTracks : popularTracks.slice(0, 5);
+                const popularIds = popularTracks.map((t) => t.id);
+                return (
+                  <section aria-label="Popular tracks" className="mt-6">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        Popular
+                      </h3>
+                      {popularTracks.length > 5 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowAllPopular((v) => !v)}
+                          className="text-xs font-medium text-muted-foreground hover:text-white transition-colors cursor-pointer"
+                        >
+                          {showAllPopular ? "Show less" : `Show all ${popularTracks.length}`}
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-0.5">
+                      {visibleTracks.map((tr, idx) => {
+                        const qual = fmtQuality(tr);
+                        const hiRes = isHiRes(tr.bitDepth, tr.sampleRate);
+                        return (
+                          <div
+                            key={tr.id}
+                            onClick={() => onPlay({ type: "tracks", trackIds: popularIds }, idx)}
+                            className="group grid grid-cols-[24px_40px_1fr_auto] sm:grid-cols-[24px_40px_1fr_140px_48px_68px] items-center gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-white/[0.06] cursor-pointer"
+                          >
+                            <div className="flex items-center justify-center">
+                              <span className="font-mono text-xs text-muted-foreground group-hover:hidden">
+                                {idx + 1}
+                              </span>
+                              <Play className="hidden h-3.5 w-3.5 fill-white text-white group-hover:block" />
+                            </div>
+                            <AlbumArt
+                              artworkUrl={tr.artworkUrl}
+                              alt={tr.album || tr.title}
+                              className="h-10 w-10 rounded-lg ring-1 ring-white/10"
+                            />
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium text-foreground">{tr.title}</div>
+                              {tr.album && (
+                                <div className="truncate text-xs text-muted-foreground">{tr.album}</div>
+                              )}
+                            </div>
+                            <div className="hidden sm:flex items-center justify-end gap-1.5">
+                              {qual && <span className="font-mono text-[11px] text-muted-foreground/75">{qual}</span>}
+                              {hiRes && (
+                                <span
+                                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/75"
+                                  title="Hi-Res Audio"
+                                />
+                              )}
+                            </div>
+                            <div className="hidden sm:block text-right font-mono text-xs text-muted-foreground">
+                              {fmtDuration(tr.durationSec)}
+                            </div>
+                            <div className="flex items-center justify-end gap-0.5">
+                              <button
+                                type="button"
+                                title="Play Next"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onAdd({ type: "tracks", trackIds: [tr.id] }, "next");
+                                }}
+                                className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer sm:opacity-0 sm:group-hover:opacity-100"
+                              >
+                                <SkipForward className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                title="Append to Queue"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onAdd({ type: "tracks", trackIds: [tr.id] }, "end");
+                                }}
+                                className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer sm:opacity-0 sm:group-hover:opacity-100"
+                              >
+                                <ListPlus className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              })()}
 
               {/* Library Albums (always anchored on top so remote fetch never shifts them) */}
               {(loadingAlbums || albums.length > 0) && (

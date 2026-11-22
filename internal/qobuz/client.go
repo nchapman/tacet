@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,12 +107,14 @@ type Artist struct {
 	Name        string `json:"name"`
 	ArtworkURL  string `json:"artworkUrl,omitempty"`
 	AlbumsCount int    `json:"albumsCount,omitempty"`
+	Biography   string `json:"biography,omitempty"`
 }
 
-// ArtistDetail pairs a Qobuz artist profile with their remote discography.
+// ArtistDetail pairs a Qobuz artist profile with their remote discography and popular tracks.
 type ArtistDetail struct {
 	Artist Artist          `json:"artist"`
 	Albums []library.Album `json:"albums"`
+	Tracks []library.Track `json:"tracks,omitempty"`
 }
 
 // SearchResult holds Qobuz search matches mapped to unified library types.
@@ -441,17 +445,110 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 		}
 		albums = append(albums, alb)
 	}
+	tracks, topTracksOK := c.fetchArtistTopTracks(ctx, art.ID, art.Name)
+	c.cacheTracks(tracks)
 	if art.ArtworkURL == "" && len(albums) > 0 {
 		art.ArtworkURL = albums[0].ArtworkURL
 	}
-	detail := ArtistDetail{Artist: art, Albums: albums}
+	detail := ArtistDetail{Artist: art, Albums: albums, Tracks: tracks}
 	if c.authGen.Load() == gen {
 		if art.Name != "" {
 			c.cacheArtistName(art.Name, art.ID, true)
 		}
-		c.cache.putArtist(artistID, limit, detail)
+		if topTracksOK {
+			c.cache.putArtist(artistID, limit, detail)
+		}
 	}
 	return detail, nil
+}
+
+// fetchArtistTopTracks queries Qobuz's /artist/page endpoint for the artist's
+// curated popular tracks (top_tracks). Returns ok=false on transient errors so
+// callers avoid caching a degraded artist profile for 24h.
+func (c *Client) fetchArtistTopTracks(ctx context.Context, artistID int64, fallbackArtist string) ([]library.Track, bool) {
+	if artistID <= 0 {
+		return nil, true
+	}
+	params := url.Values{
+		"artist_id": {strconv.FormatInt(artistID, 10)},
+		"sort":      {"relevant"},
+	}
+	var page struct {
+		TopTracks []struct {
+			ID        int64  `json:"id"`
+			Title     string `json:"title"`
+			Version   string `json:"version"`
+			Duration  int    `json:"duration"`
+			AudioInfo struct {
+				MaximumBitDepth     int     `json:"maximum_bit_depth"`
+				MaximumSamplingRate float64 `json:"maximum_sampling_rate"`
+			} `json:"audio_info"`
+			Rights struct {
+				Streamable *bool `json:"streamable"`
+			} `json:"rights"`
+			Artist struct {
+				Name struct {
+					Display string `json:"display"`
+				} `json:"name"`
+			} `json:"artist"`
+			Album struct {
+				ID    string `json:"id"`
+				Title string `json:"title"`
+				Image qImage `json:"image"`
+			} `json:"album"`
+		} `json:"top_tracks"`
+	}
+	if err := c.getJSON(ctx, "/artist/page", params, true, &page); err != nil {
+		var ae *apiError
+		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
+			return nil, true
+		}
+		return nil, false
+	}
+	const maxPopularTracks = 10
+	out := make([]library.Track, 0, min(len(page.TopTracks), maxPopularTracks))
+	for _, pt := range page.TopTracks {
+		if len(out) >= maxPopularTracks {
+			break
+		}
+		if pt.ID <= 0 || (pt.Rights.Streamable != nil && !*pt.Rights.Streamable) {
+			continue
+		}
+		title := strings.TrimSpace(pt.Title)
+		if pt.Version != "" && !strings.Contains(strings.ToLower(title), strings.ToLower(pt.Version)) {
+			title = title + " (" + pt.Version + ")"
+		}
+		artistName := strings.TrimSpace(pt.Artist.Name.Display)
+		if artistName == "" {
+			artistName = fallbackArtist
+		}
+		albumID := ""
+		if pt.Album.ID != "" {
+			albumID = "qobuz:" + pt.Album.ID
+		}
+		out = append(out, library.Track{
+			ID:           fmt.Sprintf("qobuz:%d", pt.ID),
+			Source:       library.SourceQobuz,
+			SourceType:   library.SourceTypeRemote,
+			Provider:     string(library.SourceQobuz),
+			ExternalID:   strconv.FormatInt(pt.ID, 10),
+			QobuzTrackID: pt.ID,
+			AlbumID:      albumID,
+			Title:        title,
+			Artist:       artistName,
+			AlbumArtist:  artistName,
+			Album:        strings.TrimSpace(pt.Album.Title),
+			DurationSec:  pt.Duration,
+			ArtworkURL:   pt.Album.Image.best(),
+			Channels:     2,
+			MIME:         "audio/flac",
+			Ext:          ".flac",
+			BitDepth:     pt.AudioInfo.MaximumBitDepth,
+			SampleRate:   normalizeSampleRateHz(pt.AudioInfo.MaximumSamplingRate),
+			Available:    true,
+		})
+	}
+	return out, true
 }
 
 // GetArtistByName resolves an artist name via Qobuz /artist/search (exact normalized match, cached)
@@ -944,12 +1041,18 @@ func (img *qArtistImage) best() string {
 	return ""
 }
 
+type qBiography struct {
+	Summary string `json:"summary"`
+	Content string `json:"content"`
+}
+
 type qArtist struct {
 	ID          int64         `json:"id"`
 	Name        string        `json:"name"`
 	AlbumsCount int           `json:"albums_count"`
 	Picture     string        `json:"picture"`
 	Image       *qArtistImage `json:"image"`
+	Biography   *qBiography   `json:"biography"`
 }
 
 func (qa qArtist) toArtist() Artist {
@@ -957,15 +1060,27 @@ func (qa qArtist) toArtist() Artist {
 	if art == "" {
 		art = qa.Picture
 	}
+	var bio string
+	if qa.Biography != nil {
+		bio = cleanQobuzText(qa.Biography.Content)
+		if bio == "" {
+			bio = cleanQobuzText(qa.Biography.Summary)
+		}
+	}
 	return Artist{
 		ID:          qa.ID,
 		Name:        strings.TrimSpace(qa.Name),
 		ArtworkURL:  art,
 		AlbumsCount: qa.AlbumsCount,
+		Biography:   bio,
 	}
 }
 
 type qGenre struct {
+	Name string `json:"name"`
+}
+
+type qLabel struct {
 	Name string `json:"name"`
 }
 
@@ -975,6 +1090,9 @@ type qAlbum struct {
 	Version             string  `json:"version"`
 	Artist              qArtist `json:"artist"`
 	Genre               qGenre  `json:"genre"`
+	Label               *qLabel `json:"label"`
+	Description         string  `json:"description"`
+	Copyright           string  `json:"copyright"`
 	Image               qImage  `json:"image"`
 	TracksCount         int     `json:"tracks_count"`
 	ReleaseDateOriginal string  `json:"release_date_original"`
@@ -995,14 +1113,46 @@ type qTrack struct {
 	Duration            int     `json:"duration"`
 	MaximumBitDepth     int     `json:"maximum_bit_depth"`
 	MaximumSamplingRate float64 `json:"maximum_sampling_rate"`
+	Streamable          *bool   `json:"streamable"`
 	Performer           qArtist `json:"performer"`
 	Album               *qAlbum `json:"album"`
+}
+
+var (
+	reQobuzBreak = regexp.MustCompile(`(?i)<(?:br\s*/?|/p\s*)>`)
+	reQobuzTag   = regexp.MustCompile(`<[^>]+>`)
+	reMultiNL    = regexp.MustCompile(`\n{3,}`)
+)
+
+// cleanQobuzText converts Qobuz's lightweight HTML editorial copy (reviews and
+// artist biographies) into clean plain-text paragraphs.
+func cleanQobuzText(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	s = reQobuzBreak.ReplaceAllString(s, "\n")
+	s = reQobuzTag.ReplaceAllString(s, "")
+	s = html.UnescapeString(s)
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimSpace(line)
+	}
+	s = strings.Join(lines, "\n")
+	s = reMultiNL.ReplaceAllString(s, "\n\n")
+	return strings.TrimSpace(s)
 }
 
 func (qa qAlbum) toLibraryAlbum(includeTracks bool) library.Album {
 	var year int
 	if len(qa.ReleaseDateOriginal) >= 4 {
 		year, _ = strconv.Atoi(qa.ReleaseDateOriginal[:4])
+	}
+	var labelName string
+	if qa.Label != nil {
+		labelName = strings.TrimSpace(qa.Label.Name)
 	}
 	alb := library.Album{
 		ID:            "qobuz:" + qa.ID,
@@ -1013,6 +1163,9 @@ func (qa qAlbum) toLibraryAlbum(includeTracks bool) library.Album {
 		Title:         qa.Title,
 		Artist:        qa.Artist.Name,
 		Genre:         strings.TrimSpace(qa.Genre.Name),
+		Label:         labelName,
+		Description:   cleanQobuzText(qa.Description),
+		Copyright:     strings.TrimSpace(qa.Copyright),
 		Year:          year,
 		TrackCount:    qa.TracksCount,
 		ArtworkURL:    qa.Image.best(),
