@@ -1,5 +1,5 @@
 import { Disc3, ListPlus, Loader2, Play, Search, SkipForward, Sparkles, UserRound, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type {
@@ -17,6 +17,7 @@ import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useSWR } from "@/lib/swr";
 import { cn } from "@/lib/utils";
 
 interface SearchViewProps {
@@ -50,13 +51,6 @@ export function SearchView({
   onAdd,
 }: SearchViewProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const [libRes, setLibRes] = useState<LibrarySearchResult | null>(null);
-  const [libLoading, setLibLoading] = useState(false);
-  const [libErr, setLibErr] = useState("");
-
-  const [qobuzRes, setQobuzRes] = useState<QobuzSearchResult | null>(null);
-  const [qobuzLoading, setQobuzLoading] = useState(false);
-  const [qobuzErr, setQobuzErr] = useState("");
 
   const trimmed = query.trim();
   const qobuzConnected = Boolean(qobuzStatus?.authenticated);
@@ -67,75 +61,27 @@ export function SearchView({
     inputRef.current?.select();
   }, [focusNonce]);
 
-  // Tier 1: Fast SQLite FTS5 local+synced library search (loads first at top).
-  useEffect(() => {
-    if (!trimmed) {
-      setLibRes(null);
-      setLibErr("");
-      setLibLoading(false);
-      return;
-    }
-    const ctrl = new AbortController();
-    setLibLoading(true);
-    setLibErr("");
-    const timer = window.setTimeout(() => {
-      void tacetClient
-        .searchLibrary(trimmed, 8, { signal: ctrl.signal })
-        .then((res) => {
-          if (!ctrl.signal.aborted) {
-            setLibRes(res);
-          }
-        })
-        .catch((err) => {
-          if (!ctrl.signal.aborted) {
-            setLibErr(err instanceof Error ? err.message : String(err));
-          }
-        })
-        .finally(() => {
-          if (!ctrl.signal.aborted) setLibLoading(false);
-        });
-    }, 60);
+  // Tier 1: Fast SQLite FTS5 local+synced library search (instant on cache hit, 60ms debounce on miss).
+  const libQuery = useSWR<LibrarySearchResult>(
+    trimmed ? `search:library:${trimmed.toLowerCase()}` : null,
+    (signal) => tacetClient.searchLibrary(trimmed, 8, { signal }),
+    { debounceMs: 60 },
+  );
 
-    return () => {
-      window.clearTimeout(timer);
-      ctrl.abort();
-    };
-  }, [trimmed]);
+  // Tier 2: Progressive Qobuz remote catalog search below library results (cached 5 min, 280ms debounce on miss).
+  const qobuzQuery = useSWR<QobuzSearchResult>(
+    trimmed && qobuzConnected ? `search:qobuz:${trimmed.toLowerCase()}` : null,
+    (signal) => tacetClient.qobuzSearch(trimmed, { limit: 12 }, { signal }),
+    { staleTimeMs: 5 * 60_000, debounceMs: 280 },
+  );
 
-  // Tier 2: Progressive Qobuz remote catalog search below library results (never shifts content above).
-  useEffect(() => {
-    if (!trimmed || !qobuzConnected) {
-      setQobuzRes(null);
-      setQobuzErr("");
-      setQobuzLoading(false);
-      return;
-    }
-    const ctrl = new AbortController();
-    setQobuzLoading(true);
-    setQobuzErr("");
-    const timer = window.setTimeout(() => {
-      void tacetClient
-        .qobuzSearch(trimmed, { limit: 12 }, { signal: ctrl.signal })
-        .then((res) => {
-          if (!ctrl.signal.aborted) {
-            setQobuzRes(res);
-          }
-        })
-        .catch((err) => {
-          if (!ctrl.signal.aborted) {
-            setQobuzErr(err instanceof Error ? err.message : String(err));
-          }
-        })
-        .finally(() => {
-          if (!ctrl.signal.aborted) setQobuzLoading(false);
-        });
-    }, 280);
+  const libRes = libQuery.data ?? null;
+  const libLoading = libQuery.isLoading;
+  const libErr = libQuery.error;
 
-    return () => {
-      window.clearTimeout(timer);
-      ctrl.abort();
-    };
-  }, [trimmed, qobuzConnected]);
+  const qobuzRes = qobuzQuery.data ?? null;
+  const qobuzLoading = qobuzQuery.isLoading;
+  const qobuzErr = qobuzQuery.error;
 
   // Deduplicate Qobuz items that already appeared in the Library section above.
   const dedupedQobuz = useMemo(() => {

@@ -5,6 +5,7 @@ import type { Album, LibraryStatus, QobuzStatus, QueueSource } from "@/api/types
 import { AlbumCard } from "@/components/AlbumCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useSWR } from "@/lib/swr";
 
 interface QobuzViewProps {
   status: QobuzStatus | null;
@@ -29,9 +30,7 @@ export function QobuzView({
   const [showTokenForm, setShowTokenForm] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
 
-  const [albums, setAlbums] = useState<Album[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [errMsg, setErrMsg] = useState("");
+  const [loginErr, setLoginErr] = useState("");
 
   useEffect(() => {
     if (status !== null) return;
@@ -40,37 +39,25 @@ export function QobuzView({
       .qobuzStatus({ signal: ctrl.signal })
       .then(onStatusChange)
       .catch((err) => {
-        if (!ctrl.signal.aborted) setErrMsg(err instanceof Error ? err.message : String(err));
+        if (!ctrl.signal.aborted) setLoginErr(err instanceof Error ? err.message : String(err));
       });
     return () => ctrl.abort();
   }, [status, onStatusChange]);
 
-  useEffect(() => {
-    if (!status?.authenticated) {
-      setAlbums([]);
-      return;
-    }
-    const ctrl = new AbortController();
-    setLoading(true);
-    setErrMsg("");
-    void tacetClient
-      .listLibraryAlbums({ provider: "qobuz", sort: "added", limit: 200 }, { signal: ctrl.signal })
-      .then((res) => {
-        if (!ctrl.signal.aborted) setAlbums(res.items ?? []);
-      })
-      .catch((err) => {
-        if (!ctrl.signal.aborted) setErrMsg(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false);
-      });
-    return () => ctrl.abort();
-  }, [status?.authenticated, libraryStatus?.etag]);
+  const albumsQuery = useSWR(
+    status?.authenticated ? "library:albums:provider:qobuz:added:200" : null,
+    (signal) => tacetClient.listLibraryAlbums({ provider: "qobuz", sort: "added", limit: 200 }, { signal }),
+    { version: libraryStatus?.etag },
+  );
+
+  const albums: Album[] = albumsQuery.data?.items ?? [];
+  const loading = albumsQuery.isLoading;
+  const errMsg = loginErr || albumsQuery.error;
 
   const handleTokenLogin = async (e: FormEvent) => {
     e.preventDefault();
     setLoggingIn(true);
-    setErrMsg("");
+    setLoginErr("");
     try {
       const st = await tacetClient.qobuzLogin({
         authToken: authToken.trim() || undefined,
@@ -82,7 +69,7 @@ export function QobuzView({
       setAppId("");
       setAppSecret("");
     } catch (err) {
-      setErrMsg(err instanceof Error ? err.message : String(err));
+      setLoginErr(err instanceof Error ? err.message : String(err));
     } finally {
       setLoggingIn(false);
     }

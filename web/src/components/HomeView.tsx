@@ -1,10 +1,10 @@
 import { ArrowRight, Compass, Disc3, Flame, ListMusic, Sparkles, Users } from "lucide-react";
-import { useEffect, useState } from "react";
 import { tacetClient } from "@/api/client";
 import type { Album, HeavyRotationAlbum, LibraryStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import type { AppSection } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
+import { useSWR } from "@/lib/swr";
 
 interface HomeViewProps {
   libraryStatus: LibraryStatus | null;
@@ -14,37 +14,23 @@ interface HomeViewProps {
 }
 
 export function HomeView({ libraryStatus, onOpenAlbum, onNavigate, onPlay }: HomeViewProps) {
-  const [rotation, setRotation] = useState<HeavyRotationAlbum[]>([]);
-  const [recent, setRecent] = useState<Album[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [errMsg, setErrMsg] = useState("");
+  const etag = libraryStatus?.etag;
 
-  useEffect(() => {
-    const ctrl = new AbortController();
-    setLoading(true);
-    setErrMsg("");
-    void Promise.allSettled([
-      tacetClient.getHeavyRotation(30, 12, { signal: ctrl.signal }),
-      tacetClient.listLibraryAlbums({ sort: "added", groupVersions: true, limit: 18 }, { signal: ctrl.signal }),
-    ]).then(([rotRes, recRes]) => {
-      if (ctrl.signal.aborted) return;
-      const errors: string[] = [];
-      if (rotRes.status === "fulfilled") {
-        setRotation(rotRes.value.items ?? []);
-      } else {
-        errors.push(rotRes.reason instanceof Error ? rotRes.reason.message : String(rotRes.reason));
-      }
-      if (recRes.status === "fulfilled") {
-        setRecent(recRes.value.items ?? []);
-      } else {
-        errors.push(recRes.reason instanceof Error ? recRes.reason.message : String(recRes.reason));
-      }
-      if (errors.length > 0) setErrMsg(errors[0]);
-      setLoading(false);
-    });
+  const rotationQuery = useSWR(
+    "library:heavy-rotation:30:12",
+    (signal) => tacetClient.getHeavyRotation(30, 12, { signal }),
+    { version: etag },
+  );
+  const recentQuery = useSWR(
+    "library:albums:added:grouped:18",
+    (signal) => tacetClient.listLibraryAlbums({ sort: "added", groupVersions: true, limit: 18 }, { signal }),
+    { version: etag },
+  );
 
-    return () => ctrl.abort();
-  }, [libraryStatus?.etag]);
+  const rotation: HeavyRotationAlbum[] = rotationQuery.data?.items ?? [];
+  const recent: Album[] = recentQuery.data?.items ?? [];
+  const loading = rotationQuery.isLoading || recentQuery.isLoading;
+  const errMsg = rotationQuery.error || recentQuery.error;
 
   return (
     <div className="relative min-h-full pb-12">

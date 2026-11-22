@@ -6,11 +6,13 @@ import type { Album, AlbumVersion, QueuePosition, QueueSource } from "@/api/type
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { invalidateSwrPrefix } from "@/lib/swr";
 import { cn } from "@/lib/utils";
 
 interface AlbumViewProps {
   album: Album;
   backLabel: string;
+  loadingTracks?: boolean;
   currentTrackId?: string;
   isPlaying?: boolean;
   onBack: () => void;
@@ -51,6 +53,7 @@ function totalAlbumDuration(album: Album): string {
 export function AlbumView({
   album,
   backLabel,
+  loadingTracks = false,
   currentTrackId,
   isPlaying,
   onBack,
@@ -86,6 +89,8 @@ export function AlbumView({
         const saved = await tacetClient.addRemoteAlbum(provider, externalId);
         onAlbumUpdated?.({ ...album, ...saved, inLibrary: true });
       }
+      invalidateSwrPrefix("library:");
+      invalidateSwrPrefix("search:library:");
     } catch (err) {
       setActionErr(err instanceof Error ? err.message : String(err));
     } finally {
@@ -100,6 +105,7 @@ export function AlbumView({
     try {
       const updated = await tacetClient.setPrimaryVersion(album.id);
       onAlbumUpdated?.(updated);
+      invalidateSwrPrefix("library:");
     } catch (err) {
       setActionErr(err instanceof Error ? err.message : String(err));
     } finally {
@@ -112,6 +118,8 @@ export function AlbumView({
     try {
       await tacetClient.addRemoteTrack(provider, trackExtId || trackId.replace(`${provider}:`, ""));
       setAddedTrackIds((prev) => ({ ...prev, [trackId]: true }));
+      invalidateSwrPrefix("library:");
+      invalidateSwrPrefix("search:library:");
     } catch (err) {
       setActionErr(err instanceof Error ? err.message : String(err));
     }
@@ -286,6 +294,20 @@ export function AlbumView({
           </div>
 
           <div className="mt-1 divide-y divide-white/[0.03]">
+            {loadingTracks && tracks.length === 0 && (
+              <div className="space-y-2 py-2">
+                {Array.from({ length: Math.min(album.trackCount || 8, 10) }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-4 rounded-xl px-3 py-3 animate-pulse"
+                  >
+                    <div className="h-3.5 w-6 rounded bg-white/[0.06]" />
+                    <div className="h-3.5 flex-1 max-w-xs rounded bg-white/[0.06]" />
+                    <div className="ml-auto h-3 w-12 rounded bg-white/[0.04]" />
+                  </div>
+                ))}
+              </div>
+            )}
             {tracks.map((tr, idx) => {
               const active = tr.id === currentTrackId;
               const trackInLib = Boolean(tr.inLibrary || addedTrackIds[tr.id]);

@@ -1,12 +1,17 @@
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
+import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
 import type { Album, LibraryStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { Switch } from "@/components/ui/switch";
+import { useSWR } from "@/lib/swr";
 import { cn } from "@/lib/utils";
 
 type SourceFilter = "all" | "local" | "remote";
 type AlbumSort = "artist" | "title" | "year" | "added" | "plays";
+
+const VALID_SOURCES = new Set<SourceFilter>(["all", "local", "remote"]);
+const VALID_SORTS = new Set<AlbumSort>(["artist", "title", "year", "added", "plays"]);
 
 interface AlbumsViewProps {
   libraryStatus: LibraryStatus | null;
@@ -15,41 +20,51 @@ interface AlbumsViewProps {
 }
 
 export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewProps) {
-  const [source, setSource] = useState<SourceFilter>("all");
-  const [sort, setSort] = useState<AlbumSort>("artist");
-  const [groupVersions, setGroupVersions] = useState(true);
-  const [albums, setAlbums] = useState<Album[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [errMsg, setErrMsg] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  useEffect(() => {
-    const ctrl = new AbortController();
-    setLoading(true);
-    setErrMsg("");
-    void tacetClient
-      .listLibraryAlbums(
+  const rawSource = searchParams.get("source") as SourceFilter | null;
+  const source: SourceFilter = rawSource && VALID_SOURCES.has(rawSource) ? rawSource : "all";
+  const rawSort = searchParams.get("sort") as AlbumSort | null;
+  const sort: AlbumSort = rawSort && VALID_SORTS.has(rawSort) ? rawSort : "artist";
+  const groupVersions = searchParams.get("group") !== "0";
+
+  const updateParams = useCallback(
+    (patch: { source?: SourceFilter; sort?: AlbumSort; groupVersions?: boolean }) => {
+      const next = new URLSearchParams(searchParams);
+      if (patch.source !== undefined) {
+        if (patch.source === "all") next.delete("source");
+        else next.set("source", patch.source);
+      }
+      if (patch.sort !== undefined) {
+        if (patch.sort === "artist") next.delete("sort");
+        else next.set("sort", patch.sort);
+      }
+      if (patch.groupVersions !== undefined) {
+        if (patch.groupVersions) next.delete("group");
+        else next.set("group", "0");
+      }
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const { data, error: errMsg, isLoading: loading } = useSWR(
+    `library:albums:${source}:${sort}:${groupVersions ? "grouped" : "flat"}:500`,
+    (signal) =>
+      tacetClient.listLibraryAlbums(
         {
           source,
           sort,
           groupVersions,
           limit: 500,
         },
-        { signal: ctrl.signal },
-      )
-      .then((res) => {
-        if (ctrl.signal.aborted) return;
-        setAlbums(res.items ?? []);
-        setTotal(res.total ?? 0);
-      })
-      .catch((err) => {
-        if (!ctrl.signal.aborted) setErrMsg(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false);
-      });
-    return () => ctrl.abort();
-  }, [source, sort, groupVersions, libraryStatus?.etag]);
+        { signal },
+      ),
+    { version: libraryStatus?.etag, keepPreviousData: true },
+  );
+
+  const albums = data?.items ?? [];
+  const total = data?.total ?? 0;
 
   const hasRemote = (libraryStatus?.remoteAlbums ?? 0) > 0;
 
@@ -70,7 +85,7 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
                   <button
                     key={f}
                     type="button"
-                    onClick={() => setSource(f)}
+                    onClick={() => updateParams({ source: f })}
                     className={cn(
                       "rounded-full px-3 py-1 text-xs font-medium transition-colors cursor-pointer",
                       source === f ? "bg-white/[0.14] text-white" : "text-muted-foreground hover:text-foreground",
@@ -85,7 +100,7 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
             <select
               aria-label="Sort albums"
               value={sort}
-              onChange={(e) => setSort(e.target.value as AlbumSort)}
+              onChange={(e) => updateParams({ sort: e.target.value as AlbumSort })}
               className="h-8.5 rounded-lg border border-white/[0.09] bg-white/[0.05] px-2.5 text-xs text-foreground focus:outline-none focus:border-white/25 cursor-pointer"
             >
               <option value="artist">Artist</option>
@@ -96,7 +111,7 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
             </select>
 
             <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
-              <Switch checked={groupVersions} onCheckedChange={setGroupVersions} />
+              <Switch checked={groupVersions} onCheckedChange={(v) => updateParams({ groupVersions: v })} />
               <span>Group versions</span>
             </label>
           </div>

@@ -1,12 +1,16 @@
 import { ListPlus, Play, SkipForward } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
+import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
 import { fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type { GenreSummary, LibraryStatus, QueuePosition, QueueSource, Track } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
+import { useSWR } from "@/lib/swr";
 import { cn } from "@/lib/utils";
 
 type TrackSort = "artist" | "title" | "album" | "added" | "plays" | "quality";
+
+const VALID_TRACK_SORTS = new Set<TrackSort>(["artist", "title", "album", "added", "plays", "quality"]);
 
 interface SongsViewProps {
   libraryStatus: LibraryStatus | null;
@@ -29,53 +33,53 @@ export function SongsView({
   onPlay,
   onAdd,
 }: SongsViewProps) {
-  const [sort, setSort] = useState<TrackSort>("artist");
-  const [genre, setGenre] = useState("");
-  const [genres, setGenres] = useState<GenreSummary[]>([]);
-  const [tracks, setTracks] = useState<Track[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [errMsg, setErrMsg] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawSort = searchParams.get("sort") as TrackSort | null;
+  const sort: TrackSort = rawSort && VALID_TRACK_SORTS.has(rawSort) ? rawSort : "artist";
+  const genre = searchParams.get("genre") ?? "";
 
-  useEffect(() => {
-    const ctrl = new AbortController();
-    void tacetClient
-      .listLibraryGenres({}, { signal: ctrl.signal })
-      .then((res) => {
-        if (!ctrl.signal.aborted) setGenres(res.items ?? []);
-      })
-      .catch(() => {});
-    return () => ctrl.abort();
-  }, [libraryStatus?.etag]);
+  const updateParams = useCallback(
+    (patch: { sort?: TrackSort; genre?: string }) => {
+      const next = new URLSearchParams(searchParams);
+      if (patch.sort !== undefined) {
+        if (patch.sort === "artist") next.delete("sort");
+        else next.set("sort", patch.sort);
+      }
+      if (patch.genre !== undefined) {
+        if (!patch.genre) next.delete("genre");
+        else next.set("genre", patch.genre);
+      }
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
 
-  useEffect(() => {
-    const ctrl = new AbortController();
-    setLoading(true);
-    setErrMsg("");
-    const dir = sort === "plays" || sort === "added" || sort === "quality" ? "desc" : "asc";
-    void tacetClient
-      .listLibraryTracks(
+  const etag = libraryStatus?.etag;
+  const dir = sort === "plays" || sort === "added" || sort === "quality" ? "desc" : "asc";
+
+  const genresQuery = useSWR("library:genres", (signal) => tacetClient.listLibraryGenres({}, { signal }), {
+    version: etag,
+  });
+  const tracksQuery = useSWR(
+    `library:tracks:${genre}:${sort}:${dir}:300`,
+    (signal) =>
+      tacetClient.listLibraryTracks(
         {
           genre: genre || undefined,
           sort,
           dir,
           limit: 300,
         },
-        { signal: ctrl.signal },
-      )
-      .then((res) => {
-        if (ctrl.signal.aborted) return;
-        setTracks(res.items ?? []);
-        setTotal(res.total ?? 0);
-      })
-      .catch((err) => {
-        if (!ctrl.signal.aborted) setErrMsg(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false);
-      });
-    return () => ctrl.abort();
-  }, [genre, sort, libraryStatus?.etag]);
+        { signal },
+      ),
+    { version: etag, keepPreviousData: true },
+  );
+
+  const genres: GenreSummary[] = genresQuery.data?.items ?? [];
+  const tracks: Track[] = tracksQuery.data?.items ?? [];
+  const total = tracksQuery.data?.total ?? 0;
+  const loading = tracksQuery.isLoading;
+  const errMsg = tracksQuery.error;
 
   return (
     <div className="min-h-full pb-12">
@@ -91,7 +95,7 @@ export function SongsView({
               <select
                 aria-label="Filter by genre"
                 value={genre}
-                onChange={(e) => setGenre(e.target.value)}
+                onChange={(e) => updateParams({ genre: e.target.value })}
                 className="h-8.5 max-w-[180px] rounded-lg border border-white/[0.09] bg-white/[0.05] px-2.5 text-xs text-foreground focus:outline-none focus:border-white/25 cursor-pointer"
               >
                 <option value="">All genres</option>
@@ -106,7 +110,7 @@ export function SongsView({
             <select
               aria-label="Sort songs"
               value={sort}
-              onChange={(e) => setSort(e.target.value as TrackSort)}
+              onChange={(e) => updateParams({ sort: e.target.value as TrackSort })}
               className="h-8.5 rounded-lg border border-white/[0.09] bg-white/[0.05] px-2.5 text-xs text-foreground focus:outline-none focus:border-white/25 cursor-pointer"
             >
               <option value="artist">Artist</option>

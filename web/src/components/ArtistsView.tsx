@@ -1,5 +1,5 @@
 import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { TacetAPIError, tacetClient } from "@/api/client";
 import { fmtAlbumQuality, isHiRes } from "@/api/format";
 import type {
@@ -14,6 +14,8 @@ import type {
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useScrollRestoration } from "@/lib/scroll";
+import { useSWR } from "@/lib/swr";
 import { cn } from "@/lib/utils";
 
 interface ArtistsViewProps {
@@ -55,21 +57,24 @@ export function ArtistsView({
   onPlay,
   onAdd,
 }: ArtistsViewProps) {
-  const [artists, setArtists] = useState<ArtistSummary[]>([]);
   const [selectedArtist, setSelectedArtist] = useState(initialArtist ?? "");
   const [selectedQobuzId, setSelectedQobuzId] = useState<number | undefined>(initialQobuzArtistId);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(Boolean(initialArtist));
 
-  const [albums, setAlbums] = useState<Album[]>([]);
-  const [loadingArtists, setLoadingArtists] = useState(true);
-  const [loadingAlbums, setLoadingAlbums] = useState(false);
-  const [errMsg, setErrMsg] = useState("");
+  const railRef = useRef<HTMLDivElement | null>(null);
+  const detailRef = useRef<HTMLDivElement | null>(null);
 
-  const [remoteDetail, setRemoteDetail] = useState<QobuzArtistDetail | null>(null);
-  const [loadingRemote, setLoadingRemote] = useState(false);
-  const [remoteErr, setRemoteErr] = useState("");
+  useScrollRestoration(railRef, {
+    namespace: "artists-rail",
+    routeKey: "/artists",
+    resetOnPush: false,
+  });
+  useScrollRestoration(detailRef, {
+    namespace: "artists-detail",
+  });
 
   const qobuzConnected = Boolean(qobuzStatus?.authenticated);
+  const etag = libraryStatus?.etag;
 
   useEffect(() => {
     if (initialArtist) {
@@ -82,93 +87,65 @@ export function ArtistsView({
     }
   }, [initialArtist, initialQobuzArtistId]);
 
-  // Fetch unified library artist list.
-  useEffect(() => {
-    const ctrl = new AbortController();
-    setLoadingArtists(true);
-    setErrMsg("");
-    void tacetClient
-      .listLibraryArtists({ limit: 500 }, { signal: ctrl.signal })
-      .then((res) => {
-        if (ctrl.signal.aborted) return;
-        const list = res.items ?? [];
-        setArtists(list);
-        setSelectedArtist((prev) => {
-          // Preserve a remote-only artist selected from Search even if not in the local rail.
-          if (prev) return prev;
-          return list[0]?.name ?? "";
-        });
-      })
-      .catch((err) => {
-        if (!ctrl.signal.aborted) setErrMsg(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoadingArtists(false);
-      });
-    return () => ctrl.abort();
-  }, [libraryStatus?.etag]);
+  // Fetch unified library artist list (cached in LRU SWR).
+  const artistsQuery = useSWR(
+    "library:artists:500",
+    (signal) => tacetClient.listLibraryArtists({ limit: 500 }, { signal }),
+    { version: etag },
+  );
+  const artists: ArtistSummary[] = useMemo(() => artistsQuery.data?.items ?? [], [artistsQuery.data]);
+
+  // Default to the first artist on desktop when no artist is selected yet.
+  const effectiveArtist = selectedArtist || artists[0]?.name || "";
 
   // Fetch library albums for the selected artist.
-  useEffect(() => {
-    if (!selectedArtist) {
-      setAlbums([]);
-      return;
-    }
-    const ctrl = new AbortController();
-    setLoadingAlbums(true);
-    setErrMsg("");
-    void tacetClient
-      .listLibraryAlbums(
-        { artist: selectedArtist, groupVersions: true, sort: "year", limit: 200 },
-        { signal: ctrl.signal },
-      )
-      .then((res) => {
-        if (ctrl.signal.aborted) return;
-        setAlbums(res.items ?? []);
-      })
-      .catch((err) => {
-        if (!ctrl.signal.aborted) setErrMsg(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoadingAlbums(false);
-      });
-    return () => ctrl.abort();
-  }, [selectedArtist, libraryStatus?.etag]);
+  const albumsQuery = useSWR(
+    effectiveArtist ? `library:albums:artist:${effectiveArtist.toLowerCase()}:year:grouped:200` : null,
+    (signal) =>
+      tacetClient.listLibraryAlbums(
+        {
+          artist: effectiveArtist,
+          groupVersions: true,
+          sort: "year",
+          limit: 200,
+        },
+        { signal },
+      ),
+    { version: etag, keepPreviousData: true },
+  );
+  const albums: Album[] = useMemo(() => albumsQuery.data?.items ?? [], [albumsQuery.data]);
 
-  // Progressively fetch remote Qobuz discography for the selected artist (by Qobuz ID or exact name).
-  useEffect(() => {
-    if (!selectedArtist || !qobuzConnected) {
-      setRemoteDetail(null);
-      setLoadingRemote(false);
-      setRemoteErr("");
-      return;
-    }
-    const ctrl = new AbortController();
-    setRemoteDetail(null);
-    setRemoteErr("");
-    setLoadingRemote(true);
-    void tacetClient
-      .qobuzArtist(
-        selectedQobuzId ? { id: selectedQobuzId, limit: 50 } : { name: selectedArtist, limit: 50 },
-        { signal: ctrl.signal },
-      )
-      .then((detail) => {
-        if (!ctrl.signal.aborted) {
-          setRemoteDetail(detail);
-        }
-      })
-      .catch((err) => {
-        if (ctrl.signal.aborted) return;
-        setRemoteDetail(null);
-        // 404 is expected for local-only artists not on Qobuz; surface real auth/network/server errors.
-        if (err instanceof TacetAPIError && err.status === 404) return;
-        setRemoteErr(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoadingRemote(false);
-      });
-    return () => ctrl.abort();
-  }, [selectedArtist, selectedQobuzId, qobuzConnected]);
+  // Progressively fetch remote Qobuz discography for the selected artist (cached 5 min).
+  const remoteKey =
+    effectiveArtist && qobuzConnected
+      ? selectedQobuzId
+        ? `qobuz:artist:id:${selectedQobuzId}`
+        : `qobuz:artist:name:${effectiveArtist.toLowerCase()}`
+      : null;
+
+  const remoteQuery = useSWR<QobuzArtistDetail | null>(
+    remoteKey,
+    async (signal) => {
+      try {
+        return await tacetClient.qobuzArtist(
+          selectedQobuzId ? { id: selectedQobuzId, limit: 50 } : { name: effectiveArtist, limit: 50 },
+          { signal },
+        );
+      } catch (err) {
+        // 404 is expected for local-only artists not on Qobuz; cache null to avoid repeat 404s.
+        if (err instanceof TacetAPIError && err.status === 404) return null;
+        throw err;
+      }
+    },
+    { staleTimeMs: 5 * 60_000 },
+  );
+
+  const loadingArtists = artistsQuery.isLoading;
+  const loadingAlbums = albumsQuery.isLoading;
+  const errMsg = artistsQuery.error || albumsQuery.error;
+  const remoteDetail = remoteQuery.data ?? null;
+  const loadingRemote = remoteQuery.isLoading;
+  const remoteErr = remoteQuery.error;
 
   // Deduplicate Qobuz albums already present in the library section above.
   const remoteOnlyAlbums = useMemo(() => {
@@ -179,7 +156,7 @@ export function ArtistsView({
     return raw.filter((alb) => !alb.inLibrary && !libIds.has(alb.id) && !libTitles.has(normTitle(alb.title)));
   }, [remoteDetail, albums]);
 
-  const currentSummary = artists.find((a) => a.name.toLowerCase() === selectedArtist.toLowerCase());
+  const currentSummary = artists.find((a) => a.name.toLowerCase() === effectiveArtist.toLowerCase());
   const heroArt =
     albums[0]?.artworkUrl ||
     currentSummary?.artworkUrl ||
@@ -202,7 +179,7 @@ export function ArtistsView({
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+        <div ref={railRef} className="flex-1 overflow-y-auto p-2 space-y-0.5">
           {loadingArtists && artists.length === 0 ? (
             <div className="space-y-2 p-2">
               {Array.from({ length: 10 }).map((_, i) => (
@@ -219,7 +196,7 @@ export function ArtistsView({
             <p className="py-12 text-center text-xs text-muted-foreground">No artists in your library yet.</p>
           ) : (
             artists.map((artist) => {
-              const active = artist.name.toLowerCase() === selectedArtist.toLowerCase();
+              const active = artist.name.toLowerCase() === effectiveArtist.toLowerCase();
               return (
                 <button
                   key={artist.name}
@@ -256,12 +233,13 @@ export function ArtistsView({
 
       {/* Right Unified Discography Showcase (Library on top -> subtle divider -> More on Qobuz below) */}
       <div
+        ref={detailRef}
         className={cn(
           "relative flex-1 min-w-0 overflow-y-auto",
           mobileDetailOpen ? "block" : "hidden md:block",
         )}
       >
-        {selectedArtist ? (
+        {effectiveArtist ? (
           <div className="relative min-h-full pb-12">
             {/* Mobile back bar */}
             <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-white/[0.06] bg-[#09090b]/40 px-4 py-3 backdrop-blur-2xl md:hidden">
@@ -284,7 +262,7 @@ export function ArtistsView({
               <div className="flex items-end gap-4 pb-6 border-b border-white/[0.07]">
                 <AlbumArt
                   artworkUrl={heroArt}
-                  alt={selectedArtist}
+                  alt={effectiveArtist}
                   className="h-16 w-16 sm:h-20 sm:w-20 shrink-0 rounded-full shadow-xl ring-1 ring-white/15"
                   priority
                 />
@@ -293,7 +271,7 @@ export function ArtistsView({
                     Artist
                   </div>
                   <h2 className="truncate text-2xl sm:text-3xl font-bold tracking-tight text-white">
-                    {selectedArtist}
+                    {effectiveArtist}
                   </h2>
                   <p className="text-xs text-muted-foreground mt-1">
                     {currentSummary ? (
@@ -392,7 +370,7 @@ export function ArtistsView({
               )}
 
               {!loadingAlbums && !loadingRemote && albums.length === 0 && remoteOnlyAlbums.length === 0 && (
-                <p className="mt-8 text-sm text-muted-foreground">No albums found for {selectedArtist}.</p>
+                <p className="mt-8 text-sm text-muted-foreground">No albums found for {effectiveArtist}.</p>
               )}
             </div>
           </div>

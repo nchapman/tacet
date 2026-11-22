@@ -9,7 +9,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router";
-import { tacetClient } from "@/api/client";
+import { TacetAPIError, tacetClient } from "@/api/client";
 import type { Album, QueuePosition, QueueSource } from "@/api/types";
 import { AlbumView } from "@/components/AlbumView";
 import { AlbumsView } from "@/components/AlbumsView";
@@ -27,6 +27,8 @@ import { AmbientBackdrop } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
 import { useBrowserPlayer } from "@/hooks/useBrowserPlayer";
 import { useTacet } from "@/hooks/useTacet";
+import { useScrollRestoration } from "@/lib/scroll";
+import { useSWR } from "@/lib/swr";
 import { albumPath, artistPath, decodeAlbumKey, SECTION_LABELS, SECTION_PATHS, sectionFromPathname } from "@/routes";
 
 interface AlbumLocationState {
@@ -60,9 +62,13 @@ export function App() {
   );
   const activeTransport = tacet.transport;
 
-  // Scroll the main pane back to top and clear album-page UltraBlur override when leaving an album.
+  const isSplitPane = location.pathname === "/artists" || location.pathname.startsWith("/artists/");
+
+  // Preserve & restore main-stage scroll position across Back/Forward and in-app back navigation.
+  useScrollRestoration(stageRef, { namespace: "stage", enabled: !isSplitPane });
+
+  // Clear album-page UltraBlur override when leaving an album route.
   useEffect(() => {
-    stageRef.current?.scrollTo({ top: 0 });
     if (!location.pathname.startsWith("/albums/")) {
       setAlbumAmbientArt(undefined);
     }
@@ -132,7 +138,6 @@ export function App() {
     [routerNavigate],
   );
 
-  const isSplitPane = location.pathname === "/artists" || location.pathname.startsWith("/artists/");
   const isAlbumPage = location.pathname.startsWith("/albums/");
   const ambientArtwork = (isAlbumPage && albumAmbientArt) || tacet.activeZone?.currentTrack?.artworkUrl;
   const ambientIntensity = isAlbumPage && albumAmbientArt ? "hero" : "subtle";
@@ -219,6 +224,7 @@ export function App() {
               path="/albums/:albumSlug/:albumKey"
               element={
                 <AlbumRoute
+                  libraryEtag={tacet.libraryStatus?.etag}
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
                   isPlaying={tacet.activeZone?.state === "playing"}
                   onAmbientArt={setAlbumAmbientArt}
@@ -233,6 +239,7 @@ export function App() {
               path="/albums/:albumKey"
               element={
                 <AlbumRoute
+                  libraryEtag={tacet.libraryStatus?.etag}
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
                   isPlaying={tacet.activeZone?.state === "playing"}
                   onAmbientArt={setAlbumAmbientArt}
@@ -495,6 +502,7 @@ function ArtistsRoute({
 }
 
 function AlbumRoute({
+  libraryEtag,
   currentTrackId,
   isPlaying,
   onAmbientArt,
@@ -503,6 +511,7 @@ function AlbumRoute({
   onPlay,
   onAdd,
 }: {
+  libraryEtag?: string;
   currentTrackId?: string;
   isPlaying: boolean;
   onAmbientArt?: (artworkUrl?: string) => void;
@@ -518,56 +527,46 @@ function AlbumRoute({
   const state = (location.state as AlbumLocationState | null) ?? null;
   const hint = state?.album && state.album.id === albumId ? state.album : undefined;
 
-  const [album, setAlbum] = useState<Album | null>(hint ?? null);
-  const [loading, setLoading] = useState(!hint);
-  const [errMsg, setErrMsg] = useState("");
+  const isOutOfLibraryQobuz = Boolean(hint && hint.source === "qobuz" && hint.inLibrary === false);
+
+  const albumQuery = useSWR<Album>(
+    albumId ? `album:${albumId}` : null,
+    (signal) => {
+      if (!albumId) return Promise.reject(new Error("Missing album id"));
+      if (isOutOfLibraryQobuz) {
+        return tacetClient.qobuzAlbum(albumId, { signal });
+      }
+      return tacetClient.getLibraryAlbum(albumId, { signal }).catch((err) => {
+        if (err instanceof TacetAPIError && err.status === 404 && albumId.startsWith("qobuz:")) {
+          return tacetClient.qobuzAlbum(albumId, { signal });
+        }
+        throw err;
+      });
+    },
+    {
+      staleTimeMs: 60_000,
+      version: albumId?.startsWith("local:") ? libraryEtag : undefined,
+      fallbackData: hint,
+    },
+  );
+
+  const album = albumQuery.data ?? null;
+  const errMsg = albumQuery.error;
 
   useEffect(() => {
     onAmbientArt?.(album?.artworkUrl);
   }, [album?.artworkUrl, onAmbientArt]);
 
-  const latestRef = useRef({ hint, pathname: location.pathname, state });
-  latestRef.current = { hint, pathname: location.pathname, state };
-
+  // Silently canonicalize short/legacy album URLs to /albums/<artist-album>/<key>.
+  const canonicalRef = useRef({ pathname: location.pathname, state });
+  canonicalRef.current = { pathname: location.pathname, state };
   useEffect(() => {
-    if (!albumId) return;
-    const { hint: curHint } = latestRef.current;
-    const ctrl = new AbortController();
-    setAlbum(curHint ?? null);
-    setLoading(!curHint);
-    setErrMsg("");
-
-    const isOutOfLibraryQobuz = curHint && curHint.source === "qobuz" && curHint.inLibrary === false;
-    const load = isOutOfLibraryQobuz
-      ? tacetClient.qobuzAlbum(albumId, { signal: ctrl.signal })
-      : tacetClient.getLibraryAlbum(albumId, { signal: ctrl.signal }).catch(async () => {
-          if (albumId.startsWith("qobuz:")) {
-            return tacetClient.qobuzAlbum(albumId, { signal: ctrl.signal });
-          }
-          throw new Error("Album not found in library");
-        });
-
-    void load
-      .then((full) => {
-        if (!ctrl.signal.aborted) {
-          setAlbum(full);
-          setLoading(false);
-          // Silently canonicalize short/legacy album URLs to /albums/<artist-album>/<key>
-          const canonical = albumPath(full.id, { artist: full.artist, title: full.title });
-          if (latestRef.current.pathname !== canonical) {
-            void routerNavigate(canonical, { replace: true, state: latestRef.current.state });
-          }
-        }
-      })
-      .catch((err) => {
-        if (!ctrl.signal.aborted) {
-          setErrMsg(err instanceof Error ? err.message : String(err));
-          setLoading(false);
-        }
-      });
-
-    return () => ctrl.abort();
-  }, [albumId, routerNavigate]);
+    if (!album) return;
+    const canonical = albumPath(album.id, { artist: album.artist, title: album.title });
+    if (canonicalRef.current.pathname !== canonical) {
+      void routerNavigate(canonical, { replace: true, state: canonicalRef.current.state });
+    }
+  }, [album, routerNavigate]);
 
   const handleBack = useCallback(() => {
     if (state?.fromApp) {
@@ -590,7 +589,7 @@ function AlbumRoute({
     );
   }
 
-  if (!album || loading) {
+  if (!album) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         Loading album…
@@ -608,12 +607,13 @@ function AlbumRoute({
       <AlbumView
         album={album}
         backLabel={state?.backLabel ?? "Albums"}
+        loadingTracks={albumQuery.isValidating && (album.tracks?.length ?? 0) === 0}
         currentTrackId={currentTrackId}
         isPlaying={isPlaying}
         onBack={handleBack}
         onOpenAlbum={onOpenAlbum}
         onOpenArtist={onOpenArtist}
-        onAlbumUpdated={setAlbum}
+        onAlbumUpdated={albumQuery.mutate}
         onPlay={onPlay}
         onAdd={onAdd}
       />
