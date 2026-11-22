@@ -1,7 +1,16 @@
 import { Volume2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router";
 import { tacetClient } from "@/api/client";
-import type { Album } from "@/api/types";
+import type { Album, QueuePosition, QueueSource } from "@/api/types";
 import { AlbumView } from "@/components/AlbumView";
 import { AlbumsView } from "@/components/AlbumsView";
 import { ArtistsView } from "@/components/ArtistsView";
@@ -17,39 +26,27 @@ import { SongsView } from "@/components/SongsView";
 import { Button } from "@/components/ui/button";
 import { useBrowserPlayer } from "@/hooks/useBrowserPlayer";
 import { useTacet } from "@/hooks/useTacet";
+import { albumPath, artistPath, SECTION_LABELS, SECTION_PATHS, sectionFromPathname } from "@/routes";
 
-function initialSection(): AppSection {
-  const params = new URLSearchParams(window.location.search);
-  return params.get("tab") === "qobuz" ? "qobuz" : "home";
+interface AlbumLocationState {
+  album?: Album;
+  backLabel?: string;
+  fromApp?: boolean;
 }
-
-const SECTION_LABELS: Record<AppSection, string> = {
-  home: "Home",
-  search: "Search",
-  albums: "Albums",
-  artists: "Artists",
-  songs: "Songs",
-  qobuz: "Qobuz",
-  settings: "Settings",
-};
 
 export function App() {
   const browserPlayer = useBrowserPlayer();
   const tacet = useTacet(browserPlayer.zoneId);
 
-  const [section, setSection] = useState<AppSection>(initialSection);
-  const [searchQuery, setSearchQuery] = useState("");
+  const location = useLocation();
+  const routerNavigate = useNavigate();
+  const section = sectionFromPathname(location.pathname);
+
   const [searchFocusNonce, setSearchFocusNonce] = useState(0);
-  const [selectedArtist, setSelectedArtist] = useState<string | undefined>(undefined);
-  const [selectedArtistQobuzId, setSelectedArtistQobuzId] = useState<number | undefined>(undefined);
-  const [openAlbum, setOpenAlbum] = useState<Album | null>(null);
-  const [albumLoading, setAlbumLoading] = useState(false);
-  const [albumErr, setAlbumErr] = useState("");
   const [queueOpen, setQueueOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
 
   const stageRef = useRef<HTMLElement | null>(null);
-  const albumAbortRef = useRef<AbortController | null>(null);
 
   const activeState = tacet.activeZone?.state;
   const activeHasPlayable = Boolean(
@@ -61,31 +58,43 @@ export function App() {
   );
   const activeTransport = tacet.transport;
 
-  const navigate = useCallback((next: AppSection) => {
-    albumAbortRef.current?.abort();
-    setOpenAlbum(null);
-    setAlbumLoading(false);
-    setAlbumErr("");
-    setSection(next);
-    if (next === "search") {
-      setSearchFocusNonce((n) => n + 1);
-    }
+  // Scroll the main pane back to top whenever the route pathname changes.
+  useEffect(() => {
     stageRef.current?.scrollTo({ top: 0 });
-  }, []);
+  }, [location.pathname]);
+
+  const navigateSection = useCallback(
+    (next: AppSection) => {
+      if (next === "search") {
+        setSearchFocusNonce((n) => n + 1);
+      }
+      const target = SECTION_PATHS[next];
+      if (location.pathname !== target) {
+        void routerNavigate(target);
+      } else {
+        stageRef.current?.scrollTo({ top: 0 });
+      }
+    },
+    [location.pathname, routerNavigate],
+  );
 
   // Global keyboard shortcuts: Space toggles play/pause, Cmd/Ctrl+K or '/' opens Search.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        navigate("search");
+        navigateSection("search");
         return;
       }
       const tag = (e.target as HTMLElement | null)?.tagName;
-      const inInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target as HTMLElement | null)?.isContentEditable;
+      const inInput =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        (e.target as HTMLElement | null)?.isContentEditable;
       if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && !inInput) {
         e.preventDefault();
-        navigate("search");
+        navigateSection("search");
         return;
       }
       if (e.code !== "Space" || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -96,55 +105,28 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeState, activeHasPlayable, activeTransport, navigate]);
+  }, [activeState, activeHasPlayable, activeTransport, navigateSection]);
 
-  useEffect(() => () => albumAbortRef.current?.abort(), []);
+  const openAlbumById = useCallback(
+    (albumId: string, hint?: Album) => {
+      const state: AlbumLocationState = {
+        album: hint,
+        backLabel: SECTION_LABELS[section],
+        fromApp: true,
+      };
+      void routerNavigate(albumPath(albumId), { state });
+    },
+    [routerNavigate, section],
+  );
 
-  const openAlbumById = useCallback(async (albumId: string, hint?: Album) => {
-    albumAbortRef.current?.abort();
-    const ctrl = new AbortController();
-    albumAbortRef.current = ctrl;
-    setAlbumLoading(true);
-    setAlbumErr("");
-    if (hint) {
-      setOpenAlbum(hint);
-      stageRef.current?.scrollTo({ top: 0 });
-    }
-    try {
-      const isOutOfLibraryQobuz =
-        hint && hint.source === "qobuz" && hint.inLibrary === false;
-      const full = isOutOfLibraryQobuz
-        ? await tacetClient.qobuzAlbum(albumId, { signal: ctrl.signal })
-        : await tacetClient.getLibraryAlbum(albumId, { signal: ctrl.signal }).catch(async () => {
-            if (albumId.startsWith("qobuz:")) {
-              return tacetClient.qobuzAlbum(albumId, { signal: ctrl.signal });
-            }
-            throw new Error("Album not found in library");
-          });
-      if (!ctrl.signal.aborted) {
-        setOpenAlbum(full);
-        stageRef.current?.scrollTo({ top: 0 });
-      }
-    } catch (err) {
-      if (!ctrl.signal.aborted) {
-        setAlbumErr(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      if (!ctrl.signal.aborted) setAlbumLoading(false);
-    }
-  }, []);
+  const openArtist = useCallback(
+    (artistName: string, qobuzArtistId?: number) => {
+      void routerNavigate(artistPath(artistName, qobuzArtistId));
+    },
+    [routerNavigate],
+  );
 
-  const openArtist = useCallback((artistName: string, qobuzArtistId?: number) => {
-    albumAbortRef.current?.abort();
-    setOpenAlbum(null);
-    setAlbumLoading(false);
-    setAlbumErr("");
-    setSelectedArtist(artistName);
-    setSelectedArtistQobuzId(qobuzArtistId);
-    setSection("artists");
-  }, []);
-
-  const isSplitPane = !openAlbum && section === "artists";
+  const isSplitPane = location.pathname === "/artists" || location.pathname.startsWith("/artists/");
 
   return (
     <div className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
@@ -169,7 +151,12 @@ export function App() {
         <Sidebar
           activeSection={section}
           libraryStatus={tacet.libraryStatus}
-          onNavigate={navigate}
+          onNavigate={(next) => {
+            if (next === "search") setSearchFocusNonce((n) => n + 1);
+            if (location.pathname === SECTION_PATHS[next]) {
+              stageRef.current?.scrollTo({ top: 0 });
+            }
+          }}
         />
 
         <main
@@ -180,101 +167,128 @@ export function App() {
               : "flex-1 min-w-0 min-h-0 overflow-y-auto"
           }
         >
-          {albumErr && (
-            <div role="alert" className="m-4 sm:mx-8 sm:mt-4 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
-              {albumErr}
-            </div>
-          )}
-
-          {openAlbum ? (
-            <AlbumView
-              album={openAlbum}
-              backLabel={SECTION_LABELS[section]}
-              currentTrackId={tacet.activeZone?.currentTrack?.id}
-              isPlaying={tacet.activeZone?.state === "playing"}
-              onBack={() => {
-                albumAbortRef.current?.abort();
-                setOpenAlbum(null);
-                setAlbumLoading(false);
-                setAlbumErr("");
-              }}
-              onOpenAlbum={(id) => void openAlbumById(id)}
-              onOpenArtist={openArtist}
-              onAlbumUpdated={(updated) => setOpenAlbum(updated)}
-              onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-              onAdd={(src, pos) => void tacet.addSource(src, pos)}
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <HomeRoute
+                  libraryStatus={tacet.libraryStatus}
+                  onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
+                  onNavigate={navigateSection}
+                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+                />
+              }
             />
-          ) : albumLoading ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              Loading album…
-            </div>
-          ) : section === "home" ? (
-            <HomeView
-              libraryStatus={tacet.libraryStatus}
-              onOpenAlbum={(alb) => void openAlbumById(alb.id, alb)}
-              onNavigate={navigate}
-              onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+            <Route
+              path="/search"
+              element={
+                <SearchRoute
+                  focusNonce={searchFocusNonce}
+                  qobuzStatus={tacet.qobuzStatus}
+                  currentTrackId={tacet.activeZone?.currentTrack?.id}
+                  onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
+                  onOpenArtist={openArtist}
+                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                />
+              }
             />
-          ) : section === "search" ? (
-            <SearchView
-              query={searchQuery}
-              onQueryChange={setSearchQuery}
-              focusNonce={searchFocusNonce}
-              qobuzStatus={tacet.qobuzStatus}
-              currentTrackId={tacet.activeZone?.currentTrack?.id}
-              onOpenAlbum={(alb) => void openAlbumById(alb.id, alb)}
-              onOpenArtist={openArtist}
-              onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-              onAdd={(src, pos) => void tacet.addSource(src, pos)}
+            <Route
+              path="/albums"
+              element={
+                <AlbumsView
+                  libraryStatus={tacet.libraryStatus}
+                  onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
+                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+                />
+              }
             />
-          ) : section === "albums" ? (
-            <AlbumsView
-              libraryStatus={tacet.libraryStatus}
-              onOpenAlbum={(alb) => void openAlbumById(alb.id, alb)}
-              onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+            <Route
+              path="/albums/:albumId"
+              element={
+                <AlbumRoute
+                  currentTrackId={tacet.activeZone?.currentTrack?.id}
+                  isPlaying={tacet.activeZone?.state === "playing"}
+                  onOpenAlbum={(id) => openAlbumById(id)}
+                  onOpenArtist={openArtist}
+                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                />
+              }
             />
-          ) : section === "artists" ? (
-            <ArtistsView
-              libraryStatus={tacet.libraryStatus}
-              qobuzStatus={tacet.qobuzStatus}
-              initialArtist={selectedArtist}
-              initialQobuzArtistId={selectedArtistQobuzId}
-              onOpenAlbum={(alb) => void openAlbumById(alb.id, alb)}
-              onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-              onAdd={(src, pos) => void tacet.addSource(src, pos)}
+            <Route
+              path="/artists"
+              element={
+                <ArtistsRoute
+                  libraryStatus={tacet.libraryStatus}
+                  qobuzStatus={tacet.qobuzStatus}
+                  onSelectArtist={(name) => openArtist(name)}
+                  onBackToArtists={() => void routerNavigate("/artists")}
+                  onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
+                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                />
+              }
             />
-          ) : section === "songs" ? (
-            <SongsView
-              libraryStatus={tacet.libraryStatus}
-              currentTrackId={tacet.activeZone?.currentTrack?.id}
-              onOpenAlbumId={(id) => void openAlbumById(id)}
-              onOpenArtist={openArtist}
-              onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-              onAdd={(src, pos) => void tacet.addSource(src, pos)}
+            <Route
+              path="/artists/:artistName"
+              element={
+                <ArtistsRoute
+                  libraryStatus={tacet.libraryStatus}
+                  qobuzStatus={tacet.qobuzStatus}
+                  onSelectArtist={(name) => openArtist(name)}
+                  onBackToArtists={() => void routerNavigate("/artists")}
+                  onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
+                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                />
+              }
             />
-          ) : section === "qobuz" ? (
-            <QobuzView
-              status={tacet.qobuzStatus}
-              libraryStatus={tacet.libraryStatus}
-              onStatusChange={tacet.setQobuzStatus}
-              onOpenAlbum={(alb) => void openAlbumById(alb.id, alb)}
-              onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-              onOpenSearch={() => navigate("search")}
+            <Route
+              path="/songs"
+              element={
+                <SongsView
+                  libraryStatus={tacet.libraryStatus}
+                  currentTrackId={tacet.activeZone?.currentTrack?.id}
+                  onOpenAlbumId={(id) => openAlbumById(id)}
+                  onOpenArtist={openArtist}
+                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                />
+              }
             />
-          ) : (
-            <SettingsView
-              libraryStatus={tacet.libraryStatus}
-              qobuzStatus={tacet.qobuzStatus}
-              streamMode={tacet.settings.streamMode}
-              zones={tacet.zones}
-              discovering={tacet.discovering}
-              onStreamModeChange={(mode) => void tacet.setStreamMode(mode)}
-              onQobuzStatusChange={tacet.setQobuzStatus}
-              onDiscover={() => void tacet.discoverZones()}
-              onOpenConnect={() => setConnectOpen(true)}
-              onGoToQobuz={() => navigate("qobuz")}
+            <Route
+              path="/qobuz"
+              element={
+                <QobuzView
+                  status={tacet.qobuzStatus}
+                  libraryStatus={tacet.libraryStatus}
+                  onStatusChange={tacet.setQobuzStatus}
+                  onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
+                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+                  onOpenSearch={() => navigateSection("search")}
+                />
+              }
             />
-          )}
+            <Route
+              path="/settings"
+              element={
+                <SettingsView
+                  libraryStatus={tacet.libraryStatus}
+                  qobuzStatus={tacet.qobuzStatus}
+                  streamMode={tacet.settings.streamMode}
+                  zones={tacet.zones}
+                  discovering={tacet.discovering}
+                  onStreamModeChange={(mode) => void tacet.setStreamMode(mode)}
+                  onQobuzStatusChange={tacet.setQobuzStatus}
+                  onDiscover={() => void tacet.discoverZones()}
+                  onOpenConnect={() => setConnectOpen(true)}
+                  onGoToQobuz={() => navigateSection("qobuz")}
+                />
+              }
+            />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
         </main>
 
         {/* Spotify-style toggleable right-side Queue Drawer (desktop) */}
@@ -307,12 +321,17 @@ export function App() {
         onDiscover={() => void tacet.discoverZones()}
         onOpenConnect={() => setConnectOpen(true)}
         onToggleQueue={() => setQueueOpen((v) => !v)}
-        onOpenAlbum={(albumId) => void openAlbumById(albumId)}
+        onOpenAlbum={(albumId) => openAlbumById(albumId)}
         onOpenArtist={openArtist}
       />
 
       {/* Mobile Bottom Navigation Bar */}
-      <MobileBottomNav activeSection={section} onNavigate={navigate} />
+      <MobileBottomNav
+        activeSection={section}
+        onNavigate={(next) => {
+          if (next === "search") setSearchFocusNonce((n) => n + 1);
+        }}
+      />
 
       {/* Mobile Queue Bottom Sheet */}
       <MobileQueueSheet
@@ -333,5 +352,226 @@ export function App() {
         onConnect={(url) => tacet.connectZone(url)}
       />
     </div>
+  );
+}
+
+function HomeRoute({
+  libraryStatus,
+  onOpenAlbum,
+  onNavigate,
+  onPlay,
+}: {
+  libraryStatus: ReturnType<typeof useTacet>["libraryStatus"];
+  onOpenAlbum: (album: Album) => void;
+  onNavigate: (section: AppSection) => void;
+  onPlay: (source: QueueSource, startIndex?: number) => void;
+}) {
+  const [searchParams] = useSearchParams();
+  // Backward-compatible redirect for legacy /?tab=qobuz OAuth callback URLs.
+  if (searchParams.get("tab") === "qobuz") {
+    return <Navigate to="/qobuz" replace />;
+  }
+  return (
+    <HomeView
+      libraryStatus={libraryStatus}
+      onOpenAlbum={onOpenAlbum}
+      onNavigate={onNavigate}
+      onPlay={onPlay}
+    />
+  );
+}
+
+function SearchRoute({
+  focusNonce,
+  qobuzStatus,
+  currentTrackId,
+  onOpenAlbum,
+  onOpenArtist,
+  onPlay,
+  onAdd,
+}: {
+  focusNonce: number;
+  qobuzStatus: ReturnType<typeof useTacet>["qobuzStatus"];
+  currentTrackId?: string;
+  onOpenAlbum: (album: Album) => void;
+  onOpenArtist: (artistName: string, qobuzArtistId?: number) => void;
+  onPlay: (source: QueueSource, startIndex?: number) => void;
+  onAdd: (source: QueueSource, position?: QueuePosition) => void;
+}) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const query = searchParams.get("q") ?? "";
+
+  const handleQueryChange = useCallback(
+    (next: string) => {
+      if (next) {
+        setSearchParams({ q: next }, { replace: true });
+      } else {
+        setSearchParams({}, { replace: true });
+      }
+    },
+    [setSearchParams],
+  );
+
+  return (
+    <SearchView
+      query={query}
+      onQueryChange={handleQueryChange}
+      focusNonce={focusNonce}
+      qobuzStatus={qobuzStatus}
+      currentTrackId={currentTrackId}
+      onOpenAlbum={onOpenAlbum}
+      onOpenArtist={onOpenArtist}
+      onPlay={onPlay}
+      onAdd={onAdd}
+    />
+  );
+}
+
+function ArtistsRoute({
+  libraryStatus,
+  qobuzStatus,
+  onSelectArtist,
+  onBackToArtists,
+  onOpenAlbum,
+  onPlay,
+  onAdd,
+}: {
+  libraryStatus: ReturnType<typeof useTacet>["libraryStatus"];
+  qobuzStatus: ReturnType<typeof useTacet>["qobuzStatus"];
+  onSelectArtist: (artistName: string) => void;
+  onBackToArtists: () => void;
+  onOpenAlbum: (album: Album) => void;
+  onPlay: (source: QueueSource, startIndex?: number) => void;
+  onAdd: (source: QueueSource, position?: QueuePosition) => void;
+}) {
+  const { artistName } = useParams<{ artistName?: string }>();
+  const [searchParams] = useSearchParams();
+  const rawQobuzId = searchParams.get("qobuzId");
+  const parsedId = rawQobuzId ? Number(rawQobuzId) : Number.NaN;
+  const qobuzArtistId = Number.isFinite(parsedId) && parsedId > 0 ? parsedId : undefined;
+
+  return (
+    <ArtistsView
+      libraryStatus={libraryStatus}
+      qobuzStatus={qobuzStatus}
+      initialArtist={artistName}
+      initialQobuzArtistId={qobuzArtistId}
+      onSelectArtist={onSelectArtist}
+      onBackToArtists={onBackToArtists}
+      onOpenAlbum={onOpenAlbum}
+      onPlay={onPlay}
+      onAdd={onAdd}
+    />
+  );
+}
+
+function AlbumRoute({
+  currentTrackId,
+  isPlaying,
+  onOpenAlbum,
+  onOpenArtist,
+  onPlay,
+  onAdd,
+}: {
+  currentTrackId?: string;
+  isPlaying: boolean;
+  onOpenAlbum: (albumId: string) => void;
+  onOpenArtist: (artistName: string, qobuzArtistId?: number) => void;
+  onPlay: (source: QueueSource, startIndex?: number) => void;
+  onAdd: (source: QueueSource, position?: QueuePosition) => void;
+}) {
+  const { albumId } = useParams<{ albumId: string }>();
+  const location = useLocation();
+  const routerNavigate = useNavigate();
+  const state = (location.state as AlbumLocationState | null) ?? null;
+  const hint = state?.album && state.album.id === albumId ? state.album : undefined;
+
+  const [album, setAlbum] = useState<Album | null>(hint ?? null);
+  const [loading, setLoading] = useState(!hint);
+  const [errMsg, setErrMsg] = useState("");
+
+  useEffect(() => {
+    if (!albumId) return;
+    const ctrl = new AbortController();
+    setAlbum(hint ?? null);
+    setLoading(!hint);
+    setErrMsg("");
+
+    const isOutOfLibraryQobuz = hint && hint.source === "qobuz" && hint.inLibrary === false;
+    const load = isOutOfLibraryQobuz
+      ? tacetClient.qobuzAlbum(albumId, { signal: ctrl.signal })
+      : tacetClient.getLibraryAlbum(albumId, { signal: ctrl.signal }).catch(async () => {
+          if (albumId.startsWith("qobuz:")) {
+            return tacetClient.qobuzAlbum(albumId, { signal: ctrl.signal });
+          }
+          throw new Error("Album not found in library");
+        });
+
+    void load
+      .then((full) => {
+        if (!ctrl.signal.aborted) {
+          setAlbum(full);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!ctrl.signal.aborted) {
+          setErrMsg(err instanceof Error ? err.message : String(err));
+          setLoading(false);
+        }
+      });
+
+    return () => ctrl.abort();
+  }, [albumId, hint]);
+
+  const handleBack = useCallback(() => {
+    if (state?.fromApp) {
+      void routerNavigate(-1);
+    } else {
+      void routerNavigate("/albums");
+    }
+  }, [routerNavigate, state?.fromApp]);
+
+  if (errMsg && !album) {
+    return (
+      <div className="p-6 sm:p-8 space-y-4">
+        <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
+          {errMsg}
+        </div>
+        <Button type="button" variant="secondary" size="sm" onClick={handleBack}>
+          Back to Albums
+        </Button>
+      </div>
+    );
+  }
+
+  if (!album || loading) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        Loading album…
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {errMsg && (
+        <div role="alert" className="m-4 sm:mx-8 sm:mt-4 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
+          {errMsg}
+        </div>
+      )}
+      <AlbumView
+        album={album}
+        backLabel={state?.backLabel ?? "Albums"}
+        currentTrackId={currentTrackId}
+        isPlaying={isPlaying}
+        onBack={handleBack}
+        onOpenAlbum={onOpenAlbum}
+        onOpenArtist={onOpenArtist}
+        onAlbumUpdated={setAlbum}
+        onPlay={onPlay}
+        onAdd={onAdd}
+      />
+    </>
   );
 }

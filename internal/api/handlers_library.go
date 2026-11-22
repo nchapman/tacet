@@ -513,7 +513,7 @@ func (s *Server) handleQobuzOAuthCallback(w http.ResponseWriter, r *http.Request
 	}
 	s.manager.Publish("qobuz.status", st)
 	s.triggerQobuzLibrarySyncAsync()
-	http.Redirect(w, r, "/?tab=qobuz", http.StatusFound)
+	http.Redirect(w, r, "/qobuz", http.StatusFound)
 }
 
 func (s *Server) handleQobuzLogin(w http.ResponseWriter, r *http.Request) {

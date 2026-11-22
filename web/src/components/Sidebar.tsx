@@ -1,13 +1,15 @@
 import { Compass, Disc3, Home, ListMusic, Loader2, Search, Settings, Users } from "lucide-react";
+import { Link } from "react-router";
 import type { LibraryStatus } from "@/api/types";
 import { cn } from "@/lib/utils";
+import { SECTION_PATHS } from "@/routes";
 
 export type AppSection = "home" | "search" | "albums" | "artists" | "songs" | "qobuz" | "settings";
 
 interface SidebarProps {
   activeSection: AppSection;
   libraryStatus: LibraryStatus | null;
-  onNavigate: (section: AppSection) => void;
+  onNavigate?: (section: AppSection) => void;
 }
 
 const LIBRARY_ITEMS: Array<{ id: AppSection; label: string; icon: typeof Home }> = [
@@ -21,20 +23,20 @@ export function Sidebar({ activeSection, libraryStatus, onNavigate }: SidebarPro
     <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-white/[0.06] bg-[#0c0c0f] select-none">
       {/* Brand header — optical centers aligned with nav icons (30px) and text labels (52px) */}
       <div className="flex items-center justify-between pl-[18px] pr-3 pt-4 pb-3 shrink-0">
-        <button
-          type="button"
-          onClick={() => onNavigate("home")}
+        <Link
+          to={SECTION_PATHS.home}
+          onClick={() => onNavigate?.("home")}
           className="flex items-center gap-2.5 text-left cursor-pointer group"
         >
           <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-white/15 to-white/[0.04] border border-white/10 text-white">
             <Disc3 className="h-3.5 w-3.5 transition-transform duration-500 group-hover:rotate-45" />
           </span>
           <span className="text-[15px] font-semibold tracking-tight text-foreground">tacet</span>
-        </button>
+        </Link>
 
-        <button
-          type="button"
-          onClick={() => onNavigate("settings")}
+        <Link
+          to={SECTION_PATHS.settings}
+          onClick={() => onNavigate?.("settings")}
           aria-label="Settings"
           aria-current={activeSection === "settings" ? "page" : undefined}
           title="Settings"
@@ -46,24 +48,26 @@ export function Sidebar({ activeSection, libraryStatus, onNavigate }: SidebarPro
           )}
         >
           <Settings className="h-4 w-4" />
-        </button>
+        </Link>
       </div>
 
       {/* Scrollable nav groups */}
       <nav aria-label="Main navigation" className="flex-1 overflow-y-auto px-3 pt-1 space-y-5">
         <div className="space-y-0.5">
           <NavItem
+            to={SECTION_PATHS.home}
             active={activeSection === "home"}
             icon={Home}
             label="Home"
-            onClick={() => onNavigate("home")}
+            onClick={() => onNavigate?.("home")}
           />
           <NavItem
+            to={SECTION_PATHS.search}
             active={activeSection === "search"}
             icon={Search}
             label="Search"
             shortcut="⌘K"
-            onClick={() => onNavigate("search")}
+            onClick={() => onNavigate?.("search")}
           />
         </div>
 
@@ -74,10 +78,11 @@ export function Sidebar({ activeSection, libraryStatus, onNavigate }: SidebarPro
           {LIBRARY_ITEMS.map((item) => (
             <NavItem
               key={item.id}
+              to={SECTION_PATHS[item.id]}
               active={activeSection === item.id}
               icon={item.icon}
               label={item.label}
-              onClick={() => onNavigate(item.id)}
+              onClick={() => onNavigate?.(item.id)}
             />
           ))}
         </div>
@@ -87,10 +92,11 @@ export function Sidebar({ activeSection, libraryStatus, onNavigate }: SidebarPro
             Discover
           </div>
           <NavItem
+            to={SECTION_PATHS.qobuz}
             active={activeSection === "qobuz"}
             icon={Compass}
             label="Qobuz"
-            onClick={() => onNavigate("qobuz")}
+            onClick={() => onNavigate?.("qobuz")}
           />
         </div>
       </nav>
@@ -109,21 +115,23 @@ export function Sidebar({ activeSection, libraryStatus, onNavigate }: SidebarPro
 }
 
 function NavItem({
+  to,
   active,
   icon: Icon,
   label,
   shortcut,
   onClick,
 }: {
+  to: string;
   active: boolean;
   icon: typeof Home;
   label: string;
   shortcut?: string;
-  onClick: () => void;
+  onClick?: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <Link
+      to={to}
       aria-current={active ? "page" : undefined}
       onClick={onClick}
       className={cn(
@@ -140,7 +148,7 @@ function NavItem({
           {shortcut}
         </kbd>
       )}
-    </button>
+    </Link>
   );
 }
 
@@ -157,7 +165,7 @@ export function MobileBottomNav({
   onNavigate,
 }: {
   activeSection: AppSection;
-  onNavigate: (section: AppSection) => void;
+  onNavigate?: (section: AppSection) => void;
 }) {
   return (
     <nav
@@ -169,11 +177,11 @@ export function MobileBottomNav({
           const active = activeSection === item.id || (item.id === "albums" && activeSection === "songs");
           const Icon = item.icon;
           return (
-            <button
+            <Link
               key={item.id}
-              type="button"
+              to={SECTION_PATHS[item.id]}
               aria-current={active ? "page" : undefined}
-              onClick={() => onNavigate(item.id)}
+              onClick={() => onNavigate?.(item.id)}
               className={cn(
                 "flex flex-col items-center justify-center gap-1 text-[10.5px] font-medium transition-colors cursor-pointer",
                 active ? "text-foreground" : "text-muted-foreground",
@@ -181,7 +189,7 @@ export function MobileBottomNav({
             >
               <Icon className={cn("h-5 w-5", active && "text-white")} />
               <span>{item.label}</span>
-            </button>
+            </Link>
           );
         })}
       </div>

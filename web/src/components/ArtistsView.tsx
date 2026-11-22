@@ -21,6 +21,8 @@ interface ArtistsViewProps {
   qobuzStatus: QobuzStatus | null;
   initialArtist?: string;
   initialQobuzArtistId?: number;
+  onSelectArtist?: (artistName: string) => void;
+  onBackToArtists?: () => void;
   onOpenAlbum: (album: Album) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
@@ -47,6 +49,8 @@ export function ArtistsView({
   qobuzStatus,
   initialArtist,
   initialQobuzArtistId,
+  onSelectArtist,
+  onBackToArtists,
   onOpenAlbum,
   onPlay,
   onAdd,
@@ -72,6 +76,9 @@ export function ArtistsView({
       setSelectedArtist(initialArtist);
       setSelectedQobuzId(initialQobuzArtistId);
       setMobileDetailOpen(true);
+    } else {
+      setSelectedQobuzId(undefined);
+      setMobileDetailOpen(false);
     }
   }, [initialArtist, initialQobuzArtistId]);
 
@@ -221,6 +228,7 @@ export function ArtistsView({
                     setSelectedArtist(artist.name);
                     setSelectedQobuzId(undefined);
                     setMobileDetailOpen(true);
+                    onSelectArtist?.(artist.name);
                   }}
                   className={cn(
                     "flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors cursor-pointer",
@@ -266,7 +274,10 @@ export function ArtistsView({
                 variant="ghost"
                 size="sm"
                 className="-ml-2"
-                onClick={() => setMobileDetailOpen(false)}
+                onClick={() => {
+                  setMobileDetailOpen(false);
+                  onBackToArtists?.();
+                }}
               >
                 <ArrowLeft className="h-4 w-4" />
                 Artists
