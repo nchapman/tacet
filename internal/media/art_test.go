@@ -88,6 +88,9 @@ func TestServeCoverArt_ImmutableHashResizeAndDiskCache(t *testing.T) {
 	if cc := resp.Header.Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
 		t.Fatalf("Cache-Control = %q, want immutable", cc)
 	}
+	if vary := resp.Header.Get("Vary"); !strings.Contains(vary, "Accept") {
+		t.Fatalf("Vary = %q, want Accept", vary)
+	}
 	etag := resp.Header.Get("ETag")
 	if etag == "" {
 		t.Fatal("expected ETag header on content-hashed art")
@@ -175,7 +178,7 @@ func TestArtTranscode_NoUpscaleAndCoalescing(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		data, mime, hit := cache.getOrBuild(hash, artSizeSmall, load)
+		data, mime, hit := cache.getOrBuild(hash, artSizeSmall, artFormatJPEG, load)
 		if !hit || mime != "image/jpeg" || len(data) == 0 {
 			t.Errorf("unexpected leader result: hit=%v mime=%q len=%d", hit, mime, len(data))
 		}
@@ -186,7 +189,7 @@ func TestArtTranscode_NoUpscaleAndCoalescing(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			data, mime, hit := cache.getOrBuild(hash, artSizeSmall, load)
+			data, mime, hit := cache.getOrBuild(hash, artSizeSmall, artFormatJPEG, load)
 			if !hit || mime != "image/jpeg" || len(data) == 0 {
 				t.Errorf("unexpected coalesced result: hit=%v mime=%q len=%d", hit, mime, len(data))
 			}
@@ -197,5 +200,44 @@ func TestArtTranscode_NoUpscaleAndCoalescing(t *testing.T) {
 
 	if calls.Load() != 1 {
 		t.Fatalf("expected 1 coalesced loadRaw call, got %d", calls.Load())
+	}
+}
+
+func TestAcceptsWebPAndPPM(t *testing.T) {
+	cases := []struct {
+		accept string
+		want   bool
+	}{
+		{"", false},
+		{"*/*", false},
+		{"image/jpeg, image/png, */*", false},
+		{"image/avif,image/webp,image/apng,*/*;q=0.8", true},
+		{"image/webp", true},
+		{"image/webp;q=0", false},
+		{"image/webp;q=0.0, image/jpeg", false},
+		{"IMAGE/WEBP;q=0.9", true},
+	}
+	for _, tc := range cases {
+		if got := acceptsWebP(tc.accept); got != tc.want {
+			t.Errorf("acceptsWebP(%q) = %v, want %v", tc.accept, got, tc.want)
+		}
+	}
+
+	img := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	img.SetRGBA(0, 0, color.RGBA{R: 10, G: 20, B: 30, A: 255})
+	img.SetRGBA(1, 0, color.RGBA{R: 40, G: 50, B: 60, A: 255})
+	ppm := encodePPM(img)
+	want := append([]byte("P6\n2 1\n255\n"), 10, 20, 30, 40, 50, 60)
+	if !bytes.Equal(ppm, want) {
+		t.Fatalf("encodePPM mismatch: got %v, want %v", ppm, want)
+	}
+
+	// If cwebp is installed on the host, verify real WebP transcoding end-to-end.
+	if enc := DetectArtEncoders(); enc.CWebPPath != "" {
+		raw := makeTestPNG(t, 300, 300)
+		data, mime, ok := transcodeArt(raw, artSizeSmall, artFormatWebP, enc)
+		if !ok || mime != "image/webp" || len(data) < 12 || string(data[8:12]) != "WEBP" {
+			t.Fatalf("cwebp transcode failed: ok=%v mime=%q len=%d", ok, mime, len(data))
+		}
 	}
 }

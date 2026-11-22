@@ -35,7 +35,7 @@ LABEL org.opencontainers.image.title="tacet" \
       org.opencontainers.image.description="Headless UPnP/DLNA control point and multi-zone bit-perfect hi-res audio server" \
       org.opencontainers.image.source="${OCI_SOURCE}"
 
-RUN apk add --no-cache ca-certificates ffmpeg su-exec tzdata \
+RUN apk add --no-cache ca-certificates ffmpeg libjpeg-turbo-utils libwebp-tools su-exec tzdata \
     && addgroup -g 1000 tacet \
     && adduser -D -u 1000 -G tacet -h /data tacet \
     && mkdir -p /data /music \

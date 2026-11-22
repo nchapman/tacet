@@ -165,7 +165,10 @@ func (h *Handler) serveArt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bucket := parseArtBucket(r.URL.Query().Get("w"))
+	format := h.art.negotiateFormat(r.Header.Get("Accept"))
 	hashed := isArtHash(id)
+
+	w.Header().Add("Vary", "Accept")
 
 	var (
 		data     []byte
@@ -173,19 +176,19 @@ func (h *Handler) serveArt(w http.ResponseWriter, r *http.Request) {
 		ok       bool
 	)
 	if hashed {
-		etag := fmt.Sprintf(`"art-%s-%d"`, id, bucket)
+		etag := fmt.Sprintf(`"art-%s-%d-%s"`, id, bucket, format.ext)
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		w.Header().Set("ETag", etag)
 		if r.Header.Get("If-None-Match") == etag {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
-		data, mimeType, ok = h.art.getOrBuild(id, bucket, func() ([]byte, string, bool) {
+		data, mimeType, ok = h.art.getOrBuild(id, bucket, format, func() ([]byte, string, bool) {
 			return h.catalog.CoverArtByHash(id)
 		})
 	} else {
 		w.Header().Set("Cache-Control", "public, max-age=86400")
-		data, mimeType, ok = h.art.getOrBuild("", bucket, func() ([]byte, string, bool) {
+		data, mimeType, ok = h.art.getOrBuild("", bucket, format, func() ([]byte, string, bool) {
 			return h.catalog.CoverArt(id)
 		})
 	}
