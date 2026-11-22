@@ -215,11 +215,11 @@ export const AmbientBackdrop = memo(function AmbientBackdrop({ artworkUrl, class
         className={cn(
           "absolute inset-0",
           intensity === "full"
-            ? "bg-gradient-to-b from-black/20 via-[#09090b]/45 to-[#09090b]/88"
-            : "bg-gradient-to-b from-black/15 via-[#09090b]/50 to-[#09090b]/90",
+            ? "bg-gradient-to-b from-black/20 via-[#09090b]/42 to-[#09090b]/76"
+            : "bg-gradient-to-b from-black/15 via-[#09090b]/46 to-[#09090b]/78",
         )}
       />
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,transparent_0%,rgba(9,9,11,0.38)_75%,rgba(9,9,11,0.72)_100%)]" />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,transparent_0%,rgba(9,9,11,0.34)_75%,rgba(9,9,11,0.62)_100%)]" />
 
       {/* Subtle anti-banding film grain */}
       <div

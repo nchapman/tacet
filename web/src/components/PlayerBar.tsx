@@ -163,7 +163,7 @@ export const PlayerBar = memo(function PlayerBar({
       {/* ==================== DESKTOP PLAYER BAR (>= lg) ==================== */}
       <footer
         aria-label="Player controls"
-        className="hidden lg:grid grid-cols-[minmax(220px,1fr)_minmax(340px,540px)_minmax(240px,1fr)] items-center gap-4 h-[84px] shrink-0 border-t border-white/[0.08] bg-black/35 px-4 backdrop-blur-2xl relative overflow-hidden select-none"
+        className="hidden lg:grid grid-cols-[minmax(220px,1fr)_minmax(340px,540px)_minmax(240px,1fr)] items-center gap-4 h-[84px] shrink-0 border-t border-white/[0.08] bg-black/25 px-4 backdrop-blur-2xl backdrop-saturate-150 relative overflow-hidden select-none"
       >
         {/* Left: Track artwork, metadata & format badge */}
         <div className="relative z-10 flex min-w-0 items-center gap-3">
@@ -407,7 +407,7 @@ export const PlayerBar = memo(function PlayerBar({
 
       {/* ==================== MOBILE MINI-PLAYER (< lg) ==================== */}
       <div className="lg:hidden shrink-0 px-2 pb-1.5 bg-transparent">
-        <div className="relative overflow-hidden rounded-2xl border border-white/[0.1] bg-[#141419]/75 backdrop-blur-2xl shadow-xl">
+        <div className="relative overflow-hidden rounded-2xl border border-white/[0.1] bg-[#141419]/65 backdrop-blur-2xl backdrop-saturate-150 shadow-xl">
           {/* Thin top progress hairline */}
           <div className="h-[2px] w-full bg-white/[0.08]">
             <div className="h-full bg-emerald-400 transition-[width] duration-300" style={{ width: `${progressPct}%` }} />
