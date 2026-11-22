@@ -27,7 +27,7 @@ import (
 const (
 	artSizeSmall    = 400
 	artSizeLarge    = 1000
-	artJPEGQuality  = 85
+	artJPEGQuality  = 80
 	artWebPQuality  = 82
 	maxArtDimension = 8192
 	maxArtPixels    = 40_000_000 // ~160 MiB RGBA cap against decompression bombs
@@ -242,7 +242,7 @@ func encodeArtWebP(dst *image.RGBA, cwebpPath string) ([]byte, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), artEncodeLimit)
 	defer cancel()
 	//nolint:gosec // cwebpPath resolved via LookPath; all args are static constants
-	cmd := exec.CommandContext(ctx, cwebpPath, "-quiet", "-q", strconv.Itoa(artWebPQuality), "-m", "4", "-mt", "-o", "-", "--", "-")
+	cmd := exec.CommandContext(ctx, cwebpPath, "-quiet", "-q", strconv.Itoa(artWebPQuality), "-m", "4", "-mt", "-sharp_yuv", "-o", "-", "--", "-")
 	cmd.Stdin = &pngBuf
 	var out bytes.Buffer
 	cmd.Stdout = &out
