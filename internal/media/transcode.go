@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -92,13 +93,16 @@ func probeTranscoder() TranscoderInfo {
 }
 
 type transcodeSpec struct {
-	quality     string
-	mime        string
-	filterArgs  []string
-	codecArgs   []string
-	fmtArgs     []string
-	wavHeader   []byte // canonical 44-byte WAVE_FORMAT_PCM header when piping raw PCM
-	exactLength int64  // >0 when exact HTTP Content-Length is known (canonical local lossless WAV)
+	quality       string
+	mime          string
+	filterArgs    []string
+	codecArgs     []string
+	fmtArgs       []string
+	wavHeader     []byte // canonical 44-byte WAVE_FORMAT_PCM header when piping raw PCM
+	exactLength   int64  // >0 when exact HTTP Content-Length is known (canonical local lossless WAV)
+	sampleRate    int
+	channels      int
+	bitsPerSample int
 }
 
 func parseTranscodeSpec(quality, container string, track library.Track, totalSamples uint64, hasSoxr bool) (transcodeSpec, bool) {
@@ -229,13 +233,16 @@ func buildWAVSpec(track library.Track, totalSamples uint64, hasSoxr bool) transc
 			}
 		}
 		return transcodeSpec{
-			quality:     "wav",
-			mime:        "audio/wav",
-			filterArgs:  filterArgs,
-			codecArgs:   []string{"-c:a", pcmCodec},
-			fmtArgs:     []string{"-f", rawFmt},
-			wavHeader:   buildCanonicalWAVHeader(sampleRate, channels, bitsPerSample, dataSize),
-			exactLength: exactLen,
+			quality:       "wav",
+			mime:          "audio/wav",
+			filterArgs:    filterArgs,
+			codecArgs:     []string{"-c:a", pcmCodec},
+			fmtArgs:       []string{"-f", rawFmt},
+			wavHeader:     buildCanonicalWAVHeader(sampleRate, channels, bitsPerSample, dataSize),
+			exactLength:   exactLen,
+			sampleRate:    sampleRate,
+			channels:      channels,
+			bitsPerSample: bitsPerSample,
 		}
 	}
 
@@ -291,6 +298,55 @@ func (l *limitedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// parseByteRange parses a single HTTP Range header (e.g. "bytes=0-1023",
+// "bytes=44-", "bytes=-512") against total bytes. Multi-range headers are
+// ignored (ranged=false) so callers fall back to 200 OK.
+func parseByteRange(hdr string, total int64) (start, end int64, ranged, invalid bool) {
+	hdr = strings.TrimSpace(hdr)
+	if hdr == "" || total <= 0 {
+		return 0, total - 1, false, false
+	}
+	if !strings.HasPrefix(hdr, "bytes=") {
+		return 0, total - 1, false, false
+	}
+	spec := strings.TrimSpace(strings.TrimPrefix(hdr, "bytes="))
+	if spec == "" || strings.Contains(spec, ",") {
+		return 0, total - 1, false, false
+	}
+	dash := strings.IndexByte(spec, '-')
+	if dash < 0 {
+		return 0, 0, false, true
+	}
+	left := strings.TrimSpace(spec[:dash])
+	right := strings.TrimSpace(spec[dash+1:])
+	if left == "" {
+		// Suffix byte range: bytes=-N
+		suffix, err := strconv.ParseInt(right, 10, 64)
+		if err != nil || suffix <= 0 {
+			return 0, 0, false, true
+		}
+		if suffix >= total {
+			return 0, total - 1, true, false
+		}
+		return total - suffix, total - 1, true, false
+	}
+	s, err := strconv.ParseInt(left, 10, 64)
+	if err != nil || s < 0 || s >= total {
+		return 0, 0, false, true
+	}
+	e := total - 1
+	if right != "" {
+		parsedEnd, err := strconv.ParseInt(right, 10, 64)
+		if err != nil || parsedEnd < s {
+			return 0, 0, false, true
+		}
+		if parsedEnd < e {
+			e = parsedEnd
+		}
+	}
+	return s, e, true, false
+}
+
 func (h *Handler) streamTranscode(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -306,17 +362,53 @@ func (h *Handler) streamTranscode(
 		return
 	}
 
-	w.Header().Set("Content-Type", spec.mime)
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Accept-Ranges", "none")
-	w.Header().Set("transferMode.dlna.org", "Streaming")
-	w.Header().Set("contentFeatures.dlna.org", upnp.DLNAFeaturesTranscoded)
-	if spec.exactLength > 0 {
-		w.Header().Set("Content-Length", strconv.FormatInt(spec.exactLength, 10))
+	seekableWAV := inputPath != "" &&
+		spec.exactLength > 0 &&
+		len(spec.wavHeader) == 44 &&
+		spec.sampleRate > 0 &&
+		spec.channels > 0 &&
+		spec.bitsPerSample > 0
+
+	statusCode := http.StatusOK
+	var rangeStart, rangeEnd int64
+	var ranged bool
+	if seekableWAV {
+		var invalid bool
+		rangeStart, rangeEnd, ranged, invalid = parseByteRange(r.Header.Get("Range"), spec.exactLength)
+		if invalid {
+			w.Header().Set("Content-Range", "bytes */"+strconv.FormatInt(spec.exactLength, 10))
+			http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		if ranged {
+			statusCode = http.StatusPartialContent
+			w.Header().Set("Content-Range", "bytes "+strconv.FormatInt(rangeStart, 10)+"-"+strconv.FormatInt(rangeEnd, 10)+"/"+strconv.FormatInt(spec.exactLength, 10))
+		}
 	}
 
+	w.Header().Set("Content-Type", spec.mime)
+	w.Header().Set("Cache-Control", "no-store")
+	if seekableWAV {
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Length", strconv.FormatInt(rangeEnd-rangeStart+1, 10))
+	} else {
+		w.Header().Set("Accept-Ranges", "none")
+		if spec.exactLength > 0 {
+			w.Header().Set("Content-Length", strconv.FormatInt(spec.exactLength, 10))
+		}
+	}
+	w.Header().Set("transferMode.dlna.org", "Streaming")
+	w.Header().Set("contentFeatures.dlna.org", upnp.DLNAFeaturesTranscoded)
+
 	if r.Method == http.MethodHead {
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(statusCode)
+		return
+	}
+
+	// Serve header-only WAV byte ranges directly from memory without spawning ffmpeg.
+	if seekableWAV && rangeEnd < int64(len(spec.wavHeader)) {
+		w.WriteHeader(statusCode)
+		_, _ = w.Write(spec.wavHeader[rangeStart : rangeEnd+1])
 		return
 	}
 
@@ -327,13 +419,41 @@ func (h *Handler) streamTranscode(
 		return
 	}
 
+	var headerSlice []byte
+	var pcmWant int64 = -1
+	var skipBytes int64
+	var seekSec float64
+	var blockAlign int64
+	if seekableWAV {
+		blockAlign = int64(spec.channels * (spec.bitsPerSample / 8))
+		hdrLen := int64(len(spec.wavHeader))
+		if rangeStart < hdrLen {
+			headerSlice = spec.wavHeader[rangeStart:hdrLen]
+			pcmWant = rangeEnd - hdrLen + 1
+		} else {
+			pcmStart := rangeStart - hdrLen
+			pcmWant = rangeEnd - rangeStart + 1
+			startFrame := pcmStart / blockAlign
+			skipBytes = pcmStart % blockAlign
+			if startFrame > 0 {
+				seekSec = float64(startFrame) / float64(spec.sampleRate)
+			}
+		}
+	} else if len(spec.wavHeader) > 0 {
+		headerSlice = spec.wavHeader
+	}
+
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "error",
 		"-threads", "2",
 	}
 	if inputPath != "" {
-		args = append(args, "-nostdin", "-i", filepath.Clean(inputPath))
+		args = append(args, "-nostdin")
+		if seekSec > 0 {
+			args = append(args, "-ss", strconv.FormatFloat(seekSec, 'f', 9, 64))
+		}
+		args = append(args, "-i", filepath.Clean(inputPath))
 	} else {
 		if inputFormat != "" {
 			args = append(args, "-f", inputFormat)
@@ -368,9 +488,25 @@ func (h *Handler) streamTranscode(
 		return
 	}
 
-	// Read the first chunk before committing HTTP 200 so immediate ffmpeg errors
-	// (corrupt file, bad codec, failed upstream) return 502 instead of an empty 200.
-	first := make([]byte, 4096)
+	if skipBytes > 0 {
+		if _, err := io.CopyN(io.Discard, stdout, skipBytes); err != nil && !errors.Is(err, io.EOF) {
+			cancel()
+			_ = stdout.Close()
+			_ = cmd.Wait()
+			if r.Context().Err() == nil {
+				http.Error(w, "audio seek failed", http.StatusBadGateway)
+			}
+			return
+		}
+	}
+
+	// Read the first chunk before committing HTTP 200/206 so immediate ffmpeg errors
+	// (corrupt file, bad codec, failed upstream) return 502 instead of an empty body.
+	firstCap := 4096
+	if pcmWant > 0 && pcmWant < int64(firstCap) {
+		firstCap = int(pcmWant)
+	}
+	first := make([]byte, firstCap)
 	n, firstErr := stdout.Read(first)
 	if n == 0 {
 		cancel()
@@ -389,6 +525,7 @@ func (h *Handler) streamTranscode(
 		}
 		w.Header().Del("Content-Type")
 		w.Header().Del("Content-Length")
+		w.Header().Del("Content-Range")
 		w.Header().Del("Accept-Ranges")
 		w.Header().Del("transferMode.dlna.org")
 		w.Header().Del("contentFeatures.dlna.org")
@@ -396,35 +533,55 @@ func (h *Handler) streamTranscode(
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(statusCode)
 	var writeErr error
-	if len(spec.wavHeader) > 0 {
-		_, writeErr = w.Write(spec.wavHeader)
+	if len(headerSlice) > 0 {
+		_, writeErr = w.Write(headerSlice)
 	}
 	if writeErr == nil {
 		_, writeErr = w.Write(first[:n])
 	}
+	pcmWritten := int64(n)
 	if writeErr == nil {
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
-		if firstErr == nil {
+		if firstErr == nil && (pcmWant < 0 || pcmWritten < pcmWant) {
+			var src io.Reader = stdout
+			if pcmWant > 0 {
+				src = io.LimitReader(stdout, pcmWant-pcmWritten)
+			}
 			bufPtr := transcodeBufPool.Get().(*[]byte)
-			_, writeErr = io.CopyBuffer(w, stdout, *bufPtr)
+			copied, cErr := io.CopyBuffer(w, src, *bufPtr)
 			transcodeBufPool.Put(bufPtr)
+			pcmWritten += copied
+			writeErr = cErr
 		}
 	}
 
-	// Always unblock ffmpeg & stdin before Wait() so write errors or early exits
-	// never hang waiting on an idle upstream pipe.
-	if writeErr != nil {
+	// If a seeked WAV range ends a few samples shy of exactLength due to
+	// timestamp rounding at EOF, pad the tiny tail with silence so Content-Length
+	// is satisfied cleanly without a browser premature-EOF error.
+	if writeErr == nil && pcmWant > 0 && pcmWritten < pcmWant && r.Context().Err() == nil {
+		rem := pcmWant - pcmWritten
+		maxPad := int64(spec.sampleRate) * blockAlign / 10 // <= 100ms
+		if rem <= maxPad {
+			zeros := make([]byte, rem)
+			_, writeErr = w.Write(zeros)
+		}
+	}
+
+	// Always unblock ffmpeg & stdin before Wait() so write errors or bounded
+	// range requests (where LimitReader stops early) never hang.
+	stoppedEarly := pcmWant > 0 && pcmWritten >= pcmWant
+	if writeErr != nil || stoppedEarly {
 		cancel()
 		if closeStdin != nil {
 			closeStdin()
 		}
 	}
 	_ = stdout.Close()
-	if err := cmd.Wait(); err != nil && r.Context().Err() == nil && writeErr == nil {
+	if err := cmd.Wait(); err != nil && r.Context().Err() == nil && writeErr == nil && !stoppedEarly {
 		if msg := strings.TrimSpace(errBuf.buf.String()); msg != "" {
 			log.Printf("media transcode (%s) error: %v: %s", spec.quality, err, msg)
 		} else {

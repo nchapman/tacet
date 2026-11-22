@@ -208,11 +208,53 @@ func TestServeLocal_TranscodeOpusAndWAV(t *testing.T) {
 	if wavResp.StatusCode != http.StatusOK || wavResp.Header.Get("Content-Type") != "audio/wav" {
 		t.Fatalf("wav status=%d ct=%q", wavResp.StatusCode, wavResp.Header.Get("Content-Type"))
 	}
+	if wavResp.Header.Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("wav Accept-Ranges = %q, want bytes", wavResp.Header.Get("Accept-Ranges"))
+	}
 	if wavResp.Header.Get("Content-Length") != strconv.Itoa(wantWAVLen) {
 		t.Fatalf("wav Content-Length = %q, want %d", wavResp.Header.Get("Content-Length"), wantWAVLen)
 	}
 	if len(wavBody) != wantWAVLen || string(wavBody[:4]) != "RIFF" || string(wavBody[8:12]) != "WAVE" || binary.LittleEndian.Uint16(wavBody[20:22]) != 1 {
 		t.Fatalf("unexpected canonical WAV output: len=%d", len(wavBody))
+	}
+
+	// 4b. Byte-range seeking on local canonical WAV returns 206 Partial Content.
+	wavURL := srv.URL + "/media/local/" + stereoTr.ID + ".wav?q=wav"
+	reqHdr, _ := http.NewRequest(http.MethodGet, wavURL, nil)
+	reqHdr.Header.Set("Range", "bytes=0-43")
+	hdrResp, err := http.DefaultClient.Do(reqHdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdrBytes, _ := io.ReadAll(hdrResp.Body)
+	hdrResp.Body.Close()
+	if hdrResp.StatusCode != http.StatusPartialContent || len(hdrBytes) != 44 || string(hdrBytes[:4]) != "RIFF" {
+		t.Fatalf("wav header range status=%d len=%d", hdrResp.StatusCode, len(hdrBytes))
+	}
+
+	midOffset := 44 + (samples/2)*4
+	reqMid, _ := http.NewRequest(http.MethodGet, wavURL, nil)
+	reqMid.Header.Set("Range", "bytes="+strconv.Itoa(midOffset)+"-")
+	midResp, err := http.DefaultClient.Do(reqMid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	midBytes, _ := io.ReadAll(midResp.Body)
+	midResp.Body.Close()
+	wantMidLen := wantWAVLen - midOffset
+	if midResp.StatusCode != http.StatusPartialContent || len(midBytes) != wantMidLen {
+		t.Fatalf("wav mid seek status=%d len=%d want=%d cr=%q", midResp.StatusCode, len(midBytes), wantMidLen, midResp.Header.Get("Content-Range"))
+	}
+
+	reqBad, _ := http.NewRequest(http.MethodGet, wavURL, nil)
+	reqBad.Header.Set("Range", "bytes=99999999-")
+	badResp, err := http.DefaultClient.Do(reqBad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badResp.Body.Close()
+	if badResp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("invalid range status=%d, want 416", badResp.StatusCode)
 	}
 
 	// 5. HEAD returns 200 with empty body.
