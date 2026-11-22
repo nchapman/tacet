@@ -221,13 +221,6 @@ export function DeviceList({
                 </button>
               )}
               {browserPlayer.zoneId === activeZoneId && <Check className="h-4 w-4 text-emerald-400" />}
-              <button
-                type="button"
-                onClick={() => void browserPlayer.disable()}
-                className="rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-white/10 hover:text-foreground cursor-pointer"
-              >
-                Off
-              </button>
             </div>
           )}
         </div>
