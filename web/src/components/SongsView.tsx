@@ -79,7 +79,7 @@ export function SongsView({
 
   return (
     <div className="min-h-full pb-12">
-      <div className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/85 px-4 sm:px-8 py-4 backdrop-blur-xl">
+      <div className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/45 px-4 sm:px-8 py-4 backdrop-blur-2xl">
         <div className="mx-auto max-w-6xl flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-baseline gap-2.5">
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Songs</h1>

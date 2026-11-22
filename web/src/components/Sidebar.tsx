@@ -20,7 +20,7 @@ const LIBRARY_ITEMS: Array<{ id: AppSection; label: string; icon: typeof Home }>
 
 export function Sidebar({ activeSection, libraryStatus, onNavigate }: SidebarProps) {
   return (
-    <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-white/[0.06] bg-[#0c0c0f] select-none">
+    <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-white/[0.07] bg-black/30 backdrop-blur-2xl select-none">
       {/* Brand header — optical centers aligned with nav icons (30px) and text labels (52px) */}
       <div className="flex items-center justify-between pl-[18px] pr-3 pt-4 pb-3 shrink-0">
         <Link
@@ -170,7 +170,7 @@ export function MobileBottomNav({
   return (
     <nav
       aria-label="Mobile navigation"
-      className="lg:hidden shrink-0 border-t border-white/[0.08] bg-[#0c0c0f]/95 backdrop-blur-2xl pb-[env(safe-area-inset-bottom)]"
+      className="lg:hidden shrink-0 border-t border-white/[0.08] bg-[#09090b]/70 backdrop-blur-2xl pb-[env(safe-area-inset-bottom)]"
     >
       <div className="grid grid-cols-5 h-15">
         {MOBILE_ITEMS.map((item) => {

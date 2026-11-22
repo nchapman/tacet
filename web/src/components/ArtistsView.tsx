@@ -11,7 +11,7 @@ import type {
   QueuePosition,
   QueueSource,
 } from "@/api/types";
-import { AlbumArt, AmbientBackdrop } from "@/components/ui/artwork";
+import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -21,6 +21,7 @@ interface ArtistsViewProps {
   qobuzStatus: QobuzStatus | null;
   initialArtist?: string;
   initialQobuzArtistId?: number;
+  onAmbientArt?: (artworkUrl?: string) => void;
   onSelectArtist?: (artistName: string) => void;
   onBackToArtists?: () => void;
   onOpenAlbum: (album: Album) => void;
@@ -49,6 +50,7 @@ export function ArtistsView({
   qobuzStatus,
   initialArtist,
   initialQobuzArtistId,
+  onAmbientArt,
   onSelectArtist,
   onBackToArtists,
   onOpenAlbum,
@@ -186,12 +188,16 @@ export function ArtistsView({
     remoteDetail?.artist.artworkUrl ||
     remoteOnlyAlbums[0]?.artworkUrl;
 
+  useEffect(() => {
+    onAmbientArt?.(heroArt);
+  }, [heroArt, onAmbientArt]);
+
   return (
     <div className="flex h-full min-h-0">
       {/* Left Artist Rail (full width on mobile until artist selected; fixed 288px on md+) */}
       <div
         className={cn(
-          "flex flex-col border-r border-white/[0.06] bg-[#0b0b0e]/60 md:w-72 lg:w-80 md:shrink-0",
+          "flex flex-col border-r border-white/[0.06] bg-black/20 backdrop-blur-xl md:w-72 lg:w-80 md:shrink-0",
           mobileDetailOpen ? "hidden md:flex" : "flex w-full",
         )}
       >
@@ -263,12 +269,8 @@ export function ArtistsView({
       >
         {selectedArtist ? (
           <div className="relative min-h-full pb-12">
-            <div className="pointer-events-none absolute inset-x-0 top-0 h-72 overflow-hidden">
-              <AmbientBackdrop artworkUrl={heroArt} intensity="subtle" />
-            </div>
-
             {/* Mobile back bar */}
-            <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-white/[0.06] bg-[#09090b]/70 px-4 py-3 backdrop-blur-xl md:hidden">
+            <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-white/[0.06] bg-[#09090b]/40 px-4 py-3 backdrop-blur-2xl md:hidden">
               <Button
                 type="button"
                 variant="ghost"

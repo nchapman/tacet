@@ -3,7 +3,7 @@ import { useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type { Album, AlbumVersion, QueuePosition, QueueSource } from "@/api/types";
-import { AlbumArt, AmbientBackdrop } from "@/components/ui/artwork";
+import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -119,13 +119,8 @@ export function AlbumView({
 
   return (
     <div className="relative min-h-full pb-12">
-      {/* Plexamp-style ambient blurred album-art backdrop */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-[440px] overflow-hidden">
-        <AmbientBackdrop artworkUrl={album.artworkUrl} intensity="hero" />
-      </div>
-
       {/* Sticky frosted back bar */}
-      <div className="sticky top-0 z-20 flex items-center justify-between px-4 sm:px-8 py-3 bg-[#09090b]/55 backdrop-blur-xl border-b border-white/[0.04]">
+      <div className="sticky top-0 z-20 flex items-center justify-between px-4 sm:px-8 py-3 bg-[#09090b]/30 backdrop-blur-2xl border-b border-white/[0.06]">
         <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 text-foreground/85">
           <ArrowLeft className="h-4 w-4" />
           <span>{backLabel}</span>

@@ -1,4 +1,5 @@
 import { Disc3 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { tacetClient } from "@/api/client";
 import { cn } from "@/lib/utils";
 
@@ -37,33 +38,80 @@ interface AmbientBackdropProps {
 }
 
 /**
- * Plexamp-style album-art-driven blurred gradient backdrop.
- * Uses GPU-accelerated scaled & blurred artwork blended cleanly into obsidian.
+ * Plexamp / Apple Music-style album-art-driven ambient backdrop.
+ * Renders a smooth crossfading, heavily blurred full-bleed color wash that
+ * tints the entire app shell (including translucent sidebar, headers, and player bar)
+ * while keeping dark obsidian contrast crisp and readable everywhere.
  */
 export function AmbientBackdrop({ artworkUrl, className, intensity = "hero" }: AmbientBackdropProps) {
-  const src = tacetClient.resolveUrl(artworkUrl);
+  const nextSrc = tacetClient.resolveUrl(artworkUrl) || "";
+  const [activeSrc, setActiveSrc] = useState(nextSrc);
+  const [prevSrc, setPrevSrc] = useState("");
+  const [entering, setEntering] = useState(false);
+
+  useEffect(() => {
+    if (nextSrc === activeSrc) return;
+    setPrevSrc(activeSrc);
+    setActiveSrc(nextSrc);
+    setEntering(true);
+    const raf = window.requestAnimationFrame(() => setEntering(false));
+    const timer = window.setTimeout(() => setPrevSrc(""), 800);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+    };
+  }, [nextSrc, activeSrc]);
+
   const opacityClass =
     intensity === "full"
-      ? "opacity-45"
+      ? "opacity-55"
       : intensity === "hero"
-        ? "opacity-35"
-        : "opacity-20";
+        ? "opacity-45"
+        : "opacity-30";
+
+  const imgClass =
+    "absolute inset-0 h-full w-full scale-125 object-cover object-center blur-[100px] saturate-[1.7] brightness-90 transition-opacity duration-700 ease-out will-change-[opacity]";
 
   return (
     <div aria-hidden="true" className={cn("pointer-events-none absolute inset-0 overflow-hidden select-none", className)}>
-      {src ? (
+      {/* Quiet atmospheric fallback when no artwork is active */}
+      <div
+        className={cn(
+          "absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgba(56,189,248,0.14),rgba(16,185,129,0.07)_42%,transparent_75%)] transition-opacity duration-700",
+          activeSrc ? "opacity-0" : "opacity-100",
+        )}
+      />
+
+      {/* Outgoing artwork layer for seamless crossfades */}
+      {prevSrc && (
         <img
-          src={src}
+          key={`prev:${prevSrc}`}
+          src={prevSrc}
           alt=""
-          className={cn(
-            "h-full w-full scale-125 object-cover blur-[72px] saturate-150 transition-opacity duration-700",
-            opacityClass,
-          )}
+          className={cn(imgClass, entering ? opacityClass : "opacity-0")}
         />
-      ) : (
-        <div className="h-full w-full bg-[radial-gradient(ellipse_at_top_left,rgba(56,189,248,0.14),rgba(16,185,129,0.06)_40%,transparent_75%)]" />
       )}
-      <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-[#09090b]/70 to-[#09090b]" />
+
+      {/* Active artwork layer */}
+      {activeSrc && (
+        <img
+          key={`curr:${activeSrc}`}
+          src={activeSrc}
+          alt=""
+          className={cn(imgClass, entering ? "opacity-0" : opacityClass)}
+        />
+      )}
+
+      {/* Smooth vertical + radial obsidian scrim to keep text contrast crisp without hard seams */}
+      <div
+        className={cn(
+          "absolute inset-0",
+          intensity === "full"
+            ? "bg-gradient-to-b from-black/25 via-[#09090b]/55 to-[#09090b]/92"
+            : "bg-gradient-to-b from-black/15 via-[#09090b]/58 to-[#09090b]/94",
+        )}
+      />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,transparent_0%,rgba(9,9,11,0.45)_75%,rgba(9,9,11,0.75)_100%)]" />
     </div>
   );
 }

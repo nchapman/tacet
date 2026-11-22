@@ -116,11 +116,11 @@ export function PlayerBar({
       {/* ==================== DESKTOP PLAYER BAR (>= lg) ==================== */}
       <footer
         aria-label="Player controls"
-        className="hidden lg:grid grid-cols-[minmax(220px,1fr)_minmax(340px,540px)_minmax(240px,1fr)] items-center gap-4 h-[84px] shrink-0 border-t border-white/[0.07] bg-[#0b0b0e]/95 px-4 backdrop-blur-2xl relative overflow-hidden select-none"
+        className="hidden lg:grid grid-cols-[minmax(220px,1fr)_minmax(340px,540px)_minmax(240px,1fr)] items-center gap-4 h-[84px] shrink-0 border-t border-white/[0.08] bg-[#09090b]/60 px-4 backdrop-blur-2xl relative overflow-hidden select-none"
       >
-        {/* Subtle left-edge album color wash */}
+        {/* Subtle left-edge now-playing bloom */}
         {track?.artworkUrl && (
-          <div className="pointer-events-none absolute inset-y-0 left-0 w-72 overflow-hidden opacity-20">
+          <div className="pointer-events-none absolute inset-y-0 left-0 w-80 overflow-hidden opacity-25">
             <AmbientBackdrop artworkUrl={track.artworkUrl} intensity="subtle" />
           </div>
         )}
@@ -338,8 +338,8 @@ export function PlayerBar({
       </footer>
 
       {/* ==================== MOBILE MINI-PLAYER (< lg) ==================== */}
-      <div className="lg:hidden shrink-0 px-2 pb-1.5 bg-[#09090b]">
-        <div className="relative overflow-hidden rounded-2xl border border-white/[0.09] bg-[#16161c]/95 backdrop-blur-xl shadow-xl">
+      <div className="lg:hidden shrink-0 px-2 pb-1.5 bg-transparent">
+        <div className="relative overflow-hidden rounded-2xl border border-white/[0.1] bg-[#141419]/75 backdrop-blur-2xl shadow-xl">
           {/* Thin top progress hairline */}
           <div className="h-[2px] w-full bg-white/[0.08]">
             <div className="h-full bg-emerald-400 transition-[width] duration-300" style={{ width: `${progressPct}%` }} />

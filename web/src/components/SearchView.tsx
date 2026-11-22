@@ -14,7 +14,7 @@ import type {
   Track,
 } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
-import { AlbumArt, AmbientBackdrop } from "@/components/ui/artwork";
+import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -25,6 +25,7 @@ interface SearchViewProps {
   focusNonce: number;
   qobuzStatus: QobuzStatus | null;
   currentTrackId?: string;
+  onAmbientArt?: (artworkUrl?: string) => void;
   onOpenAlbum: (album: Album) => void;
   onOpenArtist: (name: string, qobuzArtistId?: number) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
@@ -44,6 +45,7 @@ export function SearchView({
   focusNonce,
   qobuzStatus,
   currentTrackId,
+  onAmbientArt,
   onOpenAlbum,
   onOpenArtist,
   onPlay,
@@ -183,16 +185,14 @@ export function SearchView({
     Boolean(dedupedQobuz) &&
     (dedupedQobuz!.artists.length > 0 || dedupedQobuz!.albums.length > 0 || dedupedQobuz!.tracks.length > 0);
 
+  useEffect(() => {
+    onAmbientArt?.(trimmed ? topArtwork : undefined);
+  }, [trimmed, topArtwork, onAmbientArt]);
+
   return (
     <div className="relative min-h-full">
-      {trimmed && topArtwork && (
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-80 overflow-hidden">
-          <AmbientBackdrop artworkUrl={topArtwork} intensity="subtle" />
-        </div>
-      )}
-
       {/* Spotify-style large centered search bar pinned at top */}
-      <div className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/85 px-4 sm:px-8 py-4 backdrop-blur-xl">
+      <div className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/45 px-4 sm:px-8 py-4 backdrop-blur-2xl">
         <div className="mx-auto max-w-2xl">
           <div className="relative flex items-center">
             <Search className="pointer-events-none absolute left-4 h-4.5 w-4.5 text-muted-foreground" />

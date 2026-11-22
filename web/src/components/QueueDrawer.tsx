@@ -167,7 +167,7 @@ export function DesktopQueueDrawer({ open, onOpenChange, ...props }: QueueDrawer
   return (
     <aside
       aria-label="Playback Queue"
-      className="hidden lg:flex w-80 xl:w-[340px] shrink-0 flex-col border-l border-white/[0.06] bg-[#0c0c0f]"
+      className="hidden lg:flex w-80 xl:w-[340px] shrink-0 flex-col border-l border-white/[0.07] bg-black/30 backdrop-blur-2xl"
     >
       <QueueContent {...props} onClose={() => onOpenChange(false)} />
     </aside>

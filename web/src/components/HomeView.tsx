@@ -4,17 +4,17 @@ import { tacetClient } from "@/api/client";
 import type { Album, HeavyRotationAlbum, LibraryStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import type { AppSection } from "@/components/Sidebar";
-import { AmbientBackdrop } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
 
 interface HomeViewProps {
   libraryStatus: LibraryStatus | null;
+  onAmbientArt?: (artworkUrl?: string) => void;
   onOpenAlbum: (album: Album) => void;
   onNavigate: (section: AppSection) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
 }
 
-export function HomeView({ libraryStatus, onOpenAlbum, onNavigate, onPlay }: HomeViewProps) {
+export function HomeView({ libraryStatus, onAmbientArt, onOpenAlbum, onNavigate, onPlay }: HomeViewProps) {
   const [rotation, setRotation] = useState<HeavyRotationAlbum[]>([]);
   const [recent, setRecent] = useState<Album[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,13 +49,12 @@ export function HomeView({ libraryStatus, onOpenAlbum, onNavigate, onPlay }: Hom
 
   const heroArt = rotation[0]?.artworkUrl || recent[0]?.artworkUrl;
 
+  useEffect(() => {
+    onAmbientArt?.(heroArt);
+  }, [heroArt, onAmbientArt]);
+
   return (
     <div className="relative min-h-full pb-12">
-      {/* Subtle Plexamp-style ambient top glow driven by your top album */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-80 overflow-hidden">
-        <AmbientBackdrop artworkUrl={heroArt} intensity="subtle" />
-      </div>
-
       <div className="relative z-10 mx-auto max-w-7xl px-4 sm:px-8 pt-6 sm:pt-8 space-y-10">
         {/* Top welcome & quick jump bar */}
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
