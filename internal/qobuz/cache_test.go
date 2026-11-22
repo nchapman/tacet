@@ -318,6 +318,44 @@ func TestCatalogCache_LogoutPreventsInflightRepopulation(t *testing.T) {
 	}
 }
 
+func TestGetArtist_FiltersToPrimaryAlbumsAndEPs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/artist/get":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":   77,
+				"name": "Adele",
+				"albums": map[string]any{
+					"items": []map[string]any{
+						{"id": "a30", "title": "30", "release_type": "album", "tracks_count": 12, "artist": map[string]any{"id": 77, "name": "Adele"}, "streamable": true},
+						{"id": "ep1", "title": "Cold Shoulder", "release_type": "ep", "tracks_count": 4, "artist": map[string]any{"id": 77, "name": "Adele"}, "streamable": true},
+						{"id": "s1", "title": "Easy On Me", "release_type": "single", "tracks_count": 1, "artist": map[string]any{"id": 77, "name": "Adele"}, "streamable": true},
+						{"id": "s2", "title": "Skyfall", "tracks_count": 1, "artist": map[string]any{"id": 77, "name": "Adele"}, "streamable": true},
+						{"id": "comp", "title": "Greatest Hits", "release_type": "compilation", "tracks_count": 15, "artist": map[string]any{"id": 77, "name": "Adele"}, "streamable": true},
+						{"id": "cover", "title": "Hello 2016", "release_type": "album", "tracks_count": 7, "artist": map[string]any{"id": 999, "name": "Brooke Jordan"}, "streamable": true},
+					},
+				},
+			})
+		case "/artist/page":
+			_ = json.NewEncoder(w).Encode(map[string]any{"top_tracks": []any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, AppID: "app", AppSecret: "sec", AuthToken: "tok"})
+	defer func() { _ = c.Close() }()
+
+	detail, err := c.GetArtist(context.Background(), 77, 50)
+	if err != nil {
+		t.Fatalf("GetArtist: %v", err)
+	}
+	if len(detail.Albums) != 2 || detail.Albums[0].Title != "30" || detail.Albums[1].Title != "Cold Shoulder" {
+		t.Fatalf("expected [30, Cold Shoulder], got %+v", detail.Albums)
+	}
+}
+
 func TestMatchAlbum_DiscographySearchAndNegativeCache(t *testing.T) {
 	var albumCalls atomic.Int32
 	var searchCalls atomic.Int32

@@ -38,7 +38,7 @@ func albumMatchCacheKey(artist, title string) string {
 }
 
 func artistCacheKey(artistID int64, limit int) string {
-	return fmt.Sprintf("artist:%d:%d", artistID, limit)
+	return fmt.Sprintf("artist:v2:%d:%d", artistID, limit)
 }
 
 func artistNameCacheKey(name string) string {

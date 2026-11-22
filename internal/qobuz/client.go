@@ -484,8 +484,12 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 		art.ID = artistID
 	}
 	albums := make([]library.Album, 0, len(resp.Albums.Items))
+	wantArtistKey := normMatchKey(art.Name)
 	for _, qa := range resp.Albums.Items {
 		if qa.Streamable != nil && !*qa.Streamable {
+			continue
+		}
+		if !isPrimaryArtistAlbumOrEP(qa, art.ID, wantArtistKey) {
 			continue
 		}
 		alb := qa.toLibraryAlbum(false)
@@ -1384,6 +1388,7 @@ type qAlbum struct {
 	ID                  string  `json:"id"`
 	Title               string  `json:"title"`
 	Version             string  `json:"version"`
+	ReleaseType         string  `json:"release_type"`
 	Artist              qArtist `json:"artist"`
 	Genre               qGenre  `json:"genre"`
 	Label               *qLabel `json:"label"`
@@ -1439,6 +1444,31 @@ func cleanQobuzText(raw string) string {
 	s = strings.Join(lines, "\n")
 	s = reMultiNL.ReplaceAllString(s, "\n\n")
 	return strings.TrimSpace(s)
+}
+
+// isPrimaryArtistAlbumOrEP filters Qobuz /artist/get album results down to the
+// artist's own proper album, live, and EP releases — excluding covers/composer
+// credits by other artists, compilations, and 1-2 track singles.
+func isPrimaryArtistAlbumOrEP(qa qAlbum, artistID int64, artistKey string) bool {
+	// Require primary artist match when artist metadata is present on the release.
+	if qa.Artist.ID > 0 && artistID > 0 {
+		if qa.Artist.ID != artistID {
+			return false
+		}
+	} else if qa.Artist.Name != "" && artistKey != "" {
+		if normMatchKey(qa.Artist.Name) != artistKey {
+			return false
+		}
+	}
+
+	switch strings.ToLower(strings.TrimSpace(qa.ReleaseType)) {
+	case "single", "compilation", "other":
+		return false
+	}
+	if qa.TracksCount > 0 && qa.TracksCount < 3 {
+		return false
+	}
+	return true
 }
 
 func (qa qAlbum) toLibraryAlbum(includeTracks bool) library.Album {
