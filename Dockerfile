@@ -45,7 +45,8 @@ COPY --from=go-builder /out/tacet /usr/local/bin/tacet
 
 ENV TACET_PORT=8080 \
     TACET_DATA_DIR=/data \
-    TACET_MUSIC_DIR=/music
+    TACET_MUSIC_DIR=/music \
+    TACET_STREAM_MODE=direct
 
 VOLUME ["/data", "/music"]
 EXPOSE 8080

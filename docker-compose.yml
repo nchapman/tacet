@@ -13,21 +13,20 @@ services:
     # comment out `network_mode: host`, expose `ports: ["8080:8080"]`, and set
     # `TACET_PUBLIC_URL` + `TACET_RENDERER_URL` below.
     network_mode: host
-    environment:
-      TACET_PORT: ${TACET_PORT:-8080}
-      TACET_DATA_DIR: /data
-      TACET_MUSIC_DIR: ${TACET_MUSIC_DIR:-/music}
-      TACET_STREAM_MODE: ${TACET_STREAM_MODE:-direct}
-      # Optional: override base URL advertised to renderers when behind NAT/bridge
-      # TACET_PUBLIC_URL: http://192.168.1.10:8080
-      # Optional: connect directly to a renderer description XML URL
-      # TACET_RENDERER_URL: http://192.168.1.50:49152/description.xml
-      # Optional: preconfigure Qobuz credentials (otherwise sign in via Web UI)
-      # QOBUZ_AUTH_TOKEN: ""
     volumes:
       # Set MUSIC_DIR in your shell or .env (e.g. MUSIC_DIR=/volume1/music)
       - ${MUSIC_DIR:-./music}:/music:ro
       - ${DATA_DIR:-tacet-data}:/data
+    # All defaults are baked into the image (/music, /data, port 8080, direct mode).
+    # Uncomment any overrides you need:
+    # environment:
+    #   TACET_PORT: "8080"
+    #   TACET_DATA_DIR: /data
+    #   TACET_MUSIC_DIR: /music
+    #   TACET_STREAM_MODE: direct
+    #   TACET_PUBLIC_URL: http://192.168.1.10:8080
+    #   TACET_RENDERER_URL: http://192.168.1.50:49152/description.xml
+    #   QOBUZ_AUTH_TOKEN: ""
 
 volumes:
   tacet-data:
