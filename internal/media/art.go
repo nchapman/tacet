@@ -28,7 +28,7 @@ const (
 	artSizeSmall    = 400
 	artSizeLarge    = 1000
 	artJPEGQuality  = 80
-	artWebPQuality  = 82
+	artWebPQuality  = 80
 	maxArtDimension = 8192
 	maxArtPixels    = 40_000_000 // ~160 MiB RGBA cap against decompression bombs
 	artEncodeLimit  = 10 * time.Second
