@@ -141,7 +141,7 @@ export function SearchView({
     (dedupedQobuz!.artists.length > 0 || dedupedQobuz!.albums.length > 0 || dedupedQobuz!.tracks.length > 0);
 
   return (
-    <div className="relative min-h-full">
+    <div className="relative flex min-h-full flex-col">
       {/* Spotify-style large centered search bar pinned at top */}
       <div className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/45 px-4 sm:px-8 py-4 backdrop-blur-2xl">
         <div className="mx-auto max-w-2xl">
@@ -188,20 +188,19 @@ export function SearchView({
       </div>
 
       {/* Results body */}
-      <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-8 py-6 pb-12 space-y-8">
-        {!trimmed ? (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-muted-foreground">
-              <Search className="h-6 w-6" />
-            </div>
-            <h2 className="text-lg font-semibold tracking-tight text-white">Find anything in your music</h2>
-            <p className="mt-1.5 max-w-md text-sm text-muted-foreground">
-              Search by artist, album, or song. Results from your library appear instantly on top
-              {qobuzConnected ? ", followed by Qobuz catalog results below." : "."}
-            </p>
+      {!trimmed ? (
+        <div className="relative z-10 flex flex-1 flex-col items-center justify-center px-4 sm:px-8 py-12 pb-16 text-center">
+          <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-muted-foreground">
+            <Search className="h-6 w-6" />
           </div>
-        ) : (
-          <>
+          <h2 className="text-lg font-semibold tracking-tight text-white">Find anything in your music</h2>
+          <p className="mt-1.5 max-w-md text-sm text-muted-foreground">
+            Search by artist, album, or song. Results from your library appear instantly on top
+            {qobuzConnected ? ", followed by Qobuz catalog results below." : "."}
+          </p>
+        </div>
+      ) : (
+        <div className="relative z-10 mx-auto w-full max-w-6xl px-4 sm:px-8 py-6 pb-12 space-y-8">
             {/* TIER 1: IN YOUR LIBRARY */}
             <section aria-label="Library results" className="space-y-6">
               <div className="flex items-center gap-2">
@@ -384,9 +383,8 @@ export function SearchView({
                 )}
               </section>
             )}
-          </>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
