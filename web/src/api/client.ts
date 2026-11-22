@@ -5,6 +5,8 @@ import type {
   AudioQuality,
   ConnectZoneResponse,
   RepeatMode,
+  DiscoverFeed,
+  DiscoverShelfPage,
   DiscoverZonesResponse,
   GenreSummary,
   HeavyRotationAlbum,
@@ -18,6 +20,7 @@ import type {
   PlayerCommand,
   PlayerRegistration,
   PlayerStateReport,
+  QobuzArtist,
   QobuzArtistDetail,
   QobuzLoginRequest,
   QobuzQuality,
@@ -705,6 +708,33 @@ export class TacetClient {
 
   qobuzAlbum(id: string, opts?: RequestOptions): Promise<Album> {
     return this.request(`/api/v1/qobuz/albums/${encodeURIComponent(id)}`, {}, undefined, opts);
+  }
+
+  getDiscover(genreIds?: number[], opts?: RequestOptions): Promise<DiscoverFeed> {
+    const genreParam = genreIds && genreIds.length > 0 ? genreIds.join(",") : undefined;
+    return this.request("/api/v1/discover", {}, { genre_ids: genreParam }, opts);
+  }
+
+  getDiscoverShelf(
+    slug: string,
+    params: { genreIds?: number[]; limit?: number; offset?: number } = {},
+    opts?: RequestOptions,
+  ): Promise<DiscoverShelfPage> {
+    const genreParam = params.genreIds && params.genreIds.length > 0 ? params.genreIds.join(",") : undefined;
+    return this.request(
+      `/api/v1/discover/shelves/${encodeURIComponent(slug)}`,
+      {},
+      { genre_ids: genreParam, limit: params.limit, offset: params.offset },
+      opts,
+    );
+  }
+
+  getSimilarAlbums(albumId: string, limit = 12, opts?: RequestOptions): Promise<{ items: Album[] }> {
+    return this.request(`/api/v1/albums/${encodeURIComponent(albumId)}/similar`, {}, { limit }, opts);
+  }
+
+  getSimilarArtists(artistId: number, limit = 12, opts?: RequestOptions): Promise<{ items: QobuzArtist[] }> {
+    return this.request(`/api/v1/artists/${encodeURIComponent(String(artistId))}/similar`, {}, { limit }, opts);
   }
 }
 

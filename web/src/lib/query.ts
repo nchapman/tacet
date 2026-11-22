@@ -59,6 +59,13 @@ export const queryKeys = {
         : (["qobuz", "artist", "name", target.name.toLowerCase()] as const),
     search: (q: string) => ["qobuz", "search", q.toLowerCase()] as const,
   },
+  discover: {
+    all: ["discover"] as const,
+    feed: (genreId: number | null) => ["discover", "feed", genreId ?? "all"] as const,
+    shelf: (slug: string, genreId: number | null) => ["discover", "shelf", slug, genreId ?? "all"] as const,
+    similarAlbums: (albumId: string) => ["discover", "similar-albums", albumId] as const,
+    similarArtists: (artistId: number) => ["discover", "similar-artists", artistId] as const,
+  },
   albums: ["album"] as const,
   album: (albumId: string) => ["album", albumId] as const,
 };
@@ -68,11 +75,13 @@ export function invalidateLibraryQueries(client: QueryClient = queryClient): voi
   void client.invalidateQueries({ queryKey: queryKeys.library.all });
   void client.invalidateQueries({ queryKey: queryKeys.albums });
   void client.invalidateQueries({ queryKey: queryKeys.qobuz.all });
+  void client.invalidateQueries({ queryKey: queryKeys.discover.all });
 }
 
 /** Clears cached Qobuz remote queries and marks library/album queries stale on Qobuz sign-out. */
 export function invalidateQobuzLogout(client: QueryClient = queryClient): void {
   client.removeQueries({ queryKey: queryKeys.qobuz.all });
+  client.removeQueries({ queryKey: queryKeys.discover.all });
   void client.invalidateQueries({ queryKey: queryKeys.library.all });
   void client.invalidateQueries({ queryKey: queryKeys.albums });
 }

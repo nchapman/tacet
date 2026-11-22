@@ -432,3 +432,34 @@ export interface ZoneErrorEvent {
 export interface ZonesUpdatedEvent {
   zones: ZoneSnapshot[];
 }
+
+export interface DiscoverGenre {
+  id: number;
+  name: string;
+}
+
+export interface DiscoverShelf {
+  slug: string;
+  title: string;
+  subtitle?: string;
+  items: Album[];
+  hasMore: boolean;
+}
+
+export interface DiscoverFeed {
+  connected: boolean;
+  genres: DiscoverGenre[];
+  shelves: DiscoverShelf[];
+}
+
+export interface DiscoverShelfPage {
+  slug: string;
+  title: string;
+  subtitle?: string;
+  items: Album[];
+  hasMore: boolean;
+  total?: number;
+  offset: number;
+  nextOffset?: number;
+  limit: number;
+}

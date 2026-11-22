@@ -81,6 +81,11 @@ export function albumPath(
   return `/albums/${key}`;
 }
 
+export function discoverShelfPath(slug: string, genreId?: number | null): string {
+  const base = `/discover/${encodeURIComponent(slug)}`;
+  return genreId ? `${base}?genre=${genreId}` : base;
+}
+
 export function artistPath(artistName: string, qobuzArtistId?: number): string {
   const base = `/artists/${encodeURIComponent(artistName)}`;
   if (typeof qobuzArtistId === "number" && Number.isFinite(qobuzArtistId) && qobuzArtistId > 0) {

@@ -1,18 +1,20 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, Clock3, Layers, ListPlus, Play, Plus, SkipForward, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type { Album, AlbumVersion, QueuePosition, QueueSource } from "@/api/types";
+import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { queryKeys } from "@/lib/query";
+import { QOBUZ_ALBUM_GC_TIME_MS, QOBUZ_ALBUM_STALE_TIME_MS, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
 interface AlbumViewProps {
   album: Album;
   backLabel: string;
+  qobuzConnected?: boolean;
   loadingTracks?: boolean;
   currentTrackId?: string;
   isPlaying?: boolean;
@@ -54,6 +56,7 @@ function totalAlbumDuration(album: Album): string {
 export function AlbumView({
   album,
   backLabel,
+  qobuzConnected = false,
   loadingTracks = false,
   currentTrackId,
   isPlaying,
@@ -65,6 +68,17 @@ export function AlbumView({
   onAdd,
 }: AlbumViewProps) {
   const queryClient = useQueryClient();
+  const canSuggest =
+    qobuzConnected &&
+    (album.id.startsWith("qobuz:") || Boolean(album.versions?.some((v) => v.id.startsWith("qobuz:"))));
+  const similarQuery = useQuery({
+    queryKey: queryKeys.discover.similarAlbums(album.id),
+    queryFn: ({ signal }) => tacetClient.getSimilarAlbums(album.id, 12, { signal }),
+    enabled: canSuggest,
+    staleTime: QOBUZ_ALBUM_STALE_TIME_MS,
+    gcTime: QOBUZ_ALBUM_GC_TIME_MS,
+  });
+  const similarAlbums = (similarQuery.data?.items ?? []).filter((a) => a.id !== album.id).slice(0, 6);
   const [busyLibrary, setBusyLibrary] = useState(false);
   const [busyPrimary, setBusyPrimary] = useState(false);
   const [addedTrackIds, setAddedTrackIds] = useState<Record<string, boolean>>({});
@@ -406,6 +420,24 @@ export function AlbumView({
             })}
           </div>
         </div>
+
+        {/* Contextual "More Like This" recommendations */}
+        {similarAlbums.length > 0 && (
+          <section aria-label="More Like This" className="mt-12 border-t border-white/[0.08] pt-8 space-y-4">
+            <h2 className="text-base font-semibold tracking-tight text-white">More Like This</h2>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-x-4 gap-y-6">
+              {similarAlbums.map((sim) => (
+                <AlbumCard
+                  key={sim.id}
+                  album={sim}
+                  showInLibraryBadge
+                  onOpen={(a) => onOpenAlbum(a.id)}
+                  onPlay={onPlay}
+                />
+              ))}
+            </div>
+          </section>
+        )}
       </div>
     </div>
   );

@@ -22,7 +22,7 @@ interface ArtistsViewProps {
   qobuzStatus: QobuzStatus | null;
   initialArtist?: string;
   initialQobuzArtistId?: number;
-  onSelectArtist?: (artistName: string) => void;
+  onSelectArtist?: (artistName: string, qobuzArtistId?: number) => void;
   onBackToArtists?: () => void;
   onOpenAlbum: (album: Album) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
@@ -142,6 +142,18 @@ export function ArtistsView({
   const remoteDetail = remoteQuery.data ?? null;
   const loadingRemote = remoteQuery.isLoading;
   const remoteErr = queryErrorMessage(remoteQuery.error);
+
+  const similarArtistId = remoteDetail?.artist?.id ?? initialQobuzArtistId;
+  const similarArtistsQuery = useQuery({
+    queryKey: queryKeys.discover.similarArtists(similarArtistId ?? 0),
+    queryFn: ({ signal }) => tacetClient.getSimilarArtists(similarArtistId!, 12, { signal }),
+    enabled: qobuzConnected && Boolean(similarArtistId && similarArtistId > 0),
+    staleTime: QOBUZ_ARTIST_STALE_TIME_MS,
+    gcTime: QOBUZ_ARTIST_GC_TIME_MS,
+  });
+  const similarArtists = (similarArtistsQuery.data?.items ?? [])
+    .filter((a) => a.id !== similarArtistId)
+    .slice(0, 10);
 
   // Deduplicate Qobuz albums already present in the library section above.
   const remoteOnlyAlbums = useMemo(() => {
@@ -367,6 +379,34 @@ export function ArtistsView({
 
               {!loadingAlbums && !loadingRemote && albums.length === 0 && remoteOnlyAlbums.length === 0 && (
                 <p className="mt-8 text-sm text-muted-foreground">No albums found for {effectiveArtist}.</p>
+              )}
+
+              {/* Contextual Similar Artists */}
+              {similarArtists.length > 0 && (
+                <section aria-label="Similar Artists" className="mt-10 border-t border-white/[0.08] pt-6 space-y-4">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Similar Artists
+                  </h3>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+                    {similarArtists.map((sim) => (
+                      <button
+                        key={sim.id}
+                        type="button"
+                        onClick={() => onSelectArtist?.(sim.name, sim.id)}
+                        className="group flex flex-col items-center gap-2 rounded-xl border border-white/[0.06] bg-white/[0.025] p-3 text-center transition-colors hover:border-white/[0.14] hover:bg-white/[0.05] cursor-pointer"
+                      >
+                        <AlbumArt
+                          artworkUrl={sim.artworkUrl}
+                          alt={sim.name}
+                          className="h-16 w-16 rounded-full ring-1 ring-white/10"
+                        />
+                        <div className="w-full truncate text-xs font-medium text-foreground group-hover:text-white">
+                          {sim.name}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </section>
               )}
             </div>
           </div>

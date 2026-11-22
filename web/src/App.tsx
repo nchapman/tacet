@@ -16,6 +16,7 @@ import { AlbumView } from "@/components/AlbumView";
 import { AlbumsView } from "@/components/AlbumsView";
 import { ArtistsView } from "@/components/ArtistsView";
 import { ConnectModal } from "@/components/ConnectModal";
+import { DiscoverShelfView } from "@/components/DiscoverShelfView";
 import { HomeView } from "@/components/HomeView";
 import { PlayerBar } from "@/components/PlayerBar";
 import { QobuzView } from "@/components/QobuzView";
@@ -341,6 +342,15 @@ export function App() {
                   libraryStatus={tacet.libraryStatus}
                   onOpenAlbum={handleOpenAlbum}
                   onNavigate={navigateSection}
+                  onPlay={handlePlay}
+                />
+              }
+            />
+            <Route
+              path="/discover/:slug"
+              element={
+                <DiscoverShelfView
+                  onOpenAlbum={handleOpenAlbum}
                   onPlay={handlePlay}
                 />
               }
@@ -772,6 +782,7 @@ function AlbumRoute({
         key={album.id}
         album={album}
         backLabel={state?.backLabel ?? "Albums"}
+        qobuzConnected={qobuzConnected}
         loadingTracks={albumQuery.isFetching && (album.tracks?.length ?? 0) === 0}
         currentTrackId={currentTrackId}
         isPlaying={isPlaying}

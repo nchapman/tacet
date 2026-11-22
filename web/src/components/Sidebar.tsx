@@ -1,4 +1,4 @@
-import { Compass, Disc3, Home, ListMusic, Loader2, Search, Settings, Users } from "lucide-react";
+import { Disc3, Home, ListMusic, Loader2, Search, Settings, Users } from "lucide-react";
 import { memo } from "react";
 import { Link } from "react-router";
 import type { LibraryStatus } from "@/api/types";
@@ -86,19 +86,6 @@ export const Sidebar = memo(function Sidebar({ activeSection, libraryStatus, onN
               onClick={() => onNavigate?.(item.id)}
             />
           ))}
-        </div>
-
-        <div className="space-y-1">
-          <div className="px-2.5 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-            Discover
-          </div>
-          <NavItem
-            to={SECTION_PATHS.qobuz}
-            active={activeSection === "qobuz"}
-            icon={Compass}
-            label="Qobuz"
-            onClick={() => onNavigate?.("qobuz")}
-          />
         </div>
       </nav>
 

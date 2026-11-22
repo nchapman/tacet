@@ -278,6 +278,12 @@ func (s *Server) routes() {
 	s.apiMux.HandleFunc("GET /api/v1/qobuz/artist", s.handleQobuzArtist)
 	s.apiMux.HandleFunc("GET /api/v1/qobuz/albums/{id}", s.handleQobuzAlbum)
 
+	// Discovery (unified editorial shelves & contextual recommendations)
+	s.apiMux.HandleFunc("GET /api/v1/discover", s.handleDiscover)
+	s.apiMux.HandleFunc("GET /api/v1/discover/shelves/{slug}", s.handleDiscoverShelf)
+	s.apiMux.HandleFunc("GET /api/v1/albums/{id}/similar", s.handleSimilarAlbums)
+	s.apiMux.HandleFunc("GET /api/v1/artists/{id}/similar", s.handleSimilarArtists)
+
 	// Embedded React/Vite Web UI
 	if sub, err := fs.Sub(webFS, "web/dist"); err == nil {
 		s.mux.Handle("/", newSPAHandler(sub))

@@ -136,6 +136,7 @@ type Client struct {
 	urlCache     map[int64]StreamInfo
 	trackCache   map[int64]library.Track
 	cache        *catalogCache
+	discover     *discoverCache
 	authGen      atomic.Uint64
 }
 
@@ -159,6 +160,7 @@ func NewClient(cfg Config) *Client {
 		urlCache:   make(map[int64]StreamInfo),
 		trackCache: make(map[int64]library.Track),
 		cache:      newCatalogCache(cfg.CachePath),
+		discover:   newDiscoverCache(),
 	}
 }
 
@@ -230,6 +232,9 @@ func (c *Client) Logout() Status {
 	c.mu.Unlock()
 	if c.cache != nil {
 		c.cache.clear()
+	}
+	if c.discover != nil {
+		c.discover.clear()
 	}
 	return st
 }

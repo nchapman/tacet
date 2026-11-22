@@ -1007,6 +1007,67 @@ paths:
               schema: { $ref: "#/components/schemas/Album" }
         "401": { $ref: "#/components/responses/ErrorResponse" }
         "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/discover:
+    get:
+      summary: Fetch unified discovery feed (genres and editorial album shelves)
+      parameters:
+        - name: genre_ids
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Discovery feed (degrades to connected=false when no streaming provider is connected)
+  /api/v1/discover/shelves/{slug}:
+    get:
+      summary: Fetch a paginated discovery shelf by slug
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+        - name: genre_ids
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 24 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Paginated discovery shelf
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/albums/{id}/similar:
+    get:
+      summary: Fetch recommended similar albums for an album
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 12 }
+      responses:
+        "200":
+          description: Similar albums
+  /api/v1/artists/{id}/similar:
+    get:
+      summary: Fetch similar artists for a streaming provider artist ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 12 }
+      responses:
+        "200":
+          description: Similar artists
+        "400": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/players:
     post:
       summary: Register or reattach any HTTP/SSE audio player endpoint as a controllable zone
