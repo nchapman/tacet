@@ -8,13 +8,12 @@ import { Button } from "@/components/ui/button";
 
 interface HomeViewProps {
   libraryStatus: LibraryStatus | null;
-  onAmbientArt?: (artworkUrl?: string) => void;
   onOpenAlbum: (album: Album) => void;
   onNavigate: (section: AppSection) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
 }
 
-export function HomeView({ libraryStatus, onAmbientArt, onOpenAlbum, onNavigate, onPlay }: HomeViewProps) {
+export function HomeView({ libraryStatus, onOpenAlbum, onNavigate, onPlay }: HomeViewProps) {
   const [rotation, setRotation] = useState<HeavyRotationAlbum[]>([]);
   const [recent, setRecent] = useState<Album[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,12 +45,6 @@ export function HomeView({ libraryStatus, onAmbientArt, onOpenAlbum, onNavigate,
 
     return () => ctrl.abort();
   }, [libraryStatus?.etag]);
-
-  const heroArt = rotation[0]?.artworkUrl || recent[0]?.artworkUrl;
-
-  useEffect(() => {
-    onAmbientArt?.(heroArt);
-  }, [heroArt, onAmbientArt]);
 
   return (
     <div className="relative min-h-full pb-12">

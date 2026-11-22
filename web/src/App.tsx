@@ -46,27 +46,9 @@ export function App() {
   const [searchFocusNonce, setSearchFocusNonce] = useState(0);
   const [queueOpen, setQueueOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
-  const [pageAmbient, setPageAmbient] = useState<{ artworkUrl?: string; intensity: "subtle" | "hero" }>({
-    intensity: "subtle",
-  });
+  const [albumAmbientArt, setAlbumAmbientArt] = useState<string | undefined>(undefined);
 
   const stageRef = useRef<HTMLElement | null>(null);
-
-  const setSubtleAmbient = useCallback((artworkUrl?: string) => {
-    setPageAmbient((prev) =>
-      prev.artworkUrl === artworkUrl && prev.intensity === "subtle"
-        ? prev
-        : { artworkUrl, intensity: "subtle" },
-    );
-  }, []);
-
-  const setHeroAmbient = useCallback((artworkUrl?: string) => {
-    setPageAmbient((prev) =>
-      prev.artworkUrl === artworkUrl && prev.intensity === "hero"
-        ? prev
-        : { artworkUrl, intensity: "hero" },
-    );
-  }, []);
 
   const activeState = tacet.activeZone?.state;
   const activeHasPlayable = Boolean(
@@ -78,10 +60,12 @@ export function App() {
   );
   const activeTransport = tacet.transport;
 
-  // Scroll the main pane back to top and reset page-specific ambient art on route changes.
+  // Scroll the main pane back to top and clear album-page UltraBlur override when leaving an album.
   useEffect(() => {
     stageRef.current?.scrollTo({ top: 0 });
-    setPageAmbient({ artworkUrl: undefined, intensity: "subtle" });
+    if (!location.pathname.startsWith("/albums/")) {
+      setAlbumAmbientArt(undefined);
+    }
   }, [location.pathname]);
 
   const navigateSection = useCallback(
@@ -149,8 +133,9 @@ export function App() {
   );
 
   const isSplitPane = location.pathname === "/artists" || location.pathname.startsWith("/artists/");
-  const ambientArtwork = pageAmbient.artworkUrl || tacet.activeZone?.currentTrack?.artworkUrl;
-  const ambientIntensity = pageAmbient.artworkUrl ? pageAmbient.intensity : "subtle";
+  const isAlbumPage = location.pathname.startsWith("/albums/");
+  const ambientArtwork = (isAlbumPage && albumAmbientArt) || tacet.activeZone?.currentTrack?.artworkUrl;
+  const ambientIntensity = isAlbumPage && albumAmbientArt ? "hero" : "subtle";
 
   return (
     <div className="relative flex h-dvh w-full flex-col overflow-hidden bg-[#09090b] text-foreground">
@@ -200,7 +185,6 @@ export function App() {
               element={
                 <HomeRoute
                   libraryStatus={tacet.libraryStatus}
-                  onAmbientArt={setSubtleAmbient}
                   onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
                   onNavigate={navigateSection}
                   onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
@@ -214,7 +198,6 @@ export function App() {
                   focusNonce={searchFocusNonce}
                   qobuzStatus={tacet.qobuzStatus}
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
-                  onAmbientArt={setSubtleAmbient}
                   onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
                   onOpenArtist={openArtist}
                   onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
@@ -238,7 +221,7 @@ export function App() {
                 <AlbumRoute
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
                   isPlaying={tacet.activeZone?.state === "playing"}
-                  onAmbientArt={setHeroAmbient}
+                  onAmbientArt={setAlbumAmbientArt}
                   onOpenAlbum={(id) => openAlbumById(id)}
                   onOpenArtist={openArtist}
                   onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
@@ -252,7 +235,7 @@ export function App() {
                 <AlbumRoute
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
                   isPlaying={tacet.activeZone?.state === "playing"}
-                  onAmbientArt={setHeroAmbient}
+                  onAmbientArt={setAlbumAmbientArt}
                   onOpenAlbum={(id) => openAlbumById(id)}
                   onOpenArtist={openArtist}
                   onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
@@ -266,7 +249,6 @@ export function App() {
                 <ArtistsRoute
                   libraryStatus={tacet.libraryStatus}
                   qobuzStatus={tacet.qobuzStatus}
-                  onAmbientArt={setSubtleAmbient}
                   onSelectArtist={(name) => openArtist(name)}
                   onBackToArtists={() => void routerNavigate("/artists")}
                   onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
@@ -281,7 +263,6 @@ export function App() {
                 <ArtistsRoute
                   libraryStatus={tacet.libraryStatus}
                   qobuzStatus={tacet.qobuzStatus}
-                  onAmbientArt={setSubtleAmbient}
                   onSelectArtist={(name) => openArtist(name)}
                   onBackToArtists={() => void routerNavigate("/artists")}
                   onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
@@ -405,13 +386,11 @@ export function App() {
 
 function HomeRoute({
   libraryStatus,
-  onAmbientArt,
   onOpenAlbum,
   onNavigate,
   onPlay,
 }: {
   libraryStatus: ReturnType<typeof useTacet>["libraryStatus"];
-  onAmbientArt?: (artworkUrl?: string) => void;
   onOpenAlbum: (album: Album) => void;
   onNavigate: (section: AppSection) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
@@ -424,7 +403,6 @@ function HomeRoute({
   return (
     <HomeView
       libraryStatus={libraryStatus}
-      onAmbientArt={onAmbientArt}
       onOpenAlbum={onOpenAlbum}
       onNavigate={onNavigate}
       onPlay={onPlay}
@@ -436,7 +414,6 @@ function SearchRoute({
   focusNonce,
   qobuzStatus,
   currentTrackId,
-  onAmbientArt,
   onOpenAlbum,
   onOpenArtist,
   onPlay,
@@ -445,7 +422,6 @@ function SearchRoute({
   focusNonce: number;
   qobuzStatus: ReturnType<typeof useTacet>["qobuzStatus"];
   currentTrackId?: string;
-  onAmbientArt?: (artworkUrl?: string) => void;
   onOpenAlbum: (album: Album) => void;
   onOpenArtist: (artistName: string, qobuzArtistId?: number) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
@@ -472,7 +448,6 @@ function SearchRoute({
       focusNonce={focusNonce}
       qobuzStatus={qobuzStatus}
       currentTrackId={currentTrackId}
-      onAmbientArt={onAmbientArt}
       onOpenAlbum={onOpenAlbum}
       onOpenArtist={onOpenArtist}
       onPlay={onPlay}
@@ -484,7 +459,6 @@ function SearchRoute({
 function ArtistsRoute({
   libraryStatus,
   qobuzStatus,
-  onAmbientArt,
   onSelectArtist,
   onBackToArtists,
   onOpenAlbum,
@@ -493,7 +467,6 @@ function ArtistsRoute({
 }: {
   libraryStatus: ReturnType<typeof useTacet>["libraryStatus"];
   qobuzStatus: ReturnType<typeof useTacet>["qobuzStatus"];
-  onAmbientArt?: (artworkUrl?: string) => void;
   onSelectArtist: (artistName: string) => void;
   onBackToArtists: () => void;
   onOpenAlbum: (album: Album) => void;
@@ -512,7 +485,6 @@ function ArtistsRoute({
       qobuzStatus={qobuzStatus}
       initialArtist={artistName}
       initialQobuzArtistId={qobuzArtistId}
-      onAmbientArt={onAmbientArt}
       onSelectArtist={onSelectArtist}
       onBackToArtists={onBackToArtists}
       onOpenAlbum={onOpenAlbum}

@@ -25,7 +25,6 @@ interface SearchViewProps {
   focusNonce: number;
   qobuzStatus: QobuzStatus | null;
   currentTrackId?: string;
-  onAmbientArt?: (artworkUrl?: string) => void;
   onOpenAlbum: (album: Album) => void;
   onOpenArtist: (name: string, qobuzArtistId?: number) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
@@ -45,7 +44,6 @@ export function SearchView({
   focusNonce,
   qobuzStatus,
   currentTrackId,
-  onAmbientArt,
   onOpenAlbum,
   onOpenArtist,
   onPlay,
@@ -169,11 +167,6 @@ export function SearchView({
     if (libRes?.topResult?.type === "album" && list.length === 1) return [];
     return list;
   }, [libRes]);
-  const topArtwork =
-    libRes?.topResult?.album?.artworkUrl ||
-    libRes?.topResult?.track?.artworkUrl ||
-    libRes?.topResult?.artist?.artworkUrl ||
-    libRes?.albums?.[0]?.artworkUrl;
 
   const hasLibMatches =
     Boolean(libRes?.topResult) ||
@@ -184,10 +177,6 @@ export function SearchView({
   const hasQobuzMatches =
     Boolean(dedupedQobuz) &&
     (dedupedQobuz!.artists.length > 0 || dedupedQobuz!.albums.length > 0 || dedupedQobuz!.tracks.length > 0);
-
-  useEffect(() => {
-    onAmbientArt?.(trimmed ? topArtwork : undefined);
-  }, [trimmed, topArtwork, onAmbientArt]);
 
   return (
     <div className="relative min-h-full">

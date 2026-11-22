@@ -21,7 +21,6 @@ interface ArtistsViewProps {
   qobuzStatus: QobuzStatus | null;
   initialArtist?: string;
   initialQobuzArtistId?: number;
-  onAmbientArt?: (artworkUrl?: string) => void;
   onSelectArtist?: (artistName: string) => void;
   onBackToArtists?: () => void;
   onOpenAlbum: (album: Album) => void;
@@ -50,7 +49,6 @@ export function ArtistsView({
   qobuzStatus,
   initialArtist,
   initialQobuzArtistId,
-  onAmbientArt,
   onSelectArtist,
   onBackToArtists,
   onOpenAlbum,
@@ -187,10 +185,6 @@ export function ArtistsView({
     currentSummary?.artworkUrl ||
     remoteDetail?.artist.artworkUrl ||
     remoteOnlyAlbums[0]?.artworkUrl;
-
-  useEffect(() => {
-    onAmbientArt?.(heroArt);
-  }, [heroArt, onAmbientArt]);
 
   return (
     <div className="flex h-full min-h-0">
