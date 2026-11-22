@@ -11,6 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"tacet/internal/cache"
+	"tacet/internal/library"
 )
 
 func TestCatalogCache_DiskPersistenceAndHits(t *testing.T) {
@@ -93,13 +96,17 @@ func TestCatalogCache_DiskPersistenceAndHits(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cachePath := filepath.Join(t.TempDir(), "qobuz-cache.json")
+	cachePath := filepath.Join(t.TempDir(), "cache.db")
+	kv1, err := cache.Open(cachePath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
 	cfg := Config{
 		BaseURL:   srv.URL,
 		AppID:     "app",
 		AppSecret: "sec",
 		AuthToken: "tok",
-		CachePath: cachePath,
+		Cache:     kv1,
 	}
 
 	c1 := NewClient(cfg)
@@ -137,12 +144,14 @@ func TestCatalogCache_DiskPersistenceAndHits(t *testing.T) {
 		t.Fatalf("Search: %v", err)
 	}
 
-	// Close flushes JSON cache to disk.
 	if err = c1.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+		t.Fatalf("Close client: %v", err)
+	}
+	if err = kv1.Close(); err != nil {
+		t.Fatalf("Close cache: %v", err)
 	}
 	if _, statErr := os.Stat(cachePath); statErr != nil {
-		t.Fatalf("expected cache file on disk: %v", statErr)
+		t.Fatalf("expected cache db on disk: %v", statErr)
 	}
 
 	if albumCalls.Load() != 1 || artistCalls.Load() != 1 || artistSearchCalls.Load() != 2 || searchCalls.Load() != 1 {
@@ -150,7 +159,13 @@ func TestCatalogCache_DiskPersistenceAndHits(t *testing.T) {
 			albumCalls.Load(), artistCalls.Load(), artistSearchCalls.Load(), searchCalls.Load())
 	}
 
-	// Brand-new client loads from disk and serves every request with zero upstream calls.
+	// Brand-new client + reopened SQLite cache serves every request with zero upstream calls.
+	kv2, err := cache.Open(cachePath)
+	if err != nil {
+		t.Fatalf("reopen cache: %v", err)
+	}
+	defer func() { _ = kv2.Close() }()
+	cfg.Cache = kv2
 	c2 := NewClient(cfg)
 	defer func() { _ = c2.Close() }()
 
@@ -188,51 +203,67 @@ func TestCatalogCache_DiskPersistenceAndHits(t *testing.T) {
 	}
 }
 
-func TestCatalogCache_TTLExpiryAndCorruptFile(t *testing.T) {
-	dir := t.TempDir()
-	corruptPath := filepath.Join(dir, "corrupt.json")
-	if err := os.WriteFile(corruptPath, []byte("{not valid json"), 0o600); err != nil {
-		t.Fatalf("write corrupt file: %v", err)
-	}
-	// Loading a corrupt file must not panic or fail; starts with empty cache.
-	cc := newCatalogCache(corruptPath)
-	if albs, arts, names, searches := cc.stats(); albs+arts+names+searches != 0 {
-		t.Fatalf("expected empty cache after corrupt load, got %d/%d/%d/%d", albs, arts, names, searches)
-	}
-
+func TestCatalogCache_TTLExpiryAndCorruptPayload(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	cc.now = func() time.Time { return now }
+	kv, err := cache.Open(":memory:", cache.WithNow(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer func() { _ = kv.Close() }()
 
-	cc.putSearch("miles", 10, 0, SearchResult{Artists: []Artist{{ID: 1, Name: "Miles"}}})
-	cc.putArtistName("Local Only", 0, true)
+	c := NewClient(Config{Cache: kv})
+	defer func() { _ = c.Close() }()
 
-	if _, ok := cc.getSearch("miles", 10, 0); !ok {
+	// Corrupt JSON payload in SQLite is treated as a cache miss and self-healed.
+	_ = c.kv.Set("album:corrupt", []byte("{not valid json"), time.Hour)
+	if _, ok := c.getCachedAlbum("corrupt"); ok {
+		t.Fatal("expected corrupt JSON entry to be treated as miss")
+	}
+
+	c.putCachedSearch("miles", 10, 0, SearchResult{Artists: []Artist{{ID: 1, Name: "Miles"}}})
+	c.putCachedArtistName("Local Only", 0, true)
+
+	if _, ok := c.getCachedSearch("miles", 10, 0); !ok {
 		t.Fatal("expected search hit before TTL")
 	}
-	if id, ok := cc.getArtistName("Local Only"); !ok || id != 0 {
+	if id, ok := c.getCachedArtistName("Local Only"); !ok || id != 0 {
 		t.Fatalf("expected negative artist hit before TTL, got (%d, %v)", id, ok)
 	}
 
 	// Advance past search TTL (1h) but still inside negative artist miss TTL (24h).
 	now = now.Add(2 * time.Hour)
-	if _, ok := cc.getSearch("miles", 10, 0); ok {
+	if _, ok := c.getCachedSearch("miles", 10, 0); ok {
 		t.Fatal("expected search entry to expire after 2h")
 	}
-	if id, ok := cc.getArtistName("Local Only"); !ok || id != 0 {
+	if id, ok := c.getCachedArtistName("Local Only"); !ok || id != 0 {
 		t.Fatalf("expected negative artist miss to still be valid at 2h, got (%d, %v)", id, ok)
 	}
 
 	// Advance past 24h negative miss TTL.
 	now = now.Add(24 * time.Hour)
-	if _, ok := cc.getArtistName("Local Only"); ok {
+	if _, ok := c.getCachedArtistName("Local Only"); ok {
 		t.Fatal("expected negative artist miss to expire after 26h")
 	}
 
-	// Put-if-absent (Search opportunistic caching) must not overwrite an existing positive artist ID.
-	cc.putArtistName("Nirvana", 1001, true)
-	cc.putArtistName("Nirvana", 9999, false)
-	if id, ok := cc.getArtistName("Nirvana"); !ok || id != 1001 {
+	// Put-if-absent (Search opportunistic caching) must not overwrite an existing positive artist ID,
+	// but MUST allow upgrading a cached negative miss (ID 0) to a positive ID.
+	c.putCachedArtistName("Nirvana", 1001, true)
+	c.putCachedArtistName("Nirvana", 9999, false)
+	if id, ok := c.getCachedArtistName("Nirvana"); !ok || id != 1001 {
 		t.Fatalf("expected primary artist ID 1001 to be preserved, got (%d, %v)", id, ok)
+	}
+	c.putCachedArtistName("Formerly Missing", 0, true)
+	c.putCachedArtistName("Formerly Missing", 4242, false)
+	if id, ok := c.getCachedArtistName("Formerly Missing"); !ok || id != 4242 {
+		t.Fatalf("expected cached miss to upgrade to 4242, got (%d, %v)", id, ok)
+	}
+
+	// Cached search tracks must rehydrate QobuzTrackID from ID ("qobuz:<id>").
+	c.putCachedSearch("rehydrate", 10, 0, SearchResult{
+		Tracks: []library.Track{{ID: "qobuz:55501", Title: "Blue in Green", QobuzTrackID: 55501}},
+	})
+	if res, ok := c.getCachedSearch("rehydrate", 10, 0); !ok || len(res.Tracks) != 1 || res.Tracks[0].QobuzTrackID != 55501 {
+		t.Fatalf("expected cached search track QobuzTrackID 55501, got (%+v, %v)", res, ok)
 	}
 }
 

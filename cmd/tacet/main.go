@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"tacet/internal/api"
+	"tacet/internal/cache"
 	"tacet/internal/library"
 	"tacet/internal/media"
 	"tacet/internal/qobuz"
@@ -79,21 +80,32 @@ func run() error {
 		log.Printf("loaded %d cached tracks across %d albums from SQLite", initStatus.Tracks, initStatus.Albums)
 	}
 
-	// 2. Qobuz client (env vars take precedence; otherwise restore saved session from SQLite).
-	var qobuzCachePath string
+	// 2. Shared SQLite KV cache (<data-dir>/cache/cache.db) and Qobuz client.
+	cacheDBPath := ":memory:"
 	if dir := strings.TrimSpace(*dataDir); dir != "" {
-		qobuzCachePath = filepath.Join(dir, "cache", "qobuz.json")
+		cacheDBPath = filepath.Join(dir, "cache", "cache.db")
+		// Clean up obsolete legacy JSON cache file if present.
+		_ = os.Remove(filepath.Join(dir, "cache", "qobuz.json"))
 	}
+	appCache, cacheErr := cache.Open(cacheDBPath, cache.WithPruneInterval(time.Hour))
+	if cacheErr != nil {
+		log.Printf("warning: failed to open SQLite cache %s (%v); falling back to in-memory cache", cacheDBPath, cacheErr)
+		appCache, _ = cache.Open(":memory:", cache.WithPruneInterval(time.Hour))
+	}
+	if appCache != nil {
+		defer func() { _ = appCache.Close() }()
+	}
+
 	qb := qobuz.NewClient(qobuz.Config{
 		AppID:     os.Getenv("QOBUZ_APP_ID"),
 		AppSecret: os.Getenv("QOBUZ_APP_SECRET"),
 		AuthToken: os.Getenv("QOBUZ_AUTH_TOKEN"),
 		FormatID:  qobuz.FormatFLAC192,
-		CachePath: qobuzCachePath,
+		Cache:     appCache,
 	})
 	defer func() { _ = qb.Close() }()
 	if albs, arts, _, searches := qb.CacheStats(); albs+arts+searches > 0 {
-		log.Printf("loaded Qobuz disk cache (%d albums, %d artists, %d searches)", albs, arts, searches)
+		log.Printf("loaded Qobuz SQLite cache (%d albums, %d artists, %d searches)", albs, arts, searches)
 	}
 	var savedQobuz qobuz.PersistedCredentials
 	if found, credErr := cat.GetProviderCredentials(ctx, "qobuz", &savedQobuz); credErr != nil {
@@ -184,6 +196,7 @@ func run() error {
 				st := cat.Status()
 				log.Printf("indexed %d local tracks across %d albums in %s", n, st.LocalAlbums, time.Since(start).Round(time.Millisecond))
 				apiServer.PrewarmArt(ctx)
+				apiServer.PrewarmArtists(ctx)
 			}
 		}()
 	}
@@ -206,6 +219,7 @@ func run() error {
 			} else {
 				log.Printf("synced %d Qobuz library tracks from favorites", n)
 			}
+			apiServer.PrewarmArtists(ctx)
 		}
 	}()
 

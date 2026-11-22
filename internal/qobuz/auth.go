@@ -108,8 +108,8 @@ func (c *Client) LoginWithToken(ctx context.Context, token string) (Status, erro
 	c.mu.Unlock()
 	if switchedAccount {
 		c.authGen.Add(1)
-		if c.cache != nil {
-			c.cache.clear()
+		if c.kv != nil {
+			_ = c.kv.Clear()
 		}
 	}
 
@@ -167,8 +167,8 @@ func (c *Client) Login(ctx context.Context, email, password string) (Status, err
 	c.mu.Unlock()
 	if switchedAccount {
 		c.authGen.Add(1)
-		if c.cache != nil {
-			c.cache.clear()
+		if c.kv != nil {
+			_ = c.kv.Clear()
 		}
 	}
 

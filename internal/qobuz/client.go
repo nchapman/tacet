@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"tacet/internal/cache"
 	"tacet/internal/library"
 )
 
@@ -76,8 +78,8 @@ type Config struct {
 	AppID     string
 	AppSecret string
 	AuthToken string
-	FormatID  int    // Defaults to FormatFLAC192 (27)
-	CachePath string // Optional JSON disk cache path for slow-changing catalog metadata
+	FormatID  int          // Defaults to FormatFLAC192 (27)
+	Cache     *cache.Cache // Optional shared SQLite KV cache (defaults to an in-memory SQLite cache)
 }
 
 // Status reports current Qobuz authentication state.
@@ -139,9 +141,13 @@ type Client struct {
 	formatID     int
 	urlCache     map[int64]StreamInfo
 	trackCache   map[int64]library.Track
-	cache        *catalogCache
-	discover     *discoverCache
+	kv           *cache.Namespaced
+	ownedCache   *cache.Cache
 	authGen      atomic.Uint64
+	prewarmMu    sync.Mutex
+	prewarmStop  context.CancelFunc
+	prewarmDone  bool
+	prewarmWG    sync.WaitGroup
 }
 
 // NewClient initializes a Qobuz client.
@@ -154,6 +160,18 @@ func NewClient(cfg Config) *Client {
 	if fmtID == 0 {
 		fmtID = FormatFLAC192
 	}
+	backing := cfg.Cache
+	var owned *cache.Cache
+	if backing == nil {
+		if mem, err := cache.Open(":memory:"); err == nil {
+			backing = mem
+			owned = mem
+		}
+	}
+	var kv *cache.Namespaced
+	if backing != nil {
+		kv = backing.Namespace("qobuz")
+	}
 	return &Client{
 		baseURL:    base,
 		http:       &http.Client{Timeout: 15 * time.Second},
@@ -163,25 +181,46 @@ func NewClient(cfg Config) *Client {
 		formatID:   fmtID,
 		urlCache:   make(map[int64]StreamInfo),
 		trackCache: make(map[int64]library.Track),
-		cache:      newCatalogCache(cfg.CachePath),
-		discover:   newDiscoverCache(),
+		kv:         kv,
+		ownedCache: owned,
 	}
 }
 
-// Close flushes any pending Qobuz catalog cache writes to disk.
+// Close stops background prewarming and closes any client-owned cache.
 func (c *Client) Close() error {
-	if c.cache == nil {
-		return nil
+	c.prewarmMu.Lock()
+	c.prewarmDone = true
+	stop := c.prewarmStop
+	c.prewarmStop = nil
+	c.prewarmMu.Unlock()
+	if stop != nil {
+		stop()
 	}
-	return c.cache.Close()
+	c.prewarmWG.Wait()
+	if c.ownedCache != nil {
+		return c.ownedCache.Close()
+	}
+	return nil
 }
 
 // CacheStats returns the number of cached albums, artists, artist names, and searches.
 func (c *Client) CacheStats() (albums, artists, artistNames, searches int) {
-	if c.cache == nil {
+	if c.kv == nil {
 		return 0, 0, 0, 0
 	}
-	return c.cache.stats()
+	if ks, err := c.kv.Keys("album:*"); err == nil {
+		albums = len(ks)
+	}
+	if ks, err := c.kv.Keys("artist:*"); err == nil {
+		artists = len(ks)
+	}
+	if ks, err := c.kv.Keys("artist-name:*"); err == nil {
+		artistNames = len(ks)
+	}
+	if ks, err := c.kv.Keys("search:*"); err == nil {
+		searches = len(ks)
+	}
+	return albums, artists, artistNames, searches
 }
 
 // Status returns the current Qobuz auth/config state.
@@ -234,11 +273,8 @@ func (c *Client) Logout() Status {
 		MaxQuality:    QualityLabel(c.formatID),
 	}
 	c.mu.Unlock()
-	if c.cache != nil {
-		c.cache.clear()
-	}
-	if c.discover != nil {
-		c.discover.clear()
+	if c.kv != nil {
+		_ = c.kv.Clear()
 	}
 	return st
 }
@@ -311,8 +347,8 @@ func (c *Client) SetCredentials(appID, appSecret, authToken string) {
 	c.mu.Unlock()
 	if switchedAccount {
 		c.authGen.Add(1)
-		if c.cache != nil {
-			c.cache.clear()
+		if c.kv != nil {
+			_ = c.kv.Clear()
 		}
 	}
 }
@@ -338,7 +374,7 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 	if err := c.requireAuth(); err != nil {
 		return empty, err
 	}
-	if cached, ok := c.cache.getSearch(query, limit, off); ok {
+	if cached, ok := c.getCachedSearch(query, limit, off); ok {
 		c.cacheTracks(cached.Tracks)
 		return cached, nil
 	}
@@ -391,7 +427,7 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 			c.cacheArtistName(art.Name, art.ID, false)
 		}
 		c.cacheTracks(res.Tracks)
-		c.cache.putSearch(query, limit, off, res)
+		c.putCachedSearch(query, limit, off, res)
 	}
 	return res, nil
 }
@@ -407,7 +443,7 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	if cached, ok := c.cache.getArtist(artistID, limit); ok {
+	if cached, ok := c.getCachedArtist(artistID, limit); ok {
 		return cached, nil
 	}
 	gen := c.authGen.Load()
@@ -423,6 +459,19 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 			Items []qAlbum `json:"items"`
 		} `json:"albums"`
 	}
+
+	// Fetch /artist/page (popular top_tracks) concurrently with /artist/get so
+	// cold-cache artist loads pay one round-trip instead of two.
+	type topTracksRes struct {
+		tracks []library.Track
+		ok     bool
+	}
+	topCh := make(chan topTracksRes, 1)
+	go func() {
+		tr, ok := c.fetchArtistTopTracks(ctx, artistID, "")
+		topCh <- topTracksRes{tracks: tr, ok: ok}
+	}()
+
 	if err := c.getJSON(ctx, "/artist/get", params, true, &resp); err != nil {
 		var ae *apiError
 		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
@@ -445,7 +494,16 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 		}
 		albums = append(albums, alb)
 	}
-	tracks, topTracksOK := c.fetchArtistTopTracks(ctx, art.ID, art.Name)
+	topRes := <-topCh
+	tracks, topTracksOK := topRes.tracks, topRes.ok
+	for i := range tracks {
+		if tracks[i].Artist == "" {
+			tracks[i].Artist = art.Name
+		}
+		if tracks[i].AlbumArtist == "" {
+			tracks[i].AlbumArtist = art.Name
+		}
+	}
 	c.cacheTracks(tracks)
 	if art.ArtworkURL == "" && len(albums) > 0 {
 		art.ArtworkURL = albums[0].ArtworkURL
@@ -456,7 +514,7 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 			c.cacheArtistName(art.Name, art.ID, true)
 		}
 		if topTracksOK {
-			c.cache.putArtist(artistID, limit, detail)
+			c.putCachedArtist(artistID, limit, detail)
 		}
 	}
 	return detail, nil
@@ -551,6 +609,101 @@ func (c *Client) fetchArtistTopTracks(ctx context.Context, artistID int64, fallb
 	return out, true
 }
 
+// PrewarmArtists gently pre-caches Qobuz artist profiles (bio, popular tracks,
+// and remote discography) for library artists not already in the SQLite cache.
+func (c *Client) PrewarmArtists(ctx context.Context, names []string) {
+	if !c.IsConnected() || len(names) == 0 {
+		return
+	}
+	const defaultLimit = 50
+	const maxPerPass = 250
+
+	seen := make(map[string]struct{}, len(names))
+	pending := make([]string, 0, len(names))
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		key := normMatchKey(name)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		if cachedID, ok := c.getCachedArtistName(name); ok {
+			if cachedID == 0 {
+				continue // negative cache hit
+			}
+			if _, ok := c.getCachedArtist(cachedID, defaultLimit); ok {
+				continue // already warm
+			}
+		}
+		pending = append(pending, name)
+		if len(pending) >= maxPerPass {
+			break
+		}
+	}
+	if len(pending) == 0 {
+		return
+	}
+
+	c.prewarmMu.Lock()
+	if c.prewarmDone {
+		c.prewarmMu.Unlock()
+		return
+	}
+	prev := c.prewarmStop
+	runCtx, cancel := context.WithCancel(ctx)
+	c.prewarmStop = cancel
+	c.prewarmWG.Add(1)
+	c.prewarmMu.Unlock()
+
+	if prev != nil {
+		prev()
+	}
+
+	go func() {
+		defer c.prewarmWG.Done()
+		defer cancel()
+		start := time.Now()
+		jobs := make(chan string, len(pending))
+		for _, n := range pending {
+			jobs <- n
+		}
+		close(jobs)
+
+		var warmed atomic.Int64
+		var wg sync.WaitGroup
+		workers := min(2, len(pending))
+		for range workers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for name := range jobs {
+					if runCtx.Err() != nil || !c.IsConnected() {
+						return
+					}
+					reqCtx, reqCancel := context.WithTimeout(runCtx, 10*time.Second)
+					_, err := c.GetArtistByName(reqCtx, name, defaultLimit)
+					reqCancel()
+					if err == nil {
+						warmed.Add(1)
+					}
+					select {
+					case <-runCtx.Done():
+						return
+					case <-time.After(120 * time.Millisecond):
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		if n := warmed.Load(); n > 0 {
+			log.Printf("prewarmed %d/%d Qobuz artist profiles in %s", n, len(pending), time.Since(start).Round(time.Millisecond))
+		}
+	}()
+}
+
 // GetArtistByName resolves an artist name via Qobuz /artist/search (exact normalized match, cached)
 // and fetches their remote discography.
 func (c *Client) GetArtistByName(ctx context.Context, name string, limit int) (ArtistDetail, error) {
@@ -562,7 +715,7 @@ func (c *Client) GetArtistByName(ctx context.Context, name string, limit int) (A
 		return ArtistDetail{}, fmt.Errorf("%w: empty artist name", ErrNotFound)
 	}
 
-	if cachedID, ok := c.cache.getArtistName(name); ok {
+	if cachedID, ok := c.getCachedArtistName(name); ok {
 		if cachedID == 0 {
 			return ArtistDetail{}, fmt.Errorf("%w: artist %q", ErrNotFound, name)
 		}
@@ -596,7 +749,7 @@ func (c *Client) GetArtistByName(ctx context.Context, name string, limit int) (A
 	}
 	if matchedID == 0 {
 		if c.authGen.Load() == gen {
-			c.cache.putArtistName(name, 0, true)
+			c.putCachedArtistName(name, 0, true)
 		}
 		return ArtistDetail{}, fmt.Errorf("%w: artist %q", ErrNotFound, name)
 	}
@@ -607,10 +760,10 @@ func (c *Client) GetArtistByName(ctx context.Context, name string, limit int) (A
 }
 
 func (c *Client) cacheArtistName(name string, id int64, overwrite bool) {
-	if c.cache == nil || id <= 0 {
+	if c.kv == nil || id <= 0 {
 		return
 	}
-	c.cache.putArtistName(name, id, overwrite)
+	c.putCachedArtistName(name, id, overwrite)
 }
 
 // GetAlbum fetches a Qobuz album and its track listing. Accepts bare or "qobuz:"-prefixed IDs.
@@ -619,7 +772,7 @@ func (c *Client) GetAlbum(ctx context.Context, albumID string) (library.Album, e
 		return library.Album{}, err
 	}
 	rawID := strings.TrimPrefix(strings.TrimSpace(albumID), "qobuz:")
-	if cached, ok := c.cache.getAlbum(rawID); ok {
+	if cached, ok := c.getCachedAlbum(rawID); ok {
 		c.cacheTracks(cached.Tracks)
 		return cached, nil
 	}
@@ -639,7 +792,7 @@ func (c *Client) GetAlbum(ctx context.Context, albumID string) (library.Album, e
 	alb := qa.toLibraryAlbum(true)
 	if c.authGen.Load() == gen {
 		c.cacheTracks(alb.Tracks)
-		c.cache.putAlbum(rawID, alb)
+		c.putCachedAlbum(rawID, alb)
 	}
 	return alb, nil
 }

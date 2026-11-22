@@ -210,6 +210,7 @@ func (s *Server) handleLibraryRescan(w http.ResponseWriter, r *http.Request) {
 		st := s.catalog.Status()
 		s.manager.Publish("library.updated", st)
 		s.PrewarmArt(context.Background())
+		s.PrewarmArtists(context.Background())
 		writeJSON(w, http.StatusOK, st)
 		return
 	}
@@ -223,6 +224,7 @@ func (s *Server) handleLibraryRescan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.PrewarmArt(context.Background())
+		s.PrewarmArtists(context.Background())
 	}()
 
 	st := s.catalog.Status()
@@ -383,6 +385,7 @@ func (s *Server) triggerQobuzLibrarySyncAsync() {
 		if _, err := s.catalog.SyncRemote(sctx, "qobuz"); err != nil {
 			log.Printf("auto Qobuz favorites sync warning: %v", err)
 		}
+		s.PrewarmArtists(context.Background())
 	}()
 }
 

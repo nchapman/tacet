@@ -111,6 +111,9 @@ func (s *Server) Close() {
 	if s.media != nil {
 		s.media.Close()
 	}
+	if s.qobuz != nil {
+		_ = s.qobuz.Close()
+	}
 }
 
 // SetArtCacheDir configures the on-disk directory used to cache resized cover art.
@@ -122,6 +125,25 @@ func (s *Server) SetArtCacheDir(dir string) {
 // 400px local cover art thumbnails.
 func (s *Server) PrewarmArt(ctx context.Context) {
 	s.media.PrewarmArt(ctx)
+}
+
+// PrewarmArtists starts an asynchronous, cancelable pass that pre-caches Qobuz
+// artist profiles (bios, popular tracks, remote discography) for library artists.
+func (s *Server) PrewarmArtists(ctx context.Context) {
+	if s.qobuz == nil || !s.qobuz.IsConnected() || s.catalog == nil {
+		return
+	}
+	artists, _, err := s.catalog.ListArtists(library.FacetFilter{Limit: 500})
+	if err != nil || len(artists) == 0 {
+		return
+	}
+	names := make([]string, 0, len(artists))
+	for _, a := range artists {
+		if a.Name != "" {
+			names = append(names, a.Name)
+		}
+	}
+	s.qobuz.PrewarmArtists(ctx, names)
 }
 
 // SetGENA attaches the UPnP GENA event receiver so renderers can deliver NOTIFY

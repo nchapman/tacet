@@ -123,6 +123,45 @@ export function isHiRes(bitDepth?: number, sampleRate?: number): boolean {
   return (bitDepth ?? 0) > 16 || sampleRate > 48000;
 }
 
+const ABBREV_RE = /(?:(?:^|[\s(])(?:[A-Za-z]|Mr|Mrs|Ms|Dr|St|Jr|Sr|Prof|Rev|Gen|Col|Sgt|No|Vol|vs|etc|Inc|Ltd|Co)\.|(?:[A-Za-z]\.){2,})$/i;
+
+function splitSentences(text: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\n") {
+      const seg = text.slice(start, i).trim();
+      if (seg) out.push(seg);
+      start = i + 1;
+      continue;
+    }
+    if (ch !== "." && ch !== "!" && ch !== "?") continue;
+
+    // Advance past consecutive punctuation (e.g. "..." or "?!") and closing quotes/parens.
+    let end = i + 1;
+    while (end < text.length && (text[end] === "." || text[end] === "!" || text[end] === "?")) end++;
+    while (end < text.length && `"'”’)]`.includes(text[end])) end++;
+
+    // Must be at end of text or followed by whitespace (never mid-token like "U.K." or "3.5").
+    if (end < text.length && !/\s/.test(text[end])) {
+      i = end - 1;
+      continue;
+    }
+    const candidate = text.slice(start, end).trim();
+    if (ch === "." && ABBREV_RE.test(candidate)) {
+      i = end - 1;
+      continue;
+    }
+    if (candidate) out.push(candidate);
+    start = end;
+    i = end - 1;
+  }
+  const tail = text.slice(start).trim();
+  if (tail) out.push(tail);
+  return out;
+}
+
 /**
  * Truncates editorial copy (album reviews, artist bios) cleanly on a sentence
  * boundary near targetWords so previews end on a complete thought instead of
@@ -137,8 +176,7 @@ export function truncateAtSentence(text: string, targetWords = 35): { preview: s
     return { preview: trimmed, truncated: false };
   }
 
-  // Split first paragraph (or whole text) into sentences ending with . ! or ?
-  const sentences = trimmed.match(/[^.!?\n]+(?:[.!?]+["'”’)]*|$)/g)?.map((s) => s.trim()).filter(Boolean) ?? [];
+  const sentences = splitSentences(trimmed);
   if (sentences.length > 1) {
     const picked: string[] = [];
     let wordCount = 0;

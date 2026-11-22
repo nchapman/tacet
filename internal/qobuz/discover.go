@@ -8,9 +8,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"tacet/internal/cache"
 	"tacet/internal/library"
 )
 
@@ -118,69 +118,6 @@ func lookupShelfDef(slug string) (shelfDef, bool) {
 	return shelfDef{}, false
 }
 
-type timedEntry[T any] struct {
-	value     T
-	expiresAt time.Time
-}
-
-type discoverCache struct {
-	mu             sync.RWMutex
-	genres         *timedEntry[[]DiscoverGenre]
-	feeds          map[string]timedEntry[DiscoverFeed]
-	shelves        map[string]timedEntry[DiscoverShelfPage]
-	similarAlbums  map[string]timedEntry[[]library.Album]
-	similarArtists map[string]timedEntry[[]Artist]
-}
-
-func newDiscoverCache() *discoverCache {
-	return &discoverCache{
-		feeds:          make(map[string]timedEntry[DiscoverFeed]),
-		shelves:        make(map[string]timedEntry[DiscoverShelfPage]),
-		similarAlbums:  make(map[string]timedEntry[[]library.Album]),
-		similarArtists: make(map[string]timedEntry[[]Artist]),
-	}
-}
-
-const (
-	maxDiscoverFeedsCache   = 64
-	maxDiscoverShelvesCache = 128
-	maxDiscoverSimilarCache = 256
-)
-
-func putBounded[T any](m map[string]timedEntry[T], key string, val T, now time.Time, ttl time.Duration, maxEntries int) {
-	if _, exists := m[key]; !exists && len(m) >= maxEntries {
-		for k, v := range m {
-			if !now.Before(v.expiresAt) {
-				delete(m, k)
-			}
-		}
-		if len(m) >= maxEntries {
-			var oldestKey string
-			var oldestExp time.Time
-			for k, v := range m {
-				if oldestKey == "" || v.expiresAt.Before(oldestExp) {
-					oldestKey = k
-					oldestExp = v.expiresAt
-				}
-			}
-			if oldestKey != "" {
-				delete(m, oldestKey)
-			}
-		}
-	}
-	m[key] = timedEntry[T]{value: val, expiresAt: now.Add(ttl)}
-}
-
-func (dc *discoverCache) clear() {
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-	dc.genres = nil
-	clear(dc.feeds)
-	clear(dc.shelves)
-	clear(dc.similarAlbums)
-	clear(dc.similarArtists)
-}
-
 func normalizeGenreIDs(ids []int64) string {
 	if len(ids) == 0 {
 		return ""
@@ -208,15 +145,8 @@ func (c *Client) Genres(ctx context.Context) ([]DiscoverGenre, error) {
 	if err := c.requireAuth(); err != nil {
 		return nil, err
 	}
-	now := time.Now()
-	if c.discover != nil {
-		c.discover.mu.RLock()
-		if c.discover.genres != nil && now.Before(c.discover.genres.expiresAt) {
-			out := slices.Clone(c.discover.genres.value)
-			c.discover.mu.RUnlock()
-			return out, nil
-		}
-		c.discover.mu.RUnlock()
+	if cached, ok, err := cache.GetJSON[[]DiscoverGenre](c.kv, "genres"); err == nil && ok {
+		return cached, nil
 	}
 
 	var resp struct {
@@ -239,11 +169,7 @@ func (c *Client) Genres(ctx context.Context) ([]DiscoverGenre, error) {
 		}
 		out = append(out, DiscoverGenre{ID: g.ID, Name: name})
 	}
-	if c.discover != nil {
-		c.discover.mu.Lock()
-		c.discover.genres = &timedEntry[[]DiscoverGenre]{value: slices.Clone(out), expiresAt: now.Add(discoverGenresTTL)}
-		c.discover.mu.Unlock()
-	}
+	_ = cache.SetJSON(c.kv, "genres", out, discoverGenresTTL)
 	return out, nil
 }
 
@@ -253,14 +179,9 @@ func (c *Client) Discover(ctx context.Context, genreIDs []int64) (DiscoverFeed, 
 		return DiscoverFeed{}, err
 	}
 	genreParam := normalizeGenreIDs(genreIDs)
-	now := time.Now()
-	if c.discover != nil {
-		c.discover.mu.RLock()
-		if entry, ok := c.discover.feeds[genreParam]; ok && now.Before(entry.expiresAt) {
-			c.discover.mu.RUnlock()
-			return entry.value, nil
-		}
-		c.discover.mu.RUnlock()
+	cacheKey := "discover:" + genreParam
+	if cached, ok, err := cache.GetJSON[DiscoverFeed](c.kv, cacheKey); err == nil && ok {
+		return cached, nil
 	}
 
 	params := url.Values{}
@@ -309,11 +230,7 @@ func (c *Client) Discover(ctx context.Context, genreIDs []int64) (DiscoverFeed, 
 	}
 
 	feed := DiscoverFeed{Genres: genres, Shelves: shelves}
-	if c.discover != nil {
-		c.discover.mu.Lock()
-		putBounded(c.discover.feeds, genreParam, feed, now, discoverFeedTTL, maxDiscoverFeedsCache)
-		c.discover.mu.Unlock()
-	}
+	_ = cache.SetJSON(c.kv, cacheKey, feed, discoverFeedTTL)
 	return feed, nil
 }
 
@@ -337,15 +254,9 @@ func (c *Client) DiscoverShelf(ctx context.Context, slug string, genreIDs []int6
 	}
 
 	genreParam := normalizeGenreIDs(genreIDs)
-	cacheKey := fmt.Sprintf("%s|%s|%d|%d", def.slug, genreParam, limit, offset)
-	now := time.Now()
-	if c.discover != nil {
-		c.discover.mu.RLock()
-		if entry, ok := c.discover.shelves[cacheKey]; ok && now.Before(entry.expiresAt) {
-			c.discover.mu.RUnlock()
-			return entry.value, nil
-		}
-		c.discover.mu.RUnlock()
+	cacheKey := fmt.Sprintf("shelf:%s:%s:%d:%d", def.slug, genreParam, limit, offset)
+	if cached, ok, err := cache.GetJSON[DiscoverShelfPage](c.kv, cacheKey); err == nil && ok {
+		return cached, nil
 	}
 
 	params := url.Values{
@@ -418,11 +329,7 @@ func (c *Client) DiscoverShelf(ctx context.Context, slug string, genreIDs []int6
 		}
 	}
 
-	if c.discover != nil {
-		c.discover.mu.Lock()
-		putBounded(c.discover.shelves, cacheKey, page, now, discoverFeedTTL, maxDiscoverShelvesCache)
-		c.discover.mu.Unlock()
-	}
+	_ = cache.SetJSON(c.kv, cacheKey, page, discoverFeedTTL)
 	return page, nil
 }
 
@@ -442,15 +349,9 @@ func (c *Client) SimilarAlbums(ctx context.Context, albumID string, limit int) (
 		limit = 50
 	}
 
-	cacheKey := fmt.Sprintf("%s|%d", rawID, limit)
-	now := time.Now()
-	if c.discover != nil {
-		c.discover.mu.RLock()
-		if entry, ok := c.discover.similarAlbums[cacheKey]; ok && now.Before(entry.expiresAt) {
-			c.discover.mu.RUnlock()
-			return slices.Clone(entry.value), nil
-		}
-		c.discover.mu.RUnlock()
+	cacheKey := fmt.Sprintf("similar-albums:%s:%d", rawID, limit)
+	if cached, ok, err := cache.GetJSON[[]library.Album](c.kv, cacheKey); err == nil && ok {
+		return cached, nil
 	}
 
 	var resp struct {
@@ -470,11 +371,7 @@ func (c *Client) SimilarAlbums(ctx context.Context, albumID string, limit int) (
 	if len(out) > limit {
 		out = out[:limit]
 	}
-	if c.discover != nil {
-		c.discover.mu.Lock()
-		putBounded(c.discover.similarAlbums, cacheKey, slices.Clone(out), now, discoverSimilarTTL, maxDiscoverSimilarCache)
-		c.discover.mu.Unlock()
-	}
+	_ = cache.SetJSON(c.kv, cacheKey, out, discoverSimilarTTL)
 	return out, nil
 }
 
@@ -493,15 +390,9 @@ func (c *Client) SimilarArtists(ctx context.Context, artistID int64, limit int) 
 		limit = 50
 	}
 
-	cacheKey := fmt.Sprintf("%d|%d", artistID, limit)
-	now := time.Now()
-	if c.discover != nil {
-		c.discover.mu.RLock()
-		if entry, ok := c.discover.similarArtists[cacheKey]; ok && now.Before(entry.expiresAt) {
-			c.discover.mu.RUnlock()
-			return slices.Clone(entry.value), nil
-		}
-		c.discover.mu.RUnlock()
+	cacheKey := fmt.Sprintf("similar-artists:%d:%d", artistID, limit)
+	if cached, ok, err := cache.GetJSON[[]Artist](c.kv, cacheKey); err == nil && ok {
+		return cached, nil
 	}
 
 	var resp struct {
@@ -525,11 +416,7 @@ func (c *Client) SimilarArtists(ctx context.Context, artistID int64, limit int) 
 		}
 		out = append(out, art)
 	}
-	if c.discover != nil {
-		c.discover.mu.Lock()
-		putBounded(c.discover.similarArtists, cacheKey, slices.Clone(out), now, discoverSimilarTTL, maxDiscoverSimilarCache)
-		c.discover.mu.Unlock()
-	}
+	_ = cache.SetJSON(c.kv, cacheKey, out, discoverSimilarTTL)
 	return out, nil
 }
 

@@ -54,6 +54,17 @@ describe("truncateAtSentence", () => {
     );
   });
 
+  it("does not split inside abbreviations like U.K. or U.S.", () => {
+    const bio =
+      "In late 2003, things picked up rapidly and a bit weirdly for folkie Alexi Murdoch. " +
+      "Moving to balmy Los Angeles from Scotland in the late '90s, Murdoch let the sleepy, weepy U.K. folk tradition guide his debut EP. " +
+      "He later released Time Without Consequence in 2006 to wide critical acclaim.";
+    const res = truncateAtSentence(bio, 30);
+    expect(res.truncated).toBe(true);
+    expect(res.preview).toContain("U.K. folk tradition guide his debut EP.");
+    expect(res.preview).not.toMatch(/U\.$/);
+  });
+
   it("does not truncate short copy", () => {
     const res = truncateAtSentence("Short editorial note.", 35);
     expect(res).toEqual({ preview: "Short editorial note.", truncated: false });
