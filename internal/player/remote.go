@@ -21,7 +21,7 @@ const (
 	defaultGracePeriod    = 20 * time.Second
 	minGracePeriod        = 5 * time.Second
 	maxGracePeriod        = 60 * time.Minute
-	defaultCommandTimeout = 3 * time.Second
+	defaultCommandTimeout = 10 * time.Second
 	maxPlayers            = 64
 	maxPlayerLabelRunes   = 80
 	maxPlayerIDLen        = 64

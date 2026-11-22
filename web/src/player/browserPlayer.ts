@@ -222,6 +222,12 @@ export class BrowserAudioEngine {
           this.callbacks.onAutoplayBlocked?.(false);
           this.ack(cmd.id, true, undefined, undefined, "playing");
         } catch (err) {
+          if (err instanceof Error && err.name === "AbortError") {
+            // Superseded by a newer set_uri/pause/stop before play() resolved;
+            // ack cleanly without clobbering the newer track's state.
+            this.ack(cmd.id, true);
+            return;
+          }
           const isAutoplay = isNotAllowedError(err);
           if (isAutoplay) {
             this.callbacks.onAutoplayBlocked?.(true);
