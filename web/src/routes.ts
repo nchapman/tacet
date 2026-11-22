@@ -34,10 +34,9 @@ export function slugify(text: string): string {
   const slug = text
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return slug || "album";
+  return slug || "Album";
 }
 
 /**

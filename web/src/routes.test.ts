@@ -6,7 +6,7 @@ describe("routes", () => {
     expect(sectionFromPathname("/")).toBe("home");
     expect(sectionFromPathname("/search")).toBe("search");
     expect(sectionFromPathname("/albums")).toBe("albums");
-    expect(sectionFromPathname("/albums/al-green-greatest-hits/local-e9c2e2a2")).toBe("albums");
+    expect(sectionFromPathname("/albums/Al-Green-Greatest-Hits/local-e9c2e2a2")).toBe("albums");
     expect(sectionFromPathname("/artists")).toBe("artists");
     expect(sectionFromPathname("/artists/Miles%20Davis")).toBe("artists");
     expect(sectionFromPathname("/songs")).toBe("songs");
@@ -15,11 +15,11 @@ describe("routes", () => {
     expect(sectionFromPathname("/unknown")).toBe("home");
   });
 
-  it("slugifies accents and punctuation cleanly", () => {
-    expect(slugify("Al Green")).toBe("al-green");
-    expect(slugify("Kind of Blue (Legacy Edition)")).toBe("kind-of-blue-legacy-edition");
-    expect(slugify("Björk")).toBe("bjork");
-    expect(slugify("AC/DC")).toBe("ac-dc");
+  it("slugifies accents and punctuation while preserving case", () => {
+    expect(slugify("Al Green")).toBe("Al-Green");
+    expect(slugify("Kind of Blue (Legacy Edition)")).toBe("Kind-of-Blue-Legacy-Edition");
+    expect(slugify("Björk")).toBe("Bjork");
+    expect(slugify("AC/DC")).toBe("AC-DC");
   });
 
   it("encodes and decodes album keys without %3A and preserves hyphens in remote IDs", () => {
@@ -33,10 +33,10 @@ describe("routes", () => {
 
   it("builds human-readable /albums/<artist-album>/<key> URLs", () => {
     expect(albumPath("local:e9c2e2a2438c59ce", { artist: "Al Green", title: "Greatest Hits" })).toBe(
-      "/albums/al-green-greatest-hits/local-e9c2e2a2438c59ce",
+      "/albums/Al-Green-Greatest-Hits/local-e9c2e2a2438c59ce",
     );
     expect(albumPath("qobuz:006025", { artist: "Miles Davis", title: "Kind of Blue" })).toBe(
-      "/albums/miles-davis-kind-of-blue/qobuz-006025",
+      "/albums/Miles-Davis-Kind-of-Blue/qobuz-006025",
     );
     expect(albumPath("local:9a3f01")).toBe("/albums/local-9a3f01");
   });
