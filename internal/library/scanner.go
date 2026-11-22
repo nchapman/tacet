@@ -1003,6 +1003,12 @@ func (c *Catalog) CoverArt(trackID string) ([]byte, string, bool) {
 	return loadTrackCoverArt(t)
 }
 
+// LocalArtHashes returns the deduplicated 16-character content hashes for all
+// available local tracks that have content-addressed cover art.
+func (c *Catalog) LocalArtHashes(ctx context.Context) ([]string, error) {
+	return c.store.listLocalArtHashes(ctx)
+}
+
 // CoverArtByHash loads embedded or folder artwork bytes and MIME type for any local
 // track whose content-addressed ArtworkURL matches /media/art/<hash>.
 func (c *Catalog) CoverArtByHash(hash string) ([]byte, string, bool) {

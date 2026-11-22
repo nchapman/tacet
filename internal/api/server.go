@@ -108,11 +108,20 @@ func (s *Server) Close() {
 	if s.players != nil {
 		s.players.Close()
 	}
+	if s.media != nil {
+		s.media.Close()
+	}
 }
 
 // SetArtCacheDir configures the on-disk directory used to cache resized cover art.
 func (s *Server) SetArtCacheDir(dir string) {
 	s.media.SetArtCacheDir(dir)
+}
+
+// PrewarmArt starts an asynchronous, cancelable pre-cache pass for uncached
+// 400px local cover art thumbnails.
+func (s *Server) PrewarmArt(ctx context.Context) {
+	s.media.PrewarmArt(ctx)
 }
 
 // SetGENA attaches the UPnP GENA event receiver so renderers can deliver NOTIFY

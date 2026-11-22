@@ -195,6 +195,7 @@ func (s *Server) handleLibraryRescan(w http.ResponseWriter, r *http.Request) {
 		}
 		st := s.catalog.Status()
 		s.manager.Publish("library.updated", st)
+		s.PrewarmArt(context.Background())
 		writeJSON(w, http.StatusOK, st)
 		return
 	}
@@ -205,7 +206,9 @@ func (s *Server) handleLibraryRescan(w http.ResponseWriter, r *http.Request) {
 		}()
 		if _, err := s.catalog.Scan(); err != nil {
 			log.Printf("async library rescan failed: %v", err)
+			return
 		}
+		s.PrewarmArt(context.Background())
 	}()
 
 	st := s.catalog.Status()
@@ -223,6 +226,7 @@ func (s *Server) handleLibrarySync(w http.ResponseWriter, r *http.Request) {
 				if _, err := s.catalog.ScanContext(ctx); err != nil && provider == "local" {
 					return err
 				}
+				s.PrewarmArt(context.Background())
 			}
 		}
 		if provider == "" || provider == "all" || provider == "qobuz" {

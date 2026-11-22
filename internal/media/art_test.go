@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/color"
 	"image/png"
@@ -239,5 +240,70 @@ func TestAcceptsWebPAndPPM(t *testing.T) {
 		if !ok || mime != "image/webp" || len(data) < 12 || string(data[8:12]) != "WEBP" {
 			t.Fatalf("cwebp transcode failed: ok=%v mime=%q len=%d", ok, mime, len(data))
 		}
+	}
+}
+
+func TestHandler_PrewarmArt_IncrementalAndIdempotent(t *testing.T) {
+	root := t.TempDir()
+	cacheDir := filepath.Join(t.TempDir(), "art-cache")
+
+	albumA := filepath.Join(root, "AlbumA")
+	albumB := filepath.Join(root, "AlbumB")
+	if err := os.MkdirAll(albumA, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(albumB, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Two tracks in AlbumA share one cover; AlbumB has a distinct cover.
+	for _, p := range []string{
+		filepath.Join(albumA, "01.flac"),
+		filepath.Join(albumA, "02.flac"),
+		filepath.Join(albumB, "01.flac"),
+	} {
+		if err := os.WriteFile(p, []byte("fLaC1234"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(albumA, "cover.png"), makeTestPNG(t, 800, 800), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(albumB, "cover.png"), makeTestPNG(t, 900, 700), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cat := library.NewCatalog(root)
+	if _, err := cat.Scan(); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHandler(cat, nil)
+	h.SetArtCacheDir(cacheDir)
+	defer h.Close()
+
+	// First pass should build exactly 2 deduplicated 400px thumbnails.
+	built := h.prewarmArtSync(context.Background())
+	if built != 2 {
+		t.Fatalf("first prewarm built = %d, want 2", built)
+	}
+
+	// Verify only 400px preferred-format files exist (no 1000px files).
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("cache dir entries = %d, want 2", len(entries))
+	}
+	wantSuffix := "_400." + h.art.preferredFormat().ext
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), wantSuffix) {
+			t.Errorf("unexpected cached file %q, want suffix %q", e.Name(), wantSuffix)
+		}
+	}
+
+	// Second pass must be a no-op (incremental).
+	if again := h.prewarmArtSync(context.Background()); again != 0 {
+		t.Fatalf("second prewarm built = %d, want 0", again)
 	}
 }

@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tacet/internal/library"
@@ -32,11 +34,13 @@ var relayBufPool = sync.Pool{
 // Handler serves local NAS audio files, cover art, and Qobuz Quiet Relay
 // streams over plain HTTP with DLNA streaming headers and Range support.
 type Handler struct {
-	catalog    *library.Catalog
-	qobuz      *qobuz.Client
-	art        *artCache
-	transcoder *TranscoderInfo
-	relayHTTP  *http.Client
+	catalog       *library.Catalog
+	qobuz         *qobuz.Client
+	art           *artCache
+	transcoder    *TranscoderInfo
+	relayHTTP     *http.Client
+	prewarmMu     sync.Mutex
+	prewarmCancel context.CancelFunc
 }
 
 // NewHandler creates a media HTTP handler.
@@ -82,6 +86,101 @@ func NewHandler(cat *library.Catalog, qb *qobuz.Client) *Handler {
 // SetArtCacheDir configures the on-disk directory used to cache resized JPEG cover art.
 func (h *Handler) SetArtCacheDir(dir string) {
 	h.art = newArtCache(dir)
+}
+
+// Close cancels any background cover-art prewarming.
+func (h *Handler) Close() {
+	h.prewarmMu.Lock()
+	cancel := h.prewarmCancel
+	h.prewarmCancel = nil
+	h.prewarmMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// PrewarmArt asynchronously pre-encodes uncached 400px thumbnails (WebP when
+// cwebp is available, otherwise JPEG) for all local library covers using low
+// bounded concurrency. Calling it again cancels any prior in-flight run.
+func (h *Handler) PrewarmArt(ctx context.Context) {
+	if h.art == nil || h.art.dir == "" || h.catalog == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	h.prewarmMu.Lock()
+	prev := h.prewarmCancel
+	h.prewarmCancel = cancel
+	h.prewarmMu.Unlock()
+	if prev != nil {
+		prev()
+	}
+
+	go func() {
+		defer cancel()
+		h.prewarmArtSync(runCtx)
+	}()
+}
+
+// prewarmArtSync synchronously prewarms uncached 400px local cover art and
+// returns the number of newly encoded thumbnails.
+func (h *Handler) prewarmArtSync(ctx context.Context) int {
+	art := h.art
+	if art == nil || art.dir == "" || h.catalog == nil {
+		return 0
+	}
+	hashes, err := h.catalog.LocalArtHashes(ctx)
+	if err != nil || len(hashes) == 0 {
+		return 0
+	}
+
+	format := art.preferredFormat()
+	pending := make([]string, 0, len(hashes))
+	for _, hash := range hashes {
+		if !art.existsDisk(hash, artSizeSmall, format) {
+			pending = append(pending, hash)
+		}
+	}
+	if len(pending) == 0 {
+		return 0
+	}
+
+	start := time.Now()
+	workers := min(2, runtime.NumCPU(), len(pending))
+	jobs := make(chan string, len(pending))
+	for _, hash := range pending {
+		jobs <- hash
+	}
+	close(jobs)
+
+	var built atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for hash := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				if _, _, ok := art.getOrBuild(hash, artSizeSmall, format, func() ([]byte, string, bool) {
+					return h.catalog.CoverArtByHash(hash)
+				}); ok {
+					built.Add(1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if n := int(built.Load()); n > 0 {
+		log.Printf("prewarmed %d/%d cover art thumbnails (%s, %dpx) in %s",
+			n, len(pending), format.ext, artSizeSmall, time.Since(start).Round(time.Millisecond))
+		return n
+	}
+	return 0
 }
 
 func (h *Handler) transcoderInfo() TranscoderInfo {

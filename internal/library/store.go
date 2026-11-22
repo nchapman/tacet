@@ -1518,6 +1518,34 @@ FROM tracks WHERE artwork_url = ? ORDER BY available DESC LIMIT 1`, artworkURL)
 	return items[0], true, nil
 }
 
+func (s *libraryStore) listLocalArtHashes(ctx context.Context) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT DISTINCT artwork_url
+FROM tracks
+WHERE source_type = 'local'
+  AND available = 1
+  AND artwork_url LIKE '/media/art/%'`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var hashes []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		if h, ok := strings.CutPrefix(u, "/media/art/"); ok && len(h) == 16 {
+			hashes = append(hashes, h)
+		}
+	}
+	return hashes, rows.Err()
+}
+
 func (s *libraryStore) hasAlbum(ctx context.Context, id string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -183,6 +183,7 @@ func run() error {
 			if scanErr == nil {
 				st := cat.Status()
 				log.Printf("indexed %d local tracks across %d albums in %s", n, st.LocalAlbums, time.Since(start).Round(time.Millisecond))
+				apiServer.PrewarmArt(ctx)
 			}
 		}()
 	}

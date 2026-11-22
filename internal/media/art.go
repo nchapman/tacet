@@ -337,6 +337,13 @@ func newArtCache(dir string) *artCache {
 	}
 }
 
+func (c *artCache) preferredFormat() artFormat {
+	if c.enc.CWebPPath != "" {
+		return artFormatWebP
+	}
+	return artFormatJPEG
+}
+
 func (c *artCache) negotiateFormat(acceptHeader string) artFormat {
 	if c.enc.CWebPPath != "" && acceptsWebP(acceptHeader) {
 		return artFormatWebP
@@ -349,6 +356,15 @@ func (c *artCache) cachePath(hash string, bucket int, format artFormat) string {
 		return ""
 	}
 	return filepath.Join(c.dir, fmt.Sprintf("%s_%d.%s", hash, bucket, format.ext))
+}
+
+func (c *artCache) existsDisk(hash string, bucket int, format artFormat) bool {
+	p := c.cachePath(hash, bucket, format)
+	if p == "" {
+		return false
+	}
+	st, err := os.Stat(filepath.Clean(p))
+	return err == nil && !st.IsDir() && st.Size() > 0
 }
 
 func (c *artCache) readDisk(hash string, bucket int, format artFormat) ([]byte, bool) {
