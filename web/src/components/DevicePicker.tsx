@@ -1,4 +1,4 @@
-import { Check, Laptop, Plus, RefreshCw, SlidersHorizontal, Speaker, Volume2 } from "lucide-react";
+import { Laptop, Plus, RefreshCw, SlidersHorizontal, Speaker, Volume2 } from "lucide-react";
 import { useState } from "react";
 import { AUDIO_QUALITY_STOPS, audioQualityIndex, audioQualityStop } from "@/api/format";
 import type { AudioQuality, ZoneSnapshot } from "@/api/types";
@@ -202,25 +202,22 @@ export function DeviceList({
             </div>
           </button>
 
-          {browserPlayer.enabled && (
-            <div className="flex shrink-0 items-center gap-1">
-              {browserZone && (
-                <button
-                  type="button"
-                  onClick={() => toggleQualityEditor(browserZone.zoneId)}
-                  className={cn(
-                    "flex h-7 w-7 items-center justify-center rounded-lg transition-colors cursor-pointer",
-                    editingZoneId === browserZone.zoneId
-                      ? "bg-white/15 text-foreground"
-                      : "text-muted-foreground hover:bg-white/10 hover:text-foreground",
-                  )}
-                  title="Audio quality"
-                  aria-label="Configure audio quality for This Browser"
-                >
-                  <SlidersHorizontal className="h-3.5 w-3.5" />
-                </button>
-              )}
-              {browserPlayer.zoneId === activeZoneId && <Check className="h-4 w-4 text-emerald-400" />}
+          {browserPlayer.enabled && browserZone && (
+            <div className="flex shrink-0 items-center">
+              <button
+                type="button"
+                onClick={() => toggleQualityEditor(browserZone.zoneId)}
+                className={cn(
+                  "flex h-7 w-7 items-center justify-center rounded-lg transition-colors cursor-pointer",
+                  editingZoneId === browserZone.zoneId
+                    ? "bg-white/15 text-foreground"
+                    : "text-muted-foreground hover:bg-white/10 hover:text-foreground",
+                )}
+                title="Audio quality"
+                aria-label="Configure audio quality for This Browser"
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+              </button>
             </div>
           )}
         </div>
@@ -286,7 +283,7 @@ export function DeviceList({
                       </div>
                     </button>
 
-                    <div className="flex shrink-0 items-center gap-1">
+                    <div className="flex shrink-0 items-center">
                       <button
                         type="button"
                         onClick={() => toggleQualityEditor(z.zoneId)}
@@ -301,7 +298,6 @@ export function DeviceList({
                       >
                         <SlidersHorizontal className="h-3.5 w-3.5" />
                       </button>
-                      {active && <Check className="h-4 w-4 shrink-0 text-emerald-400" />}
                     </div>
                   </div>
 
