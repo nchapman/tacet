@@ -136,7 +136,7 @@ function NavItem({
       <Icon className={cn("h-4 w-4 shrink-0", active ? "text-foreground" : "text-muted-foreground")} />
       <span className="truncate flex-1 text-left">{label}</span>
       {shortcut && (
-        <kbd className="rounded border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/70">
+        <kbd className="font-mono text-[10.5px] text-muted-foreground/40">
           {shortcut}
         </kbd>
       )}

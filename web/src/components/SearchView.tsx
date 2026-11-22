@@ -228,7 +228,7 @@ export function SearchView({
                 <X className="h-4 w-4" />
               </button>
             ) : (
-              <kbd className="pointer-events-none absolute right-4 hidden sm:inline-flex items-center rounded-md border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[11px] font-mono text-muted-foreground/70">
+              <kbd className="pointer-events-none absolute right-4 hidden sm:inline-flex items-center font-mono text-[11px] text-muted-foreground/35">
                 ⌘K
               </kbd>
             )}
