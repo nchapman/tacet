@@ -317,3 +317,84 @@ func TestCatalogCache_LogoutPreventsInflightRepopulation(t *testing.T) {
 		t.Fatalf("expected catalog cache to remain empty after logout, got %d albums", albs)
 	}
 }
+
+func TestMatchAlbum_DiscographySearchAndNegativeCache(t *testing.T) {
+	var albumCalls atomic.Int32
+	var searchCalls atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/artist/search":
+			if r.URL.Query().Get("query") == "Adele" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"artists": map[string]any{"items": []map[string]any{{"id": 77, "name": "Adele"}}},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"artists": map[string]any{"items": []map[string]any{}}})
+		case "/artist/get":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":   77,
+				"name": "Adele",
+				"albums": map[string]any{
+					"items": []map[string]any{
+						{"id": "q19", "title": "19 (Deluxe Edition)", "artist": map[string]any{"name": "Adele"}, "streamable": true},
+					},
+				},
+			})
+		case "/artist/page":
+			_ = json.NewEncoder(w).Encode(map[string]any{"top_tracks": []any{}})
+		case "/catalog/search":
+			searchCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"albums": map[string]any{"items": []map[string]any{}},
+			})
+		case "/album/get":
+			albumCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":          "q19",
+				"title":       "19",
+				"description": "Debut album review.",
+				"label":       map[string]any{"name": "XL Recordings"},
+				"copyright":   "2008 XL Recordings Ltd",
+				"artist":      map[string]any{"id": 77, "name": "Adele"},
+				"tracks": map[string]any{
+					"items": []map[string]any{{"id": 101, "title": "Daydreamer", "track_number": 1, "duration": 220, "streamable": true}},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, AppID: "app", AppSecret: "sec", AuthToken: "tok"})
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	alb, err := c.MatchAlbum(ctx, "Adele", "19")
+	if err != nil {
+		t.Fatalf("MatchAlbum: %v", err)
+	}
+	if alb.Description != "Debut album review." || alb.Label != "XL Recordings" || alb.ID != "qobuz:q19" {
+		t.Fatalf("unexpected matched album: %+v", alb)
+	}
+	// Second call hits SQLite cache with zero additional /album/get calls.
+	if _, err = c.MatchAlbum(ctx, "Adele", "19"); err != nil {
+		t.Fatalf("MatchAlbum cached: %v", err)
+	}
+	if albumCalls.Load() != 1 || searchCalls.Load() != 0 {
+		t.Fatalf("expected 1 album call & 0 search calls, got album=%d search=%d", albumCalls.Load(), searchCalls.Load())
+	}
+
+	// Negative miss is cached so repeat lookup makes zero additional search calls.
+	if _, err = c.MatchAlbum(ctx, "Unknown Artist", "Bootleg"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	if _, err = c.MatchAlbum(ctx, "Unknown Artist", "Bootleg"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected cached ErrNotFound, got %v", err)
+	}
+	if searchCalls.Load() != 1 {
+		t.Fatalf("expected 1 search call for negative miss, got %d", searchCalls.Load())
+	}
+}

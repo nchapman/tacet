@@ -82,9 +82,21 @@ func (s *Server) handleLibraryAlbum(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, fmt.Errorf("%w: %q", ErrAlbumNotFound, id))
 		return
 	}
-	// Best-effort enrich in-library Qobuz albums with cached editorial metadata.
-	if alb.Source == library.SourceQobuz && alb.ExternalID != "" && s.qobuz != nil && s.qobuz.Status().Authenticated {
-		if qAlb, err := s.qobuz.GetAlbum(r.Context(), alb.ExternalID); err == nil {
+	// Best-effort enrich in-library albums (both Qobuz and local) with cached Qobuz editorial metadata.
+	if s.qobuz != nil && s.qobuz.Status().Authenticated {
+		var qAlb library.Album
+		var qErr error
+		switch {
+		case alb.Source == library.SourceQobuz && alb.ExternalID != "":
+			qAlb, qErr = s.qobuz.GetAlbum(r.Context(), alb.ExternalID)
+		case alb.Source == library.SourceLocal && alb.Artist != "" && alb.Title != "":
+			matchCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+			qAlb, qErr = s.qobuz.MatchAlbum(matchCtx, alb.Artist, alb.Title)
+			cancel()
+		default:
+			qErr = qobuz.ErrNotFound
+		}
+		if qErr == nil {
 			if alb.Label == "" {
 				alb.Label = qAlb.Label
 			}
@@ -93,6 +105,9 @@ func (s *Server) handleLibraryAlbum(w http.ResponseWriter, r *http.Request) {
 			}
 			if alb.Copyright == "" {
 				alb.Copyright = qAlb.Copyright
+			}
+			if alb.QobuzAlbumID == "" {
+				alb.QobuzAlbumID = strings.TrimPrefix(strings.TrimSpace(qAlb.ID), "qobuz:")
 			}
 		}
 	}

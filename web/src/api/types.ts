@@ -116,6 +116,7 @@ export interface Album {
   label?: string;
   description?: string;
   copyright?: string;
+  qobuzAlbumId?: string;
   year?: number;
   trackCount: number;
   durationSec?: number;

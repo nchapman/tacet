@@ -113,6 +113,7 @@ type Album struct {
 	Label          string         `json:"label,omitempty"`
 	Description    string         `json:"description,omitempty"`
 	Copyright      string         `json:"copyright,omitempty"`
+	QobuzAlbumID   string         `json:"qobuzAlbumId,omitempty"`
 	Year           int            `json:"year,omitempty"`
 	TrackCount     int            `json:"trackCount"`
 	DurationSec    int            `json:"durationSec,omitempty"`

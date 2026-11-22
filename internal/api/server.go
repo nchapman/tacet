@@ -128,22 +128,31 @@ func (s *Server) PrewarmArt(ctx context.Context) {
 }
 
 // PrewarmArtists starts an asynchronous, cancelable pass that pre-caches Qobuz
-// artist profiles (bios, popular tracks, remote discography) for library artists.
+// artist profiles (bios, popular tracks, remote discography) and local album
+// editorial matches for library items.
 func (s *Server) PrewarmArtists(ctx context.Context) {
 	if s.qobuz == nil || !s.qobuz.IsConnected() || s.catalog == nil {
 		return
 	}
-	artists, _, err := s.catalog.ListArtists(library.FacetFilter{Limit: 500})
-	if err != nil || len(artists) == 0 {
-		return
-	}
-	names := make([]string, 0, len(artists))
-	for _, a := range artists {
-		if a.Name != "" {
-			names = append(names, a.Name)
+	var names []string
+	if artists, _, err := s.catalog.ListArtists(library.FacetFilter{Limit: 500}); err == nil {
+		names = make([]string, 0, len(artists))
+		for _, a := range artists {
+			if a.Name != "" {
+				names = append(names, a.Name)
+			}
 		}
 	}
-	s.qobuz.PrewarmArtists(ctx, names)
+	var localAlbums []qobuz.AlbumLookup
+	if albs, _, err := s.catalog.QueryAlbums(library.AlbumFilter{SourceType: "local", Limit: 500}); err == nil {
+		localAlbums = make([]qobuz.AlbumLookup, 0, len(albs))
+		for _, a := range albs {
+			if a.Artist != "" && a.Title != "" {
+				localAlbums = append(localAlbums, qobuz.AlbumLookup{Artist: a.Artist, Title: a.Title})
+			}
+		}
+	}
+	s.qobuz.PrewarmLibrary(ctx, names, localAlbums)
 }
 
 // SetGENA attaches the UPnP GENA event receiver so renderers can deliver NOTIFY

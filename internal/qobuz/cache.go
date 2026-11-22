@@ -13,6 +13,8 @@ import (
 
 const (
 	albumCacheTTL          = 7 * 24 * time.Hour
+	albumMatchCacheTTL     = 7 * 24 * time.Hour
+	albumMatchMissCacheTTL = 24 * time.Hour
 	artistCacheTTL         = 7 * 24 * time.Hour
 	artistNameCacheTTL     = 7 * 24 * time.Hour
 	artistNameMissCacheTTL = 24 * time.Hour
@@ -23,8 +25,16 @@ type cachedArtistName struct {
 	ID int64 `json:"id"`
 }
 
+type cachedAlbumMatch struct {
+	AlbumID string `json:"albumId"`
+}
+
 func albumCacheKey(rawID string) string {
 	return "album:" + strings.TrimSpace(rawID)
+}
+
+func albumMatchCacheKey(artist, title string) string {
+	return "album-match:" + normMatchKey(artist) + "|" + normMatchKey(title)
 }
 
 func artistCacheKey(artistID int64, limit int) string {
@@ -53,6 +63,30 @@ func (c *Client) putCachedAlbum(rawID string, alb library.Album) {
 		return
 	}
 	_ = cache.SetJSON(c.kv, albumCacheKey(rawID), alb, albumCacheTTL)
+}
+
+func (c *Client) getCachedAlbumMatch(artist, title string) (string, bool) {
+	key := albumMatchCacheKey(artist, title)
+	if key == "album-match:|" {
+		return "", false
+	}
+	entry, ok, err := cache.GetJSON[cachedAlbumMatch](c.kv, key)
+	if err != nil || !ok {
+		return "", false
+	}
+	return entry.AlbumID, true
+}
+
+func (c *Client) putCachedAlbumMatch(artist, title, qobuzAlbumID string) {
+	key := albumMatchCacheKey(artist, title)
+	if key == "album-match:|" {
+		return
+	}
+	ttl := albumMatchCacheTTL
+	if qobuzAlbumID == "" {
+		ttl = albumMatchMissCacheTTL
+	}
+	_ = cache.SetJSON(c.kv, key, cachedAlbumMatch{AlbumID: qobuzAlbumID}, ttl)
 }
 
 func (c *Client) getCachedArtist(artistID int64, limit int) (ArtistDetail, bool) {

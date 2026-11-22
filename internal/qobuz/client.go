@@ -609,27 +609,105 @@ func (c *Client) fetchArtistTopTracks(ctx context.Context, artistID int64, fallb
 	return out, true
 }
 
-// PrewarmArtists gently pre-caches Qobuz artist profiles (bio, popular tracks,
-// and remote discography) for library artists not already in the SQLite cache.
-func (c *Client) PrewarmArtists(ctx context.Context, names []string) {
-	if !c.IsConnected() || len(names) == 0 {
+// AlbumLookup identifies a local album to match against Qobuz editorial metadata.
+type AlbumLookup struct {
+	Artist string
+	Title  string
+}
+
+// MatchAlbum resolves a local (artist, title) pair to its Qobuz album and returns
+// the cached Qobuz album metadata (review, label, copyright, ID). Results and
+// negative misses are cached in SQLite so repeated views are instant.
+func (c *Client) MatchAlbum(ctx context.Context, artist, title string) (library.Album, error) {
+	if err := c.requireAuth(); err != nil {
+		return library.Album{}, err
+	}
+	artist = strings.TrimSpace(artist)
+	title = strings.TrimSpace(title)
+	if artist == "" || title == "" {
+		return library.Album{}, ErrNotFound
+	}
+	if cachedID, ok := c.getCachedAlbumMatch(artist, title); ok {
+		if cachedID == "" {
+			return library.Album{}, ErrNotFound
+		}
+		return c.GetAlbum(ctx, cachedID)
+	}
+
+	gen := c.authGen.Load()
+	wantTitle := normMatchKey(title)
+	wantArtist := normMatchKey(artist)
+	var matchedID string
+
+	// 1. Check the artist's cached/fetched Qobuz discography first (usually already warm).
+	if detail, err := c.GetArtistByName(ctx, artist, 50); err == nil {
+		matchedID = pickMatchingAlbumID(detail.Albums, wantArtist, wantTitle, false)
+	}
+
+	// 2. Fall back to /catalog/search if not found in the artist's top 50 albums.
+	if matchedID == "" {
+		if res, err := c.Search(ctx, artist+" "+title, 10); err == nil {
+			matchedID = pickMatchingAlbumID(res.Albums, wantArtist, wantTitle, true)
+		}
+	}
+
+	if c.authGen.Load() == gen {
+		c.putCachedAlbumMatch(artist, title, matchedID)
+	}
+	if matchedID == "" {
+		return library.Album{}, ErrNotFound
+	}
+	return c.GetAlbum(ctx, matchedID)
+}
+
+func pickMatchingAlbumID(albums []library.Album, wantArtist, wantTitle string, requireArtistMatch bool) string {
+	var fallbackID string
+	for _, a := range albums {
+		if requireArtistMatch && wantArtist != "" && normMatchKey(a.Artist) != wantArtist {
+			continue
+		}
+		rawID := strings.TrimPrefix(strings.TrimSpace(a.ID), "qobuz:")
+		if rawID == "" {
+			continue
+		}
+		candTitle := normMatchKey(a.Title)
+		if candTitle == wantTitle {
+			return rawID
+		}
+		// Secondary match: base title before parenthetical edition suffix (e.g. "19 (Deluxe Edition)").
+		if fallbackID == "" {
+			if idx := strings.IndexAny(a.Title, "(["); idx > 0 {
+				if normMatchKey(a.Title[:idx]) == wantTitle {
+					fallbackID = rawID
+				}
+			}
+		}
+	}
+	return fallbackID
+}
+
+// PrewarmLibrary gently pre-caches Qobuz artist profiles (bio, popular tracks,
+// remote discography) and local album editorial matches in SQLite so navigation
+// is instant with zero layout shift.
+func (c *Client) PrewarmLibrary(ctx context.Context, artistNames []string, localAlbums []AlbumLookup) {
+	if !c.IsConnected() || (len(artistNames) == 0 && len(localAlbums) == 0) {
 		return
 	}
 	const defaultLimit = 50
 	const maxPerPass = 250
 
-	seen := make(map[string]struct{}, len(names))
-	pending := make([]string, 0, len(names))
-	for _, raw := range names {
+	seenArtists := make(map[string]struct{}, len(artistNames))
+	pendingArtists := make([]string, 0, len(artistNames))
+	for _, raw := range artistNames {
 		name := strings.TrimSpace(raw)
 		if name == "" {
 			continue
 		}
 		key := normMatchKey(name)
-		if _, dup := seen[key]; dup {
+		if _, dup := seenArtists[key]; dup {
 			continue
 		}
-		seen[key] = struct{}{}
+		seenArtists[key] = struct{}{}
 		if cachedID, ok := c.getCachedArtistName(name); ok {
 			if cachedID == 0 {
 				continue // negative cache hit
@@ -638,12 +716,40 @@ func (c *Client) PrewarmArtists(ctx context.Context, names []string) {
 				continue // already warm
 			}
 		}
-		pending = append(pending, name)
-		if len(pending) >= maxPerPass {
+		pendingArtists = append(pendingArtists, name)
+		if len(pendingArtists) >= maxPerPass {
 			break
 		}
 	}
-	if len(pending) == 0 {
+
+	seenAlbums := make(map[string]struct{}, len(localAlbums))
+	pendingAlbums := make([]AlbumLookup, 0, len(localAlbums))
+	for _, a := range localAlbums {
+		artist := strings.TrimSpace(a.Artist)
+		title := strings.TrimSpace(a.Title)
+		if artist == "" || title == "" {
+			continue
+		}
+		key := normMatchKey(artist) + "|" + normMatchKey(title)
+		if _, dup := seenAlbums[key]; dup {
+			continue
+		}
+		seenAlbums[key] = struct{}{}
+		if cachedID, ok := c.getCachedAlbumMatch(artist, title); ok {
+			if cachedID == "" {
+				continue // negative cache hit
+			}
+			if _, ok := c.getCachedAlbum(cachedID); ok {
+				continue // already warm
+			}
+		}
+		pendingAlbums = append(pendingAlbums, AlbumLookup{Artist: artist, Title: title})
+		if len(pendingAlbums) >= maxPerPass {
+			break
+		}
+	}
+
+	if len(pendingArtists) == 0 && len(pendingAlbums) == 0 {
 		return
 	}
 
@@ -666,40 +772,77 @@ func (c *Client) PrewarmArtists(ctx context.Context, names []string) {
 		defer c.prewarmWG.Done()
 		defer cancel()
 		start := time.Now()
-		jobs := make(chan string, len(pending))
-		for _, n := range pending {
-			jobs <- n
-		}
-		close(jobs)
 
-		var warmed atomic.Int64
-		var wg sync.WaitGroup
-		workers := min(2, len(pending))
-		for range workers {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for name := range jobs {
-					if runCtx.Err() != nil || !c.IsConnected() {
-						return
+		// 1. Warm artists first so local album matching can reuse their cached discographies.
+		var warmedArtists atomic.Int64
+		if len(pendingArtists) > 0 {
+			jobs := make(chan string, len(pendingArtists))
+			for _, n := range pendingArtists {
+				jobs <- n
+			}
+			close(jobs)
+			var wg sync.WaitGroup
+			for range min(2, len(pendingArtists)) {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for name := range jobs {
+						if runCtx.Err() != nil || !c.IsConnected() {
+							return
+						}
+						reqCtx, reqCancel := context.WithTimeout(runCtx, 10*time.Second)
+						_, err := c.GetArtistByName(reqCtx, name, defaultLimit)
+						reqCancel()
+						if err == nil {
+							warmedArtists.Add(1)
+						}
+						select {
+						case <-runCtx.Done():
+							return
+						case <-time.After(120 * time.Millisecond):
+						}
 					}
-					reqCtx, reqCancel := context.WithTimeout(runCtx, 10*time.Second)
-					_, err := c.GetArtistByName(reqCtx, name, defaultLimit)
-					reqCancel()
-					if err == nil {
-						warmed.Add(1)
-					}
-					select {
-					case <-runCtx.Done():
-						return
-					case <-time.After(120 * time.Millisecond):
-					}
-				}
-			}()
+				}()
+			}
+			wg.Wait()
 		}
-		wg.Wait()
-		if n := warmed.Load(); n > 0 {
-			log.Printf("prewarmed %d/%d Qobuz artist profiles in %s", n, len(pending), time.Since(start).Round(time.Millisecond))
+
+		// 2. Warm local album editorial matches.
+		var warmedAlbums atomic.Int64
+		if len(pendingAlbums) > 0 && runCtx.Err() == nil && c.IsConnected() {
+			jobs := make(chan AlbumLookup, len(pendingAlbums))
+			for _, a := range pendingAlbums {
+				jobs <- a
+			}
+			close(jobs)
+			var wg sync.WaitGroup
+			for range min(2, len(pendingAlbums)) {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for a := range jobs {
+						if runCtx.Err() != nil || !c.IsConnected() {
+							return
+						}
+						reqCtx, reqCancel := context.WithTimeout(runCtx, 10*time.Second)
+						_, err := c.MatchAlbum(reqCtx, a.Artist, a.Title)
+						reqCancel()
+						if err == nil {
+							warmedAlbums.Add(1)
+						}
+						select {
+						case <-runCtx.Done():
+							return
+						case <-time.After(120 * time.Millisecond):
+						}
+					}
+				}()
+			}
+			wg.Wait()
+		}
+
+		if a, al := warmedArtists.Load(), warmedAlbums.Load(); a > 0 || al > 0 {
+			log.Printf("prewarmed Qobuz SQLite cache (%d artists, %d local albums) in %s", a, al, time.Since(start).Round(time.Millisecond))
 		}
 	}()
 }
