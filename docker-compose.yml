@@ -20,6 +20,8 @@ services:
     # All defaults are baked into the image (/music, /data, port 4320, direct mode).
     # Uncomment any overrides you need:
     # environment:
+    #   PUID: "1000"
+    #   PGID: "1000"
     #   TACET_PORT: "4320"
     #   TACET_DATA_DIR: /data
     #   TACET_MUSIC_DIR: /music

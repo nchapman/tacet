@@ -35,13 +35,15 @@ LABEL org.opencontainers.image.title="tacet" \
       org.opencontainers.image.description="Headless UPnP/DLNA control point and multi-zone bit-perfect hi-res audio server" \
       org.opencontainers.image.source="${OCI_SOURCE}"
 
-RUN apk add --no-cache ca-certificates tzdata \
+RUN apk add --no-cache ca-certificates su-exec tzdata \
     && addgroup -g 1000 tacet \
     && adduser -D -u 1000 -G tacet -h /data tacet \
     && mkdir -p /data /music \
     && chown -R tacet:tacet /data /music
 
 COPY --from=go-builder /out/tacet /usr/local/bin/tacet
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV TACET_PORT=4320 \
     TACET_DATA_DIR=/data \
@@ -50,9 +52,7 @@ ENV TACET_PORT=4320 \
 VOLUME ["/data", "/music"]
 EXPOSE 4320
 
-USER tacet
-
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --spider -q "http://127.0.0.1:${TACET_PORT:-4320}/api/health" || exit 1
 
-ENTRYPOINT ["/usr/local/bin/tacet"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

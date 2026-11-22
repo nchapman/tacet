@@ -88,6 +88,9 @@ func openStore(dbPath string) (*libraryStore, error) {
 	for _, p := range pragmas {
 		if _, err := db.ExecContext(ctx, p); err != nil {
 			_ = db.Close()
+			if dsn != ":memory:" {
+				return nil, fmt.Errorf("sqlite pragma %q on %s (uid=%d gid=%d): %w", p, dsn, os.Getuid(), os.Getgid(), err)
+			}
 			return nil, fmt.Errorf("sqlite pragma %q: %w", p, err)
 		}
 	}
