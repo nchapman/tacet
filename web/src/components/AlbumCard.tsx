@@ -1,4 +1,5 @@
 import { Check, Layers, Play } from "lucide-react";
+import { memo } from "react";
 import { fmtAlbumQuality, isHiRes } from "@/api/format";
 import type { Album, QueueSource } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
@@ -21,7 +22,7 @@ function shortHiRes(album: Album): string {
   return "HI-RES";
 }
 
-export function AlbumCard({
+export const AlbumCard = memo(function AlbumCard({
   album,
   subtitle,
   showInLibraryBadge = false,
@@ -112,4 +113,4 @@ export function AlbumCard({
       </button>
     </div>
   );
-}
+});

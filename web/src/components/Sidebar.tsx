@@ -1,4 +1,5 @@
 import { Compass, Disc3, Home, ListMusic, Loader2, Search, Settings, Users } from "lucide-react";
+import { memo } from "react";
 import { Link } from "react-router";
 import type { LibraryStatus } from "@/api/types";
 import { cn } from "@/lib/utils";
@@ -18,7 +19,7 @@ const LIBRARY_ITEMS: Array<{ id: AppSection; label: string; icon: typeof Home }>
   { id: "songs", label: "Songs", icon: ListMusic },
 ];
 
-export function Sidebar({ activeSection, libraryStatus, onNavigate }: SidebarProps) {
+export const Sidebar = memo(function Sidebar({ activeSection, libraryStatus, onNavigate }: SidebarProps) {
   return (
     <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-white/[0.07] bg-black/30 backdrop-blur-2xl select-none">
       {/* Brand header — optical centers aligned with nav icons (30px) and text labels (52px) */}
@@ -112,7 +113,7 @@ export function Sidebar({ activeSection, libraryStatus, onNavigate }: SidebarPro
       )}
     </aside>
   );
-}
+});
 
 function NavItem({
   to,

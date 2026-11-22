@@ -1,5 +1,5 @@
 import { ListMusic, Play, Trash2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { fmtDuration } from "@/api/format";
 import type { QueueItem } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
@@ -162,7 +162,7 @@ interface QueueDrawerProps extends QueueContentProps {
   onOpenChange: (open: boolean) => void;
 }
 
-export function DesktopQueueDrawer({ open, onOpenChange, ...props }: QueueDrawerProps) {
+export const DesktopQueueDrawer = memo(function DesktopQueueDrawer({ open, onOpenChange, ...props }: QueueDrawerProps) {
   if (!open) return null;
   return (
     <aside
@@ -172,7 +172,7 @@ export function DesktopQueueDrawer({ open, onOpenChange, ...props }: QueueDrawer
       <QueueContent {...props} onClose={() => onOpenChange(false)} />
     </aside>
   );
-}
+});
 
 function useIsMobileViewport(): boolean {
   const [mobile, setMobile] = useState(() =>

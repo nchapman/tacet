@@ -1,5 +1,5 @@
 import { Disc3 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { tacetClient } from "@/api/client";
 import {
   extractUltraBlurPalette,
@@ -105,7 +105,7 @@ function initialLayer(src: string): ResolvedLayer {
  * the entire app shell (with subtle noise dithering to eliminate banding and an
  * automatic blurred-image fallback if a remote CDN blocks CORS canvas reads).
  */
-export function AmbientBackdrop({ artworkUrl, className, intensity = "hero" }: AmbientBackdropProps) {
+export const AmbientBackdrop = memo(function AmbientBackdrop({ artworkUrl, className, intensity = "hero" }: AmbientBackdropProps) {
   const src = resolveArtworkSrc(artworkUrl, "sm");
   const [active, setActive] = useState<ResolvedLayer>(() => initialLayer(src));
   const [prev, setPrev] = useState<ResolvedLayer | null>(null);
@@ -228,4 +228,4 @@ export function AmbientBackdrop({ artworkUrl, className, intensity = "hero" }: A
       />
     </div>
   );
-}
+});

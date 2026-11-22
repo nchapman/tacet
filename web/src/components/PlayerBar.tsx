@@ -15,7 +15,7 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { fmtDuration, fmtOutputQuality, isHiResOutput } from "@/api/format";
 import type { AudioQuality, RepeatMode, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
@@ -31,7 +31,7 @@ import { cn } from "@/lib/utils";
 interface PlayerBarProps {
   zones: ZoneSnapshot[];
   activeZone: ZoneSnapshot | null;
-  positionSec: number;
+  getClockOffsetMs: () => number;
   error: string;
   discovering: boolean;
   transcodeAvailable: boolean;
@@ -53,10 +53,22 @@ interface PlayerBarProps {
   onOpenArtist?: (artist: string) => void;
 }
 
-export function PlayerBar({
+function computeInterpolatedPosition(zone: ZoneSnapshot | null, clockOffsetMs: number, nowMs: number): number {
+  if (!zone) return 0;
+  const base = zone.positionSec ?? 0;
+  if (zone.state !== "playing") return base;
+  const updatedMs = Date.parse(zone.positionUpdatedAt);
+  if (!Number.isFinite(updatedMs)) return base;
+  const adjustedNowMs = nowMs - clockOffsetMs;
+  const elapsed = Math.max(0, Math.floor((adjustedNowMs - updatedMs) / 1000));
+  const maxDur = zone.durationSec || zone.currentTrack?.durationSec || 0;
+  return maxDur > 0 ? Math.min(maxDur, base + elapsed) : base + elapsed;
+}
+
+export const PlayerBar = memo(function PlayerBar({
   zones,
   activeZone,
-  positionSec,
+  getClockOffsetMs,
   error,
   discovering,
   transcodeAvailable,
@@ -82,6 +94,22 @@ export function PlayerBar({
   const [devicePopoverOpen, setDevicePopoverOpen] = useState(false);
   const [mobileExpanded, setMobileExpanded] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<"player" | "devices">("player");
+
+  // Local 1s playback clock tick scoped strictly to PlayerBar so the rest of
+  // the app never re-renders while a track plays.
+  const [positionSec, setPositionSec] = useState<number>(() =>
+    computeInterpolatedPosition(activeZone, getClockOffsetMs(), Date.now()),
+  );
+  useEffect(() => {
+    const sync = () => {
+      const next = computeInterpolatedPosition(activeZone, getClockOffsetMs(), Date.now());
+      setPositionSec((prev) => (prev === next ? prev : next));
+    };
+    sync();
+    if (activeZone?.state !== "playing") return;
+    const id = window.setInterval(sync, 500);
+    return () => window.clearInterval(id);
+  }, [activeZone, getClockOffsetMs]);
 
   const track = activeZone?.currentTrack;
   const shuffle = Boolean(activeZone?.shuffle);
@@ -688,4 +716,4 @@ export function PlayerBar({
       </Dialog>
     </>
   );
-}
+});

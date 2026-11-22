@@ -1,6 +1,6 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { ListPlus, Play, SkipForward } from "lucide-react";
-import { useCallback } from "react";
+import { memo, useCallback } from "react";
 import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
 import { fmtDuration, fmtQuality, isHiRes } from "@/api/format";
@@ -25,7 +25,7 @@ interface SongsViewProps {
  * Sleek Spotify-proportioned Songs list (artwork thumbs + stacked title/artist)
  * rather than a dense spreadsheet table.
  */
-export function SongsView({
+export const SongsView = memo(function SongsView({
   currentTrackId,
   onOpenAlbumId,
   onOpenArtist,
@@ -256,4 +256,4 @@ export function SongsView({
       </div>
     </div>
   );
-}
+});

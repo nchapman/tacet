@@ -123,10 +123,11 @@ export function useTacet(defaultZoneId?: string | null) {
   const [connection, setConnection] = useState<ConnectionStatus>("connecting");
   const [error, setError] = useState<string>("");
   const [discovering, setDiscovering] = useState(false);
-  const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   const activeZoneIdRef = useRef(selectedZoneId);
   const clockOffsetMsRef = useRef(0);
+  const getClockOffsetMs = useCallback(() => clockOffsetMsRef.current, []);
+  const clearError = useCallback(() => setError(""), []);
   const pendingSeekRef = useRef<PendingSeek | null>(null);
   const pendingVolumeRef = useRef<PendingVolume | null>(null);
 
@@ -246,68 +247,74 @@ export function useTacet(defaultZoneId?: string | null) {
       onPlayback: (ev) => {
         syncClockOffset(ev.serverTime);
         const now = Date.now();
-        setZones((prev) =>
-          prev.map((z) => {
-            if (z.zoneId !== ev.zoneId || ev.revision < z.revision) return z;
-            const seekCheck = reconcilePendingSeek(
-              pendingSeekRef.current,
-              ev.zoneId,
-              ev.currentItemId,
-              ev.positionSec,
-              ev.state === "playing",
-              now,
-            );
-            pendingSeekRef.current = seekCheck.nextPending;
-            return {
-              ...z,
-              revision: ev.revision,
-              state: ev.state,
-              positionSec: seekCheck.useOptimistic ? z.positionSec : ev.positionSec,
-              positionUpdatedAt: seekCheck.useOptimistic ? z.positionUpdatedAt : ev.positionUpdatedAt,
-              durationSec: ev.durationSec,
-              currentIndex: ev.currentIndex,
-              currentItemId: ev.currentItemId,
-              currentTrack: ev.currentTrack,
-              audioQuality: ev.audioQuality ?? z.audioQuality,
-              activeQuality: ev.activeQuality,
-              shuffle: ev.shuffle ?? z.shuffle,
-              repeat: ev.repeat ?? z.repeat,
-              gaplessArmed: ev.gaplessArmed,
-              eventsActive: ev.eventsActive,
-            };
-          }),
-        );
+        setZones((prev) => {
+          const idx = prev.findIndex((z) => z.zoneId === ev.zoneId);
+          if (idx === -1 || ev.revision < prev[idx].revision) return prev;
+          const z = prev[idx];
+          const seekCheck = reconcilePendingSeek(
+            pendingSeekRef.current,
+            ev.zoneId,
+            ev.currentItemId,
+            ev.positionSec,
+            ev.state === "playing",
+            now,
+          );
+          pendingSeekRef.current = seekCheck.nextPending;
+          const next = prev.slice();
+          next[idx] = {
+            ...z,
+            revision: ev.revision,
+            state: ev.state,
+            positionSec: seekCheck.useOptimistic ? z.positionSec : ev.positionSec,
+            positionUpdatedAt: seekCheck.useOptimistic ? z.positionUpdatedAt : ev.positionUpdatedAt,
+            durationSec: ev.durationSec,
+            currentIndex: ev.currentIndex,
+            currentItemId: ev.currentItemId,
+            currentTrack: ev.currentTrack,
+            audioQuality: ev.audioQuality ?? z.audioQuality,
+            activeQuality: ev.activeQuality,
+            shuffle: ev.shuffle ?? z.shuffle,
+            repeat: ev.repeat ?? z.repeat,
+            gaplessArmed: ev.gaplessArmed,
+            eventsActive: ev.eventsActive,
+          };
+          return next;
+        });
       },
       onVolume: (ev) => {
         const now = Date.now();
-        setZones((prev) =>
-          prev.map((z) => {
-            if (z.zoneId !== ev.zoneId || ev.revision < z.revision) return z;
-            const volCheck = reconcilePendingVolume(pendingVolumeRef.current, ev.zoneId, ev.volume, now);
-            pendingVolumeRef.current = volCheck.nextPending;
-            return {
-              ...z,
-              revision: ev.revision,
-              volume: volCheck.useOptimistic ? z.volume : ev.volume,
-              muted: ev.muted,
-            };
-          }),
-        );
+        setZones((prev) => {
+          const idx = prev.findIndex((z) => z.zoneId === ev.zoneId);
+          if (idx === -1 || ev.revision < prev[idx].revision) return prev;
+          const z = prev[idx];
+          const volCheck = reconcilePendingVolume(pendingVolumeRef.current, ev.zoneId, ev.volume, now);
+          pendingVolumeRef.current = volCheck.nextPending;
+          const next = prev.slice();
+          next[idx] = {
+            ...z,
+            revision: ev.revision,
+            volume: volCheck.useOptimistic ? z.volume : ev.volume,
+            muted: ev.muted,
+          };
+          return next;
+        });
       },
       onQueue: (ev) => {
-        setZones((prev) =>
-          prev.map((z) => {
-            if (z.zoneId !== ev.zoneId || ev.revision < z.revision) return z;
-            return {
-              ...z,
-              revision: ev.revision,
-              currentIndex: ev.currentIndex,
-              currentItemId: ev.currentItemId,
-              currentTrack: ev.currentTrack,
-              queue: ev.items ?? [],
-            };
-          }),
-        );
+        setZones((prev) => {
+          const idx = prev.findIndex((z) => z.zoneId === ev.zoneId);
+          if (idx === -1 || ev.revision < prev[idx].revision) return prev;
+          const z = prev[idx];
+          const next = prev.slice();
+          next[idx] = {
+            ...z,
+            revision: ev.revision,
+            currentIndex: ev.currentIndex,
+            currentItemId: ev.currentItemId,
+            currentTrack: ev.currentTrack,
+            queue: ev.items ?? [],
+          };
+          return next;
+        });
       },
       onZoneError: (ev) => {
         if (ev.zoneId === activeZoneIdRef.current) {
@@ -327,27 +334,6 @@ export function useTacet(defaultZoneId?: string | null) {
     [zones, selectedZoneId, defaultZoneId],
   );
   activeZoneIdRef.current = activeZone?.zoneId ?? "";
-
-  // Smooth client-side 1s progress interpolation while the active zone is playing,
-  // avoiding unnecessary full-queue SSE frames every second.
-  useEffect(() => {
-    if (activeZone?.state !== "playing") return;
-    setNowMs(Date.now());
-    const id = window.setInterval(() => setNowMs(Date.now()), 500);
-    return () => window.clearInterval(id);
-  }, [activeZone?.state, activeZone?.positionUpdatedAt]);
-
-  const interpolatedPositionSec = useMemo(() => {
-    if (!activeZone) return 0;
-    const base = activeZone.positionSec ?? 0;
-    if (activeZone.state !== "playing") return base;
-    const updatedMs = Date.parse(activeZone.positionUpdatedAt);
-    if (!Number.isFinite(updatedMs)) return base;
-    const adjustedNowMs = nowMs - clockOffsetMsRef.current;
-    const elapsed = Math.max(0, Math.floor((adjustedNowMs - updatedMs) / 1000));
-    const maxDur = activeZone.durationSec || activeZone.currentTrack?.durationSec || 0;
-    return maxDur > 0 ? Math.min(maxDur, base + elapsed) : base + elapsed;
-  }, [activeZone, nowMs]);
 
   const selectZone = useCallback((zoneId: string) => {
     setSelectedZoneId(zoneId);
@@ -462,7 +448,6 @@ export function useTacet(defaultZoneId?: string | null) {
         expiresAtMs: now + SEEK_GRACE_MS,
       };
       pendingSeekRef.current = pending;
-      setNowMs(now);
       setZones((prev) =>
         prev.map((z) =>
           z.zoneId === activeZoneId ? { ...z, positionSec: targetSec, positionUpdatedAt: optimisticUpdatedAt } : z,
@@ -532,14 +517,14 @@ export function useTacet(defaultZoneId?: string | null) {
   return {
     zones,
     activeZone,
-    interpolatedPositionSec,
+    getClockOffsetMs,
     settings,
     qobuzStatus,
     setQobuzStatus,
     libraryStatus,
     connection,
     error,
-    clearError: () => setError(""),
+    clearError,
     discovering,
     selectZone,
     discoverZones,

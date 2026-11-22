@@ -11,7 +11,7 @@ import {
   useSearchParams,
 } from "react-router";
 import { TacetAPIError, tacetClient } from "@/api/client";
-import type { Album, QueuePosition, QueueSource } from "@/api/types";
+import type { Album, QueueItem, QueuePosition, QueueSource } from "@/api/types";
 import { AlbumView } from "@/components/AlbumView";
 import { AlbumsView } from "@/components/AlbumsView";
 import { ArtistsView } from "@/components/ArtistsView";
@@ -39,6 +39,8 @@ import {
 } from "@/lib/query";
 import { useScrollRestoration } from "@/lib/scroll";
 import { albumPath, artistPath, decodeAlbumKey, SECTION_LABELS, SECTION_PATHS, sectionFromPathname } from "@/routes";
+
+const EMPTY_QUEUE: QueueItem[] = [];
 
 interface AlbumLocationState {
   album?: Album;
@@ -193,6 +195,103 @@ export function App() {
     [routerNavigate],
   );
 
+  const handleOpenAlbum = useCallback((alb: Album) => openAlbumById(alb.id, alb), [openAlbumById]);
+  const handleOpenAlbumId = useCallback((id: string) => openAlbumById(id), [openAlbumById]);
+  const handlePlay = useCallback(
+    (src: QueueSource, startIdx?: number) => {
+      void tacet.playSource(src, startIdx);
+    },
+    [tacet.playSource],
+  );
+  const handleAdd = useCallback(
+    (src: QueueSource, pos?: QueuePosition) => {
+      void tacet.addSource(src, pos);
+    },
+    [tacet.addSource],
+  );
+  const handleJumpItem = useCallback(
+    (itemId: string) => {
+      void tacet.jumpItem(itemId);
+    },
+    [tacet.jumpItem],
+  );
+  const handleRemoveItem = useCallback(
+    (itemId: string) => {
+      void tacet.removeItem(itemId);
+    },
+    [tacet.removeItem],
+  );
+  const handleClearQueue = useCallback(() => {
+    void tacet.clearQueue();
+  }, [tacet.clearQueue]);
+  const handleBackToArtists = useCallback(() => {
+    void routerNavigate("/artists");
+  }, [routerNavigate]);
+  const handleOpenSearch = useCallback(() => navigateSection("search"), [navigateSection]);
+  const handleOpenConnect = useCallback(() => setConnectOpen(true), []);
+  const handleToggleQueue = useCallback(() => setQueueOpen((v) => !v), []);
+  const handleSidebarNavigate = useCallback(
+    (next: AppSection) => {
+      if (next === "search") setSearchFocusNonce((n) => n + 1);
+      if (location.pathname === SECTION_PATHS[next]) {
+        stageRef.current?.scrollTo({ top: 0 });
+      }
+    },
+    [location.pathname],
+  );
+  const handleTransport = useCallback(
+    (action: Parameters<typeof tacet.transport>[0]) => {
+      void tacet.transport(action);
+    },
+    [tacet.transport],
+  );
+  const handleSeek = useCallback(
+    (sec: number) => {
+      void tacet.seek(sec);
+    },
+    [tacet.seek],
+  );
+  const handleVolume = useCallback(
+    (vol: number) => {
+      void tacet.setVolume(vol);
+    },
+    [tacet.setVolume],
+  );
+  const handleMute = useCallback(
+    (muted: boolean) => {
+      void tacet.setMute(muted);
+    },
+    [tacet.setMute],
+  );
+  const handleShuffle = useCallback(
+    (enabled: boolean) => {
+      void tacet.setShuffle(enabled);
+    },
+    [tacet.setShuffle],
+  );
+  const handleRepeat = useCallback(
+    (mode: Parameters<typeof tacet.setRepeat>[0]) => {
+      void tacet.setRepeat(mode);
+    },
+    [tacet.setRepeat],
+  );
+  const handleSetZoneQuality = useCallback(
+    (zoneId: string, quality: Parameters<typeof tacet.setZoneQuality>[1]) => {
+      void tacet.setZoneQuality(zoneId, quality);
+    },
+    [tacet.setZoneQuality],
+  );
+  const handleDiscover = useCallback(() => {
+    void tacet.discoverZones();
+  }, [tacet.discoverZones]);
+  const handleStreamModeChange = useCallback(
+    (mode: Parameters<typeof tacet.setStreamMode>[0]) => {
+      void tacet.setStreamMode(mode);
+    },
+    [tacet.setStreamMode],
+  );
+  const handleGoToQobuz = useCallback(() => navigateSection("qobuz"), [navigateSection]);
+
   const isAlbumPage = location.pathname.startsWith("/albums/");
   const ambientArtwork = (isAlbumPage && albumAmbientArt) || tacet.activeZone?.currentTrack?.artworkUrl;
   const ambientIntensity = isAlbumPage && albumAmbientArt ? "hero" : "subtle";
@@ -223,12 +322,7 @@ export function App() {
         <Sidebar
           activeSection={section}
           libraryStatus={tacet.libraryStatus}
-          onNavigate={(next) => {
-            if (next === "search") setSearchFocusNonce((n) => n + 1);
-            if (location.pathname === SECTION_PATHS[next]) {
-              stageRef.current?.scrollTo({ top: 0 });
-            }
-          }}
+          onNavigate={handleSidebarNavigate}
         />
 
         <main
@@ -245,9 +339,9 @@ export function App() {
               element={
                 <HomeRoute
                   libraryStatus={tacet.libraryStatus}
-                  onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
+                  onOpenAlbum={handleOpenAlbum}
                   onNavigate={navigateSection}
-                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+                  onPlay={handlePlay}
                 />
               }
             />
@@ -258,10 +352,10 @@ export function App() {
                   focusNonce={searchFocusNonce}
                   qobuzStatus={tacet.qobuzStatus}
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
-                  onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
+                  onOpenAlbum={handleOpenAlbum}
                   onOpenArtist={openArtist}
-                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                  onPlay={handlePlay}
+                  onAdd={handleAdd}
                 />
               }
             />
@@ -271,8 +365,8 @@ export function App() {
                 <AlbumsView
                   libraryStatus={tacet.libraryStatus}
                   groupVersions={groupVersions}
-                  onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
-                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+                  onOpenAlbum={handleOpenAlbum}
+                  onPlay={handlePlay}
                 />
               }
             />
@@ -284,10 +378,10 @@ export function App() {
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
                   isPlaying={tacet.activeZone?.state === "playing"}
                   onAmbientArt={setAlbumAmbientArt}
-                  onOpenAlbum={(id) => openAlbumById(id)}
+                  onOpenAlbum={handleOpenAlbumId}
                   onOpenArtist={openArtist}
-                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                  onPlay={handlePlay}
+                  onAdd={handleAdd}
                 />
               }
             />
@@ -299,10 +393,10 @@ export function App() {
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
                   isPlaying={tacet.activeZone?.state === "playing"}
                   onAmbientArt={setAlbumAmbientArt}
-                  onOpenAlbum={(id) => openAlbumById(id)}
+                  onOpenAlbum={handleOpenAlbumId}
                   onOpenArtist={openArtist}
-                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                  onPlay={handlePlay}
+                  onAdd={handleAdd}
                 />
               }
             />
@@ -311,11 +405,11 @@ export function App() {
               element={
                 <ArtistsRoute
                   qobuzStatus={tacet.qobuzStatus}
-                  onSelectArtist={(name) => openArtist(name)}
-                  onBackToArtists={() => void routerNavigate("/artists")}
-                  onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
-                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                  onSelectArtist={openArtist}
+                  onBackToArtists={handleBackToArtists}
+                  onOpenAlbum={handleOpenAlbum}
+                  onPlay={handlePlay}
+                  onAdd={handleAdd}
                 />
               }
             />
@@ -324,11 +418,11 @@ export function App() {
               element={
                 <ArtistsRoute
                   qobuzStatus={tacet.qobuzStatus}
-                  onSelectArtist={(name) => openArtist(name)}
-                  onBackToArtists={() => void routerNavigate("/artists")}
-                  onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
-                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                  onSelectArtist={openArtist}
+                  onBackToArtists={handleBackToArtists}
+                  onOpenAlbum={handleOpenAlbum}
+                  onPlay={handlePlay}
+                  onAdd={handleAdd}
                 />
               }
             />
@@ -337,10 +431,10 @@ export function App() {
               element={
                 <SongsView
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
-                  onOpenAlbumId={(id) => openAlbumById(id)}
+                  onOpenAlbumId={handleOpenAlbumId}
                   onOpenArtist={openArtist}
-                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
+                  onPlay={handlePlay}
+                  onAdd={handleAdd}
                 />
               }
             />
@@ -350,9 +444,9 @@ export function App() {
                 <QobuzView
                   status={tacet.qobuzStatus}
                   onStatusChange={tacet.setQobuzStatus}
-                  onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
-                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-                  onOpenSearch={() => navigateSection("search")}
+                  onOpenAlbum={handleOpenAlbum}
+                  onPlay={handlePlay}
+                  onOpenSearch={handleOpenSearch}
                 />
               }
             />
@@ -366,12 +460,12 @@ export function App() {
                   groupVersions={groupVersions}
                   zones={tacet.zones}
                   discovering={tacet.discovering}
-                  onStreamModeChange={(mode) => void tacet.setStreamMode(mode)}
+                  onStreamModeChange={handleStreamModeChange}
                   onGroupVersionsChange={handleGroupVersionsChange}
                   onQobuzStatusChange={tacet.setQobuzStatus}
-                  onDiscover={() => void tacet.discoverZones()}
-                  onOpenConnect={() => setConnectOpen(true)}
-                  onGoToQobuz={() => navigateSection("qobuz")}
+                  onDiscover={handleDiscover}
+                  onOpenConnect={handleOpenConnect}
+                  onGoToQobuz={handleGoToQobuz}
                 />
               }
             />
@@ -383,11 +477,11 @@ export function App() {
         <DesktopQueueDrawer
           open={queueOpen}
           onOpenChange={setQueueOpen}
-          items={tacet.activeZone?.queue ?? []}
+          items={tacet.activeZone?.queue ?? EMPTY_QUEUE}
           currentItemId={tacet.activeZone?.currentItemId}
-          onJump={(itemId) => void tacet.jumpItem(itemId)}
-          onRemove={(itemId) => void tacet.removeItem(itemId)}
-          onClear={() => void tacet.clearQueue()}
+          onJump={handleJumpItem}
+          onRemove={handleRemoveItem}
+          onClear={handleClearQueue}
         />
       </div>
 
@@ -396,25 +490,25 @@ export function App() {
         <PlayerBar
           zones={tacet.zones}
           activeZone={tacet.activeZone}
-          positionSec={tacet.interpolatedPositionSec}
+          getClockOffsetMs={tacet.getClockOffsetMs}
           error={tacet.error}
           discovering={tacet.discovering}
           transcodeAvailable={Boolean(tacet.settings.transcodeAvailable)}
           queueOpen={queueOpen}
           browserPlayer={browserPlayer}
           onDismissError={tacet.clearError}
-          onTransport={(action) => void tacet.transport(action)}
-          onSeek={(sec) => void tacet.seek(sec)}
-          onVolume={(vol) => void tacet.setVolume(vol)}
-          onMute={(muted) => void tacet.setMute(muted)}
-          onShuffle={(enabled) => void tacet.setShuffle(enabled)}
-          onRepeat={(mode) => void tacet.setRepeat(mode)}
+          onTransport={handleTransport}
+          onSeek={handleSeek}
+          onVolume={handleVolume}
+          onMute={handleMute}
+          onShuffle={handleShuffle}
+          onRepeat={handleRepeat}
           onSelectZone={tacet.selectZone}
-          onSetZoneQuality={(zoneId, quality) => void tacet.setZoneQuality(zoneId, quality)}
-          onDiscover={() => void tacet.discoverZones()}
-          onOpenConnect={() => setConnectOpen(true)}
-          onToggleQueue={() => setQueueOpen((v) => !v)}
-          onOpenAlbum={(albumId) => openAlbumById(albumId)}
+          onSetZoneQuality={handleSetZoneQuality}
+          onDiscover={handleDiscover}
+          onOpenConnect={handleOpenConnect}
+          onToggleQueue={handleToggleQueue}
+          onOpenAlbum={handleOpenAlbumId}
           onOpenArtist={openArtist}
         />
 

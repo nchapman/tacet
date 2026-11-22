@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useCallback } from "react";
+import { memo, useCallback } from "react";
 import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
 import type { Album, LibraryStatus, QueueSource } from "@/api/types";
@@ -20,7 +20,7 @@ interface AlbumsViewProps {
   onPlay: (source: QueueSource, startIndex?: number) => void;
 }
 
-export function AlbumsView({ libraryStatus, groupVersions, onOpenAlbum, onPlay }: AlbumsViewProps) {
+export const AlbumsView = memo(function AlbumsView({ libraryStatus, groupVersions, onOpenAlbum, onPlay }: AlbumsViewProps) {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const rawSource = searchParams.get("source") as SourceFilter | null;
@@ -145,4 +145,4 @@ export function AlbumsView({ libraryStatus, groupVersions, onOpenAlbum, onPlay }
       </div>
     </div>
   );
-}
+});
