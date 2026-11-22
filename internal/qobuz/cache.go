@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	diskCacheVersion = 1
+	diskCacheVersion = 2
 
 	albumCacheTTL          = 7 * 24 * time.Hour
 	artistCacheTTL         = 24 * time.Hour
