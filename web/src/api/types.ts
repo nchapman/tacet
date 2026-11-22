@@ -222,6 +222,8 @@ export interface QueueItem {
   track: Track;
 }
 
+export type RepeatMode = "off" | "all" | "one";
+
 export interface ZoneSnapshot {
   zoneId: string;
   renderer: RendererInfo;
@@ -238,6 +240,8 @@ export interface ZoneSnapshot {
   currentTrack?: Track;
   audioQuality?: AudioQuality;
   activeQuality?: AudioQuality;
+  shuffle?: boolean;
+  repeat?: RepeatMode;
   gaplessArmed: boolean;
   eventsActive: boolean;
 }
@@ -396,6 +400,8 @@ export interface PlaybackEvent {
   currentTrack?: Track;
   audioQuality?: AudioQuality;
   activeQuality?: AudioQuality;
+  shuffle?: boolean;
+  repeat?: RepeatMode;
   gaplessArmed: boolean;
   eventsActive: boolean;
 }

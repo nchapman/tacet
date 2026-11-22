@@ -5,17 +5,19 @@ import {
   ListMusic,
   Pause,
   Play,
+  Repeat,
+  Repeat1,
+  Shuffle,
   SkipBack,
   SkipForward,
   Speaker,
-  Square,
   Volume2,
   VolumeX,
   X,
 } from "lucide-react";
 import { useState } from "react";
 import { fmtDuration, fmtOutputQuality, isHiResOutput } from "@/api/format";
-import type { AudioQuality, TransportAction, ZoneSnapshot } from "@/api/types";
+import type { AudioQuality, RepeatMode, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
 import { AlbumArt, AmbientBackdrop } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +42,8 @@ interface PlayerBarProps {
   onSeek: (sec: number) => void;
   onVolume: (vol: number) => void;
   onMute: (muted: boolean) => void;
+  onShuffle: (enabled: boolean) => void;
+  onRepeat: (mode: RepeatMode) => void;
   onSelectZone: (zoneId: string) => void;
   onSetZoneQuality: (zoneId: string, quality: AudioQuality) => void;
   onDiscover: () => void;
@@ -63,6 +67,8 @@ export function PlayerBar({
   onSeek,
   onVolume,
   onMute,
+  onShuffle,
+  onRepeat,
   onSelectZone,
   onSetZoneQuality,
   onDiscover,
@@ -78,6 +84,15 @@ export function PlayerBar({
   const [mobilePanel, setMobilePanel] = useState<"player" | "devices">("player");
 
   const track = activeZone?.currentTrack;
+  const shuffle = Boolean(activeZone?.shuffle);
+  const repeat: RepeatMode = activeZone?.repeat ?? "off";
+  const nextRepeatMode: RepeatMode = repeat === "off" ? "all" : repeat === "all" ? "one" : "off";
+  const repeatLabel =
+    repeat === "one"
+      ? "Repeat One (click to turn off)"
+      : repeat === "all"
+        ? "Repeat All (click for Repeat One)"
+        : "Repeat Off (click for Repeat All)";
   const duration = Math.max(0, activeZone?.durationSec || track?.durationSec || 0);
   const shownPos = scrubPos ?? Math.min(positionSec, duration || positionSec);
   const shownVol = volDraft ?? activeZone?.volume ?? 0;
@@ -179,6 +194,24 @@ export function PlayerBar({
               type="button"
               variant="ghost"
               size="icon-sm"
+              disabled={!hasZone}
+              onClick={() => onShuffle(!shuffle)}
+              aria-label={shuffle ? "Disable shuffle" : "Enable shuffle"}
+              aria-pressed={shuffle}
+              title={shuffle ? "Shuffle On" : "Shuffle Off"}
+              className={cn(
+                "relative",
+                shuffle ? "text-emerald-400 hover:text-emerald-300" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <Shuffle className="h-3.5 w-3.5" />
+              {shuffle && <span className="absolute bottom-0.5 h-1 w-1 rounded-full bg-emerald-400" />}
+            </Button>
+
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
               disabled={!hasPlayable}
               onClick={() => onTransport("prev")}
               aria-label="Previous"
@@ -215,12 +248,20 @@ export function PlayerBar({
               type="button"
               variant="ghost"
               size="icon-sm"
-              disabled={!hasZone || (!playing && activeZone?.state !== "paused")}
-              onClick={() => onTransport("stop")}
-              aria-label="Stop"
-              className="text-muted-foreground/70"
+              disabled={!hasZone}
+              onClick={() => onRepeat(nextRepeatMode)}
+              aria-label={repeatLabel}
+              aria-pressed={repeat !== "off"}
+              title={repeatLabel}
+              className={cn(
+                "relative",
+                repeat !== "off"
+                  ? "text-emerald-400 hover:text-emerald-300"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
             >
-              <Square className="h-3 w-3 fill-current" />
+              {repeat === "one" ? <Repeat1 className="h-3.5 w-3.5" /> : <Repeat className="h-3.5 w-3.5" />}
+              {repeat !== "off" && <span className="absolute bottom-0.5 h-1 w-1 rounded-full bg-emerald-400" />}
             </Button>
           </div>
 
@@ -527,7 +568,23 @@ export function PlayerBar({
                 </div>
 
                 {/* Transport controls */}
-                <div className="flex items-center justify-center gap-6">
+                <div className="flex items-center justify-between px-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    disabled={!hasZone}
+                    onClick={() => onShuffle(!shuffle)}
+                    aria-label={shuffle ? "Disable shuffle" : "Enable shuffle"}
+                    aria-pressed={shuffle}
+                    className={cn(
+                      "relative h-11 w-11",
+                      shuffle ? "text-emerald-400 hover:text-emerald-300" : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <Shuffle className="h-5 w-5" />
+                    {shuffle && <span className="absolute bottom-1 h-1 w-1 rounded-full bg-emerald-400" />}
+                  </Button>
                   <Button
                     type="button"
                     variant="ghost"
@@ -562,6 +619,24 @@ export function PlayerBar({
                     className="h-12 w-12"
                   >
                     <SkipForward className="h-6 w-6 fill-current" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    disabled={!hasZone}
+                    onClick={() => onRepeat(nextRepeatMode)}
+                    aria-label={repeatLabel}
+                    aria-pressed={repeat !== "off"}
+                    className={cn(
+                      "relative h-11 w-11",
+                      repeat !== "off"
+                        ? "text-emerald-400 hover:text-emerald-300"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {repeat === "one" ? <Repeat1 className="h-5 w-5" /> : <Repeat className="h-5 w-5" />}
+                    {repeat !== "off" && <span className="absolute bottom-1 h-1 w-1 rounded-full bg-emerald-400" />}
                   </Button>
                 </div>
 

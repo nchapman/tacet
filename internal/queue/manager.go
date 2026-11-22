@@ -52,6 +52,30 @@ func NormalizePlaybackState(raw string) PlaybackState {
 	}
 }
 
+// RepeatMode controls queue repeat behavior on a zone.
+type RepeatMode string
+
+// Supported repeat modes.
+const (
+	RepeatOff RepeatMode = "off"
+	RepeatAll RepeatMode = "all"
+	RepeatOne RepeatMode = "one"
+)
+
+// ParseRepeatMode validates and normalizes a repeat mode string.
+func ParseRepeatMode(raw string) (RepeatMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "off":
+		return RepeatOff, true
+	case "all":
+		return RepeatAll, true
+	case "one":
+		return RepeatOne, true
+	default:
+		return "", false
+	}
+}
+
 // Item binds a track in a zone queue to a stable server-assigned itemId.
 type Item struct {
 	ItemID string        `json:"itemId"`
@@ -75,6 +99,8 @@ type ZoneSnapshot struct {
 	CurrentTrack      *library.Track    `json:"currentTrack,omitempty"`
 	AudioQuality      AudioQuality      `json:"audioQuality"`
 	ActiveQuality     AudioQuality      `json:"activeQuality,omitempty"`
+	Shuffle           bool              `json:"shuffle"`
+	Repeat            RepeatMode        `json:"repeat"`
 	GaplessArmed      bool              `json:"gaplessArmed"`
 	EventsActive      bool              `json:"eventsActive"`
 }
@@ -93,6 +119,8 @@ type PlaybackEvent struct {
 	CurrentTrack      *library.Track `json:"currentTrack,omitempty"`
 	AudioQuality      AudioQuality   `json:"audioQuality"`
 	ActiveQuality     AudioQuality   `json:"activeQuality,omitempty"`
+	Shuffle           bool           `json:"shuffle"`
+	Repeat            RepeatMode     `json:"repeat"`
 	GaplessArmed      bool           `json:"gaplessArmed"`
 	EventsActive      bool           `json:"eventsActive"`
 }
@@ -147,13 +175,17 @@ type zone struct {
 	opMu               sync.Mutex
 	ctrl               upnp.Controller
 	queue              []Item
+	originalQueue      []Item
 	currentIndex       int
+	shuffle            bool
+	repeat             RepeatMode
 	revision           uint64
 	status             upnp.TransportStatus
 	positionUpdatedAt  time.Time
 	lastPlaybackEmit   time.Time
 	currentURI         string
 	nextURI            string
+	nextIndex          int
 	audioQuality       AudioQuality
 	activeQuality      AudioQuality
 	nextQuality        AudioQuality
@@ -573,6 +605,10 @@ func (m *Manager) snapshotLocked(z *zone) ZoneSnapshot {
 		quality = AudioQualityOriginal
 	}
 
+	repeat := z.repeat
+	if repeat == "" {
+		repeat = RepeatOff
+	}
 	return ZoneSnapshot{
 		ZoneID:            info.ID,
 		Renderer:          info,
@@ -589,6 +625,8 @@ func (m *Manager) snapshotLocked(z *zone) ZoneSnapshot {
 		CurrentTrack:      cur,
 		AudioQuality:      quality,
 		ActiveQuality:     z.activeQuality,
+		Shuffle:           z.shuffle,
+		Repeat:            repeat,
 		GaplessArmed:      z.nextPreloaded,
 		EventsActive:      eventsActive,
 	}
@@ -609,6 +647,8 @@ func (m *Manager) playbackEventLocked(z *zone) PlaybackEvent {
 		CurrentTrack:      snap.CurrentTrack,
 		AudioQuality:      snap.AudioQuality,
 		ActiveQuality:     snap.ActiveQuality,
+		Shuffle:           snap.Shuffle,
+		Repeat:            snap.Repeat,
 		GaplessArmed:      snap.GaplessArmed,
 		EventsActive:      snap.EventsActive,
 	}

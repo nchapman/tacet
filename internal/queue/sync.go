@@ -615,12 +615,17 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 
 	// 1. Detect gapless transition: renderer URI switched to our preloaded nextURI.
 	if z.nextPreloaded && z.nextURI != "" && z.status.TrackURI == z.nextURI {
-		z.currentIndex++
+		if z.nextIndex >= 0 && z.nextIndex < len(z.queue) {
+			z.currentIndex = z.nextIndex
+		} else {
+			z.currentIndex++
+		}
 		z.currentURI = z.nextURI
 		if z.nextQuality != "" {
 			z.activeQuality = z.nextQuality
 		}
 		z.nextURI = ""
+		z.nextIndex = -1
 		z.nextQuality = ""
 		z.nextPreloaded = false
 		z.nextPreloading = false
@@ -654,10 +659,15 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 				}
 			}
 		}
+		nextIdx := nextAutoIndexLocked(z)
+		// Skip gapless preload when nextIdx == currentIndex (repeat one / 1-track repeat all)
+		// because nextURI would match currentURI and trigger immediate transition detection;
+		// fallback auto-advance handles single-track repeat cleanly at track end.
 		if !z.setNextUnsupported && !z.nextPreloaded && !z.nextPreloading && !z.nextFailed &&
-			z.currentIndex >= 0 && z.currentIndex+1 < len(z.queue) {
-			t := z.queue[z.currentIndex+1].Track
+			nextIdx >= 0 && nextIdx != z.currentIndex {
+			t := z.queue[nextIdx].Track
 			res.preloadTrack = &t
+			z.nextIndex = nextIdx
 			z.nextPreloading = true
 		}
 	}
@@ -667,12 +677,13 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 	if allowAutoAdvance && (st.State == "STOPPED" || st.State == "NO_MEDIA_PRESENT") &&
 		z.wasPlaying && !z.userStopped && time.Since(z.loadedAt) > 2*time.Second {
 		z.wasPlaying = false
-		if z.currentIndex >= 0 && z.currentIndex+1 < len(z.queue) {
-			z.currentIndex++
+		if nextIdx := nextAutoIndexLocked(z); nextIdx >= 0 {
+			z.currentIndex = nextIdx
 			z.nextPreloaded = false
 			z.nextPreloading = false
 			z.nextFailed = false
 			z.nextURI = ""
+			z.nextIndex = -1
 			z.generation++
 			res.fallbackAdvanceIdx = z.currentIndex
 			res.gen = z.generation

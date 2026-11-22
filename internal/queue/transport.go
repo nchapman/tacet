@@ -3,11 +3,72 @@ package queue
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"time"
 
 	"tacet/internal/library"
 )
+
+func nextAutoIndexLocked(z *zone) int {
+	if len(z.queue) == 0 || z.currentIndex < 0 {
+		return -1
+	}
+	if z.repeat == RepeatOne {
+		return z.currentIndex
+	}
+	if z.currentIndex+1 < len(z.queue) {
+		return z.currentIndex + 1
+	}
+	if z.repeat == RepeatAll {
+		return 0
+	}
+	return -1
+}
+
+func nextManualIndexLocked(z *zone) int {
+	if len(z.queue) == 0 {
+		return -1
+	}
+	if z.currentIndex+1 < len(z.queue) {
+		return z.currentIndex + 1
+	}
+	if z.repeat == RepeatAll || z.repeat == RepeatOne {
+		return 0
+	}
+	return -1
+}
+
+// shuffleItemsKeepingPin returns a shuffled copy of items with items[pinIdx]
+// placed first (index 0) when pinIdx is in bounds.
+func shuffleItemsKeepingPin(items []Item, pinIdx int) []Item {
+	if len(items) <= 1 {
+		out := make([]Item, len(items))
+		copy(out, items)
+		return out
+	}
+	rest := make([]Item, 0, len(items))
+	var pinned Item
+	hasPin := pinIdx >= 0 && pinIdx < len(items)
+	for i, it := range items {
+		if hasPin && i == pinIdx {
+			pinned = it
+			continue
+		}
+		rest = append(rest, it)
+	}
+	//nolint:gosec // music queue shuffle is non-cryptographic
+	rand.Shuffle(len(rest), func(i, j int) {
+		rest[i], rest[j] = rest[j], rest[i]
+	})
+	if !hasPin {
+		return rest
+	}
+	out := make([]Item, 0, len(items))
+	out = append(out, pinned)
+	out = append(out, rest...)
+	return out
+}
 
 // Position specifies where new tracks are inserted into a zone queue.
 type Position string
@@ -55,12 +116,21 @@ func (m *Manager) ReplaceQueue(ctx context.Context, zoneID string, tracks []libr
 	items[startIndex].Track = resolvedTrack
 
 	m.mu.Lock()
-	z.queue = items
-	z.currentIndex = startIndex
+	playIdx := startIndex
+	if z.shuffle {
+		z.originalQueue = append([]Item(nil), items...)
+		z.queue = shuffleItemsKeepingPin(items, startIndex)
+		playIdx = 0
+	} else {
+		z.originalQueue = nil
+		z.queue = items
+	}
+	z.currentIndex = playIdx
 	z.nextPreloaded = false
 	z.nextPreloading = false
 	z.nextFailed = false
 	z.nextURI = ""
+	z.nextIndex = -1
 	z.userStopped = false
 	z.wasPlaying = false
 	z.generation++
@@ -71,7 +141,7 @@ func (m *Manager) ReplaceQueue(ctx context.Context, zoneID string, tracks []libr
 
 	m.emit("zone.queue", zoneID, qEv)
 
-	if err := m.playPreparedMedia(ctx, z, startIndex, gen, ctrl, media, resolvedTrack, effQuality); err != nil {
+	if err := m.playPreparedMedia(ctx, z, playIdx, gen, ctrl, media, resolvedTrack, effQuality); err != nil {
 		return ZoneSnapshot{}, err
 	}
 	snap, _ := m.Zone(zoneID)
@@ -362,11 +432,13 @@ func (m *Manager) ClearQueue(ctx context.Context, zoneID string) (ZoneSnapshot, 
 
 	m.mu.Lock()
 	z.queue = make([]Item, 0)
+	z.originalQueue = nil
 	z.currentIndex = -1
 	z.nextPreloaded = false
 	z.nextPreloading = false
 	z.nextFailed = false
 	z.nextURI = ""
+	z.nextIndex = -1
 	z.currentURI = ""
 	z.activeQuality = ""
 	z.nextQuality = ""
@@ -508,8 +580,8 @@ func (m *Manager) Next(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 		m.mu.Unlock()
 		return ZoneSnapshot{}, ErrQueueEmpty
 	}
-	nextIdx := z.currentIndex + 1
-	if nextIdx >= len(z.queue) {
+	nextIdx := nextManualIndexLocked(z)
+	if nextIdx < 0 {
 		m.mu.Unlock()
 		return ZoneSnapshot{}, ErrEndOfQueue
 	}
@@ -518,6 +590,7 @@ func (m *Manager) Next(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	z.nextPreloading = false
 	z.nextFailed = false
 	z.nextURI = ""
+	z.nextIndex = -1
 	z.userStopped = false
 	z.wasPlaying = false
 	z.generation++
@@ -548,6 +621,8 @@ func (m *Manager) Prev(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	}
 	pos := z.status.Position
 	curIdx := z.currentIndex
+	repeat := z.repeat
+	qLen := len(z.queue)
 	supportsSeek := z.ctrl.Info().SupportsSeek
 	m.mu.Unlock()
 
@@ -558,7 +633,11 @@ func (m *Manager) Prev(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	if pos <= 5*time.Second {
 		target = curIdx - 1
 		if target < 0 {
-			target = 0
+			if repeat == RepeatAll && qLen > 0 {
+				target = qLen - 1
+			} else {
+				target = 0
+			}
 		}
 	}
 	m.mu.Lock()
@@ -665,6 +744,132 @@ func (m *Manager) SetMute(ctx context.Context, zoneID string, muted bool) (ZoneS
 	snap := m.snapshotLocked(z)
 	m.mu.Unlock()
 	m.emit("zone.volume", zoneID, volEv)
+	return snap, nil
+}
+
+// SetShuffle toggles shuffle on a zone. Turning shuffle on preserves the
+// currently playing item at index 0 and shuffles the remaining tracks; turning
+// it off restores the original order while staying on the active track.
+func (m *Manager) SetShuffle(_ context.Context, zoneID string, enabled bool) (ZoneSnapshot, error) {
+	z, err := m.lookupZone(zoneID)
+	if err != nil {
+		return ZoneSnapshot{}, err
+	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
+
+	m.mu.Lock()
+	if z.shuffle == enabled {
+		snap := m.snapshotLocked(z)
+		m.mu.Unlock()
+		return snap, nil
+	}
+
+	z.shuffle = enabled
+	curItemID := ""
+	if z.currentIndex >= 0 && z.currentIndex < len(z.queue) {
+		curItemID = z.queue[z.currentIndex].ItemID
+	}
+
+	if enabled {
+		z.originalQueue = append([]Item(nil), z.queue...)
+		if len(z.queue) > 1 {
+			z.queue = shuffleItemsKeepingPin(z.queue, z.currentIndex)
+			if curItemID != "" {
+				z.currentIndex = 0
+			}
+		}
+	} else {
+		if len(z.originalQueue) > 0 {
+			// Restore original order for items still present in the queue,
+			// then append any items added while shuffle was enabled.
+			present := make(map[string]Item, len(z.queue))
+			for _, it := range z.queue {
+				present[it.ItemID] = it
+			}
+			restored := make([]Item, 0, len(z.queue))
+			seen := make(map[string]bool, len(z.queue))
+			for _, it := range z.originalQueue {
+				if cur, ok := present[it.ItemID]; ok {
+					restored = append(restored, cur)
+					seen[it.ItemID] = true
+				}
+			}
+			for _, it := range z.queue {
+				if !seen[it.ItemID] {
+					restored = append(restored, it)
+				}
+			}
+			z.queue = restored
+		}
+		z.originalQueue = nil
+		if curItemID != "" {
+			z.currentIndex = findItemIndexLocked(z.queue, curItemID)
+		}
+	}
+
+	clearedPreload := z.nextPreloaded
+	z.nextPreloaded = false
+	z.nextPreloading = false
+	z.nextFailed = false
+	z.nextURI = ""
+	z.nextIndex = -1
+	z.revision++
+	ctrl := z.ctrl
+	qEv := m.queueEventLocked(z)
+	pbEv := m.playbackEventLocked(z)
+	snap := m.snapshotLocked(z)
+	m.mu.Unlock()
+
+	if clearedPreload {
+		m.clearNextPreloadAsync(ctrl)
+	}
+	m.emit("zone.queue", zoneID, qEv)
+	m.emit("zone.playback", zoneID, pbEv)
+	return snap, nil
+}
+
+// SetRepeat sets a zone's repeat mode ("off", "all", or "one").
+func (m *Manager) SetRepeat(_ context.Context, zoneID string, mode RepeatMode) (ZoneSnapshot, error) {
+	norm, ok := ParseRepeatMode(string(mode))
+	if !ok {
+		return ZoneSnapshot{}, fmt.Errorf("%w: invalid repeat mode %q", ErrInvalidArgument, mode)
+	}
+	z, err := m.lookupZone(zoneID)
+	if err != nil {
+		return ZoneSnapshot{}, err
+	}
+	z.opMu.Lock()
+	defer z.opMu.Unlock()
+
+	m.mu.Lock()
+	cur := z.repeat
+	if cur == "" {
+		cur = RepeatOff
+	}
+	if cur == norm {
+		snap := m.snapshotLocked(z)
+		m.mu.Unlock()
+		return snap, nil
+	}
+
+	z.repeat = norm
+	clearedPreload := z.nextPreloaded
+	z.nextPreloaded = false
+	z.nextPreloading = false
+	z.nextFailed = false
+	z.nextURI = ""
+	z.nextIndex = -1
+	z.revision++
+	ctrl := z.ctrl
+	pbEv := m.playbackEventLocked(z)
+	snap := m.snapshotLocked(z)
+	m.mu.Unlock()
+
+	if clearedPreload {
+		m.clearNextPreloadAsync(ctrl)
+	}
+	m.emit("zone.playback", zoneID, pbEv)
 	return snap, nil
 }
 

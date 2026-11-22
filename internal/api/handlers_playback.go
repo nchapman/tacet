@@ -550,6 +550,48 @@ func (s *Server) handleZoneQuality(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, snap)
 }
 
+func (s *Server) handleZoneShuffle(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	if req.Enabled == nil {
+		writeDomainError(w, fmt.Errorf("%w: enabled is required", queue.ErrInvalidArgument))
+		return
+	}
+	snap, err := s.manager.SetShuffle(r.Context(), zoneID, *req.Enabled)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *Server) handleZoneRepeat(w http.ResponseWriter, r *http.Request) {
+	zoneID := r.PathValue("zoneId")
+	var req struct {
+		Mode *queue.RepeatMode `json:"mode"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	if req.Mode == nil {
+		writeDomainError(w, fmt.Errorf("%w: mode is required", queue.ErrInvalidArgument))
+		return
+	}
+	snap, err := s.manager.SetRepeat(r.Context(), zoneID, *req.Mode)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
 func parsePageParams(r *http.Request, defaultLimit, maxLimit int) (int, int, error) {
 	limit := defaultLimit
 	offset := 0

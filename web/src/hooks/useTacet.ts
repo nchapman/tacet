@@ -7,6 +7,7 @@ import type {
   QobuzStatus,
   QueuePosition,
   QueueSource,
+  RepeatMode,
   Settings,
   StreamMode,
   TransportAction,
@@ -161,6 +162,8 @@ export function useTacet(defaultZoneId?: string | null) {
               currentTrack: ev.currentTrack,
               audioQuality: ev.audioQuality ?? z.audioQuality,
               activeQuality: ev.activeQuality,
+              shuffle: ev.shuffle ?? z.shuffle,
+              repeat: ev.repeat ?? z.repeat,
               gaplessArmed: ev.gaplessArmed,
               eventsActive: ev.eventsActive,
             };
@@ -360,6 +363,22 @@ export function useTacet(defaultZoneId?: string | null) {
     [runAction, upsertZone],
   );
 
+  const setShuffle = useCallback(
+    (enabled: boolean) => {
+      if (!activeZoneId) return Promise.resolve(undefined);
+      return runAction(() => tacetClient.zone(activeZoneId).setShuffle(enabled), upsertZone);
+    },
+    [activeZoneId, runAction, upsertZone],
+  );
+
+  const setRepeat = useCallback(
+    (mode: RepeatMode) => {
+      if (!activeZoneId) return Promise.resolve(undefined);
+      return runAction(() => tacetClient.zone(activeZoneId).setRepeat(mode), upsertZone);
+    },
+    [activeZoneId, runAction, upsertZone],
+  );
+
   return {
     zones,
     activeZone,
@@ -387,5 +406,7 @@ export function useTacet(defaultZoneId?: string | null) {
     setVolume,
     setMute,
     setZoneQuality,
+    setShuffle,
+    setRepeat,
   };
 }

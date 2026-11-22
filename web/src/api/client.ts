@@ -4,6 +4,7 @@ import type {
   ArtistSummary,
   AudioQuality,
   ConnectZoneResponse,
+  RepeatMode,
   DiscoverZonesResponse,
   GenreSummary,
   HeavyRotationAlbum,
@@ -203,6 +204,24 @@ export class ZoneClient {
     return this.client.request(
       this.zonePath("/quality"),
       { method: "PUT", body: JSON.stringify({ quality }) },
+      undefined,
+      opts,
+    );
+  }
+
+  setShuffle(enabled: boolean, opts?: RequestOptions): Promise<ZoneSnapshot> {
+    return this.client.request(
+      this.zonePath("/shuffle"),
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+      undefined,
+      opts,
+    );
+  }
+
+  setRepeat(mode: RepeatMode, opts?: RequestOptions): Promise<ZoneSnapshot> {
+    return this.client.request(
+      this.zonePath("/repeat"),
+      { method: "PUT", body: JSON.stringify({ mode }) },
       undefined,
       opts,
     );

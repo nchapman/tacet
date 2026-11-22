@@ -388,6 +388,8 @@ export function App() {
           onSeek={(sec) => void tacet.seek(sec)}
           onVolume={(vol) => void tacet.setVolume(vol)}
           onMute={(muted) => void tacet.setMute(muted)}
+          onShuffle={(enabled) => void tacet.setShuffle(enabled)}
+          onRepeat={(mode) => void tacet.setRepeat(mode)}
           onSelectZone={tacet.selectZone}
           onSetZoneQuality={(zoneId, quality) => void tacet.setZoneQuality(zoneId, quality)}
           onDiscover={() => void tacet.discoverZones()}

@@ -501,3 +501,67 @@ func TestPlayNoOpWhenNothingLoaded(t *testing.T) {
 		t.Fatalf("expected state stopped, got %q", snap.State)
 	}
 }
+
+func TestManager_ShuffleAndRepeat(t *testing.T) {
+	ctx := context.Background()
+	mgr := NewManager(8080, "http://192.168.1.10:8080", nil)
+	defer mgr.Close()
+
+	r := newFakeRenderer("uuid:sr", "Studio")
+	mgr.RegisterRenderer(r)
+
+	tracks := []library.Track{
+		{ID: "t1", Source: library.SourceLocal, Title: "One", Ext: ".flac", MIME: "audio/flac", DurationSec: 100},
+		{ID: "t2", Source: library.SourceLocal, Title: "Two", Ext: ".flac", MIME: "audio/flac", DurationSec: 100},
+		{ID: "t3", Source: library.SourceLocal, Title: "Three", Ext: ".flac", MIME: "audio/flac", DurationSec: 100},
+		{ID: "t4", Source: library.SourceLocal, Title: "Four", Ext: ".flac", MIME: "audio/flac", DurationSec: 100},
+	}
+
+	snap, err := mgr.ReplaceQueue(ctx, "uuid:sr", tracks, 1) // start on t2
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Shuffle || snap.Repeat != RepeatOff {
+		t.Fatalf("expected default shuffle=false repeat=off, got %v %q", snap.Shuffle, snap.Repeat)
+	}
+
+	// Shuffle pins active track (t2) at index 0 and keeps all 4 items.
+	snap, err = mgr.SetShuffle(ctx, "uuid:sr", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Shuffle || snap.CurrentIndex != 0 || snap.Queue[0].Track.ID != "t2" || len(snap.Queue) != 4 {
+		t.Fatalf("unexpected shuffled snapshot: idx=%d first=%q len=%d", snap.CurrentIndex, snap.Queue[0].Track.ID, len(snap.Queue))
+	}
+
+	// Unshuffling restores original order and keeps currentIndex pointing to t2 (index 1).
+	snap, err = mgr.SetShuffle(ctx, "uuid:sr", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Shuffle || snap.CurrentIndex != 1 || snap.Queue[1].Track.ID != "t2" || snap.Queue[0].Track.ID != "t1" {
+		t.Fatalf("unexpected restored snapshot: idx=%d order=%s,%s", snap.CurrentIndex, snap.Queue[0].Track.ID, snap.Queue[1].Track.ID)
+	}
+
+	// Repeat All wraps Next at the end of the queue back to index 0, and Prev from 0 to last.
+	snap, err = mgr.SetRepeat(ctx, "uuid:sr", RepeatAll)
+	if err != nil || snap.Repeat != RepeatAll {
+		t.Fatalf("SetRepeat all failed: err=%v repeat=%q", err, snap.Repeat)
+	}
+	if _, err = mgr.JumpToItem(ctx, "uuid:sr", snap.Queue[3].ItemID); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = mgr.Next(ctx, "uuid:sr")
+	if err != nil || snap.CurrentIndex != 0 {
+		t.Fatalf("RepeatAll Next from last should wrap to 0, got idx=%d err=%v", snap.CurrentIndex, err)
+	}
+	snap, err = mgr.Prev(ctx, "uuid:sr")
+	if err != nil || snap.CurrentIndex != 3 {
+		t.Fatalf("RepeatAll Prev from 0 should wrap to 3, got idx=%d err=%v", snap.CurrentIndex, err)
+	}
+
+	// Invalid repeat mode fails cleanly.
+	if _, err := mgr.SetRepeat(ctx, "uuid:sr", RepeatMode("bogus")); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument for bogus repeat mode, got %v", err)
+	}
+}

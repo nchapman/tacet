@@ -230,6 +230,8 @@ func (s *Server) routes() {
 	s.apiMux.HandleFunc("PUT /api/v1/zones/{zoneId}/volume", s.handleVolume)
 	s.apiMux.HandleFunc("PUT /api/v1/zones/{zoneId}/mute", s.handleMute)
 	s.apiMux.HandleFunc("PUT /api/v1/zones/{zoneId}/quality", s.handleZoneQuality)
+	s.apiMux.HandleFunc("PUT /api/v1/zones/{zoneId}/shuffle", s.handleZoneShuffle)
+	s.apiMux.HandleFunc("PUT /api/v1/zones/{zoneId}/repeat", s.handleZoneRepeat)
 
 	// Remote HTTP/SSE audio player endpoints (web, mobile, desktop, CLI/daemon)
 	s.apiMux.HandleFunc("POST /api/v1/players", s.handleRegisterPlayer)
