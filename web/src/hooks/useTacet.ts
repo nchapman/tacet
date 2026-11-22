@@ -17,6 +17,65 @@ import type {
 export type ConnectionStatus = "connecting" | "live" | "reconnecting";
 
 const SELECTED_ZONE_KEY = "tacet.selectedZoneId";
+const SEEK_GRACE_MS = 2000;
+const VOLUME_GRACE_MS = 1500;
+
+export interface PendingSeek {
+  zoneId: string;
+  itemId?: string;
+  targetSec: number;
+  setAtMs: number;
+  expiresAtMs: number;
+}
+
+export interface PendingVolume {
+  zoneId: string;
+  targetVol: number;
+  expiresAtMs: number;
+}
+
+export function reconcilePendingSeek(
+  pending: PendingSeek | null,
+  zoneId: string,
+  itemId: string | undefined,
+  incomingPos: number,
+  isPlaying: boolean,
+  nowMs: number,
+): { nextPending: PendingSeek | null; useOptimistic: boolean } {
+  if (!pending || pending.zoneId !== zoneId) {
+    return { nextPending: pending, useOptimistic: false };
+  }
+  if (nowMs >= pending.expiresAtMs) {
+    return { nextPending: null, useOptimistic: false };
+  }
+  if (pending.itemId && itemId && pending.itemId !== itemId) {
+    return { nextPending: null, useOptimistic: false };
+  }
+  const elapsedSec = isPlaying ? Math.max(0, (nowMs - pending.setAtMs) / 1000) : 0;
+  const expected = pending.targetSec + elapsedSec;
+  if (Math.abs(incomingPos - expected) <= 3) {
+    return { nextPending: null, useOptimistic: false };
+  }
+  return { nextPending: pending, useOptimistic: true };
+}
+
+export function reconcilePendingVolume(
+  pending: PendingVolume | null,
+  zoneId: string,
+  incomingVol: number,
+  nowMs: number,
+): { nextPending: PendingVolume | null; useOptimistic: boolean } {
+  if (!pending || pending.zoneId !== zoneId) {
+    return { nextPending: pending, useOptimistic: false };
+  }
+  if (nowMs >= pending.expiresAtMs) {
+    return { nextPending: null, useOptimistic: false };
+  }
+  if (Math.abs(incomingVol - pending.targetVol) <= 1) {
+    return { nextPending: null, useOptimistic: false };
+  }
+  return { nextPending: pending, useOptimistic: true };
+}
 
 function readSavedZoneId(): string {
   try {
@@ -68,6 +127,39 @@ export function useTacet(defaultZoneId?: string | null) {
 
   const activeZoneIdRef = useRef(selectedZoneId);
   const clockOffsetMsRef = useRef(0);
+  const pendingSeekRef = useRef<PendingSeek | null>(null);
+  const pendingVolumeRef = useRef<PendingVolume | null>(null);
+
+  const applyPendingLocks = useCallback((existing: ZoneSnapshot | undefined, incoming: ZoneSnapshot): ZoneSnapshot => {
+    if (!existing) return incoming;
+    const now = Date.now();
+    let result = incoming;
+
+    const seekCheck = reconcilePendingSeek(
+      pendingSeekRef.current,
+      incoming.zoneId,
+      incoming.currentItemId,
+      incoming.positionSec,
+      incoming.state === "playing",
+      now,
+    );
+    pendingSeekRef.current = seekCheck.nextPending;
+    if (seekCheck.useOptimistic) {
+      result = {
+        ...result,
+        positionSec: existing.positionSec,
+        positionUpdatedAt: existing.positionUpdatedAt,
+      };
+    }
+
+    const volCheck = reconcilePendingVolume(pendingVolumeRef.current, incoming.zoneId, incoming.volume, now);
+    pendingVolumeRef.current = volCheck.nextPending;
+    if (volCheck.useOptimistic) {
+      result = { ...result, volume: existing.volume };
+    }
+
+    return result;
+  }, []);
 
   const syncClockOffset = useCallback((serverTime?: string) => {
     if (!serverTime) return;
@@ -78,33 +170,39 @@ export function useTacet(defaultZoneId?: string | null) {
   }, []);
 
   // Apply full snapshot only if its revision is >= our current zone revision.
-  const upsertZone = useCallback((incoming: ZoneSnapshot) => {
-    setZones((prev) => {
-      const idx = prev.findIndex((z) => z.zoneId === incoming.zoneId);
-      if (idx === -1) return [...prev, incoming];
-      if (incoming.revision < prev[idx].revision) return prev;
-      const next = prev.slice();
-      next[idx] = incoming;
-      return next;
-    });
-  }, []);
+  const upsertZone = useCallback(
+    (incoming: ZoneSnapshot) => {
+      setZones((prev) => {
+        const idx = prev.findIndex((z) => z.zoneId === incoming.zoneId);
+        if (idx === -1) return [...prev, incoming];
+        if (incoming.revision < prev[idx].revision) return prev;
+        const next = prev.slice();
+        next[idx] = applyPendingLocks(prev[idx], incoming);
+        return next;
+      });
+    },
+    [applyPendingLocks],
+  );
 
   // Never overwrite the persisted localStorage preference here: a temporarily
   // absent zone (e.g. local browser player still registering, or UPnP renderer
   // still being discovered after a server restart) will snap back automatically
   // once it appears in `zones`.
-  const replaceZones = useCallback((list: ZoneSnapshot[]) => {
-    setZones((prev) => {
-      const prevById = new Map(prev.map((z) => [z.zoneId, z]));
-      return list.map((incoming) => {
-        const existing = prevById.get(incoming.zoneId);
-        if (existing && incoming.revision < existing.revision) {
-          return existing;
-        }
-        return incoming;
+  const replaceZones = useCallback(
+    (list: ZoneSnapshot[]) => {
+      setZones((prev) => {
+        const prevById = new Map(prev.map((z) => [z.zoneId, z]));
+        return list.map((incoming) => {
+          const existing = prevById.get(incoming.zoneId);
+          if (existing && incoming.revision < existing.revision) {
+            return existing;
+          }
+          return applyPendingLocks(existing, incoming);
+        });
       });
-    });
-  }, []);
+    },
+    [applyPendingLocks],
+  );
 
   const runAction = useCallback(
     async <T,>(fn: () => Promise<T>, onSuccess?: (result: T) => void): Promise<T | undefined> => {
@@ -147,15 +245,25 @@ export function useTacet(defaultZoneId?: string | null) {
       },
       onPlayback: (ev) => {
         syncClockOffset(ev.serverTime);
+        const now = Date.now();
         setZones((prev) =>
           prev.map((z) => {
             if (z.zoneId !== ev.zoneId || ev.revision < z.revision) return z;
+            const seekCheck = reconcilePendingSeek(
+              pendingSeekRef.current,
+              ev.zoneId,
+              ev.currentItemId,
+              ev.positionSec,
+              ev.state === "playing",
+              now,
+            );
+            pendingSeekRef.current = seekCheck.nextPending;
             return {
               ...z,
               revision: ev.revision,
               state: ev.state,
-              positionSec: ev.positionSec,
-              positionUpdatedAt: ev.positionUpdatedAt,
+              positionSec: seekCheck.useOptimistic ? z.positionSec : ev.positionSec,
+              positionUpdatedAt: seekCheck.useOptimistic ? z.positionUpdatedAt : ev.positionUpdatedAt,
               durationSec: ev.durationSec,
               currentIndex: ev.currentIndex,
               currentItemId: ev.currentItemId,
@@ -171,10 +279,18 @@ export function useTacet(defaultZoneId?: string | null) {
         );
       },
       onVolume: (ev) => {
+        const now = Date.now();
         setZones((prev) =>
           prev.map((z) => {
             if (z.zoneId !== ev.zoneId || ev.revision < z.revision) return z;
-            return { ...z, revision: ev.revision, volume: ev.volume, muted: ev.muted };
+            const volCheck = reconcilePendingVolume(pendingVolumeRef.current, ev.zoneId, ev.volume, now);
+            pendingVolumeRef.current = volCheck.nextPending;
+            return {
+              ...z,
+              revision: ev.revision,
+              volume: volCheck.useOptimistic ? z.volume : ev.volume,
+              muted: ev.muted,
+            };
           }),
         );
       },
@@ -333,17 +449,49 @@ export function useTacet(defaultZoneId?: string | null) {
   );
 
   const seek = useCallback(
-    (sec: number) => {
-      if (!activeZoneId) return Promise.resolve(undefined);
-      return runAction(() => tacetClient.zone(activeZoneId).seek(sec), upsertZone);
+    async (sec: number) => {
+      if (!activeZoneId) return undefined;
+      const now = Date.now();
+      const targetSec = Math.max(0, Math.round(sec));
+      const optimisticUpdatedAt = new Date(now - clockOffsetMsRef.current).toISOString();
+      pendingSeekRef.current = {
+        zoneId: activeZoneId,
+        itemId: activeZone?.currentItemId,
+        targetSec,
+        setAtMs: now,
+        expiresAtMs: now + SEEK_GRACE_MS,
+      };
+      setNowMs(now);
+      setZones((prev) =>
+        prev.map((z) =>
+          z.zoneId === activeZoneId ? { ...z, positionSec: targetSec, positionUpdatedAt: optimisticUpdatedAt } : z,
+        ),
+      );
+      const res = await runAction(() => tacetClient.zone(activeZoneId).seek(targetSec), upsertZone);
+      if (!res && pendingSeekRef.current?.zoneId === activeZoneId) {
+        pendingSeekRef.current = null;
+      }
+      return res;
     },
-    [activeZoneId, runAction, upsertZone],
+    [activeZoneId, activeZone?.currentItemId, runAction, upsertZone],
   );
 
   const setVolume = useCallback(
-    (vol: number) => {
-      if (!activeZoneId) return Promise.resolve(undefined);
-      return runAction(() => tacetClient.zone(activeZoneId).setVolume(vol), upsertZone);
+    async (vol: number) => {
+      if (!activeZoneId) return undefined;
+      const now = Date.now();
+      const targetVol = Math.max(0, Math.min(100, Math.round(vol)));
+      pendingVolumeRef.current = {
+        zoneId: activeZoneId,
+        targetVol,
+        expiresAtMs: now + VOLUME_GRACE_MS,
+      };
+      setZones((prev) => prev.map((z) => (z.zoneId === activeZoneId ? { ...z, volume: targetVol } : z)));
+      const res = await runAction(() => tacetClient.zone(activeZoneId).setVolume(targetVol), upsertZone);
+      if (!res && pendingVolumeRef.current?.zoneId === activeZoneId) {
+        pendingVolumeRef.current = null;
+      }
+      return res;
     },
     [activeZoneId, runAction, upsertZone],
   );

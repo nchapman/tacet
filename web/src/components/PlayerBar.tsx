@@ -278,8 +278,8 @@ export function PlayerBar({
               disabled={!hasZone || duration === 0}
               onValueChange={([v]) => setScrubPos(v)}
               onValueCommit={([v]) => {
-                setScrubPos(null);
                 onSeek(v);
+                setScrubPos(null);
               }}
               className="flex-1"
             />
@@ -368,8 +368,8 @@ export function PlayerBar({
               disabled={!hasZone}
               onValueChange={([v]) => setVolDraft(v)}
               onValueCommit={([v]) => {
-                setVolDraft(null);
                 onVolume(v);
+                setVolDraft(null);
               }}
               className="w-24"
             />
