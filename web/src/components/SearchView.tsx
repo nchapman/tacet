@@ -213,8 +213,13 @@ export function SearchView({
               )}
 
               {!libErr && libRes && !hasLibMatches && (
-                <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-sm text-muted-foreground">
-                  No matches in your library for <span className="text-foreground">“{libRes.query || trimmed}”</span>.
+                <p
+                  className={cn(
+                    "rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-sm text-muted-foreground transition-opacity",
+                    libQuery.isPlaceholderData && "opacity-60",
+                  )}
+                >
+                  No matches in your library for <span className="text-foreground">“{libRes.query || debouncedLib}”</span>.
                 </p>
               )}
 
@@ -311,8 +316,10 @@ export function SearchView({
                 )}
 
                 {!qobuzErr && dedupedQobuz && !hasQobuzMatches && (
-                  <p className="text-sm text-muted-foreground">
-                    No additional results on Qobuz for “{debouncedQobuz || trimmed}”.
+                  <p className={cn("text-sm text-muted-foreground transition-opacity", qobuzQuery.isPlaceholderData && "opacity-60")}>
+                    {qobuzQuery.isPlaceholderData
+                      ? "Searching Qobuz…"
+                      : `No additional results on Qobuz for “${debouncedQobuz || trimmed}”.`}
                   </p>
                 )}
 
