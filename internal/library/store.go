@@ -1099,28 +1099,42 @@ INSERT INTO play_events(track_id, album_id, provider, played_at) VALUES (?, ?, ?
 
 func (s *libraryStore) heavyRotation(ctx context.Context, days, limit int) ([]HeavyRotationAlbum, error) {
 	if days <= 0 {
-		days = 30
+		days = 90
 	}
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	since := time.Now().UTC().AddDate(0, 0, -days).Unix()
+	now := time.Now().UTC()
+	since := now.AddDate(0, 0, -days).Unix()
+	cut4d := now.AddDate(0, 0, -4).Unix()
+	cut14d := now.AddDate(0, 0, -14).Unix()
+	cut30d := now.AddDate(0, 0, -30).Unix()
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Firefox-style frecency: each play contributes a recency-bucketed weight
+	// (<=4d: 100, <=14d: 70, <=30d: 50, older: 20) summed per album so both
+	// recent spins and sustained favorites surface naturally.
 	rows, err := s.db.QueryContext(ctx, `
 SELECT a.id, a.source_type, a.provider, a.external_id, a.title, a.artist, a.genre, a.year,
        a.track_count, a.duration_sec, a.artwork_url, a.primary_format,
        a.max_bit_depth, a.max_sample_rate, a.version_group_id, a.is_primary,
        a.is_partial, a.available, a.added_at,
-       COUNT(pe.id) AS recent_plays, MAX(pe.played_at) AS last_played
+       COUNT(pe.id) AS recent_plays,
+       MAX(pe.played_at) AS last_played,
+       SUM(CASE
+         WHEN pe.played_at >= ? THEN 100
+         WHEN pe.played_at >= ? THEN 70
+         WHEN pe.played_at >= ? THEN 50
+         ELSE 20
+       END) AS frecency_score
 FROM play_events pe
 JOIN albums a ON a.id = pe.album_id
 WHERE pe.played_at >= ? AND a.available = 1
 GROUP BY a.id
-ORDER BY recent_plays DESC, last_played DESC
-LIMIT ?`, since, limit)
+ORDER BY frecency_score DESC, last_played DESC
+LIMIT ?`, cut4d, cut14d, cut30d, since, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1131,12 +1145,13 @@ LIMIT ?`, since, limit)
 		var h HeavyRotationAlbum
 		var isPrimary, isPartial, avail int
 		var addedUnix, lastPlayedUnix int64
+		var frecencyScore int
 		if err := rows.Scan(
 			&h.ID, &h.SourceType, &h.Provider, &h.ExternalID, &h.Title, &h.Artist, &h.Genre, &h.Year,
 			&h.TrackCount, &h.DurationSec, &h.ArtworkURL, &h.PrimaryFormat,
 			&h.MaxBit, &h.MaxRate, &h.VersionGroupID, &isPrimary,
 			&isPartial, &avail, &addedUnix,
-			&h.RecentPlays, &lastPlayedUnix,
+			&h.RecentPlays, &lastPlayedUnix, &frecencyScore,
 		); err != nil {
 			return nil, err
 		}

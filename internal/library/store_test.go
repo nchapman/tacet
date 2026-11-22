@@ -616,3 +616,81 @@ func TestPrefsAndProviderCredentialsPersistence(t *testing.T) {
 		t.Fatalf("expected deleted creds, got ok=%v err=%v", ok, getErr)
 	}
 }
+
+func TestHeavyRotationFrecencyRanking(t *testing.T) {
+	cat, err := NewCatalogWithDB(":memory:")
+	if err != nil {
+		t.Fatalf("NewCatalogWithDB: %v", err)
+	}
+	defer func() { _ = cat.Close() }()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	mkAlb := func(extID, title string) Album {
+		id := "qobuz:" + extID
+		return Album{
+			ID:         id,
+			Source:     SourceQobuz,
+			SourceType: SourceTypeRemote,
+			Provider:   "qobuz",
+			ExternalID: extID,
+			Title:      title,
+			Artist:     "Artist",
+			Available:  true,
+			Tracks: []Track{{
+				ID: id + ":t1", AlbumID: id, Source: SourceQobuz, SourceType: SourceTypeRemote,
+				Provider: "qobuz", ExternalID: extID + "-t1", Title: "Track 1", Artist: "Artist",
+				Album: title, TrackNumber: 1, DurationSec: 180, MIME: "audio/flac", Ext: ".flac",
+			}},
+		}
+	}
+	remote := &fakeRemoteSource{
+		provider:  "qobuz",
+		connected: true,
+		albums: []Album{
+			mkAlb("recent", "Recent Spin"),
+			mkAlb("frequent", "Sustained Favorite"),
+			mkAlb("stale", "Old Favorite"),
+			mkAlb("expired", "Expired"),
+		},
+	}
+	cat.RegisterRemoteSource(remote)
+	if _, syncErr := cat.SyncRemote(ctx, "qobuz"); syncErr != nil {
+		t.Fatalf("SyncRemote: %v", syncErr)
+	}
+
+	insertPlays := func(albumID string, count int, daysAgo int) {
+		ts := now.AddDate(0, 0, -daysAgo).Unix()
+		for range count {
+			if _, execErr := cat.store.db.ExecContext(ctx,
+				`INSERT INTO play_events (track_id, album_id, provider, played_at) VALUES (?, ?, 'qobuz', ?)`,
+				albumID+":t1", albumID, ts,
+			); execErr != nil {
+				t.Fatalf("insert play_event: %v", execErr)
+			}
+		}
+	}
+
+	// Sustained favorite: 6 plays 10 days ago => 6 * 70 = 420
+	insertPlays("qobuz:frequent", 6, 10)
+	// Recent spin: 2 plays 1 day ago => 2 * 100 = 200
+	insertPlays("qobuz:recent", 2, 1)
+	// Stale favorite: 4 plays 45 days ago => 4 * 20 = 80
+	insertPlays("qobuz:stale", 4, 45)
+	// Expired: 10 plays 100 days ago => outside 90-day window
+	insertPlays("qobuz:expired", 10, 100)
+
+	rot, err := cat.HeavyRotation(90, 10)
+	if err != nil {
+		t.Fatalf("HeavyRotation: %v", err)
+	}
+	if len(rot) != 3 {
+		t.Fatalf("len(rot) = %d, want 3 (got %+v)", len(rot), rot)
+	}
+	wantOrder := []string{"qobuz:frequent", "qobuz:recent", "qobuz:stale"}
+	for i, wantID := range wantOrder {
+		if rot[i].ID != wantID {
+			t.Errorf("rot[%d].ID = %q, want %q", i, rot[i].ID, wantID)
+		}
+	}
+}

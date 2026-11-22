@@ -17,6 +17,7 @@ import { AlbumsView } from "@/components/AlbumsView";
 import { ArtistsView } from "@/components/ArtistsView";
 import { ConnectModal } from "@/components/ConnectModal";
 import { DiscoverShelfView } from "@/components/DiscoverShelfView";
+import { HeavyRotationView } from "@/components/HeavyRotationView";
 import { HomeView } from "@/components/HomeView";
 import { PlayerBar } from "@/components/PlayerBar";
 import { QobuzView } from "@/components/QobuzView";
@@ -365,6 +366,15 @@ export function App() {
                   discoverGenreIds={discoverGenreIds}
                   onOpenAlbum={handleOpenAlbum}
                   onNavigate={navigateSection}
+                  onPlay={handlePlay}
+                />
+              }
+            />
+            <Route
+              path="/heavy-rotation"
+              element={
+                <HeavyRotationView
+                  onOpenAlbum={handleOpenAlbum}
                   onPlay={handlePlay}
                 />
               }
