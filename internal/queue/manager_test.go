@@ -24,6 +24,8 @@ type fakeRenderer struct {
 	muted        bool
 	setURICalls  []string
 	setNextCalls []string
+	playCalls    int
+	playErr      error
 	failSetNext  bool
 	setNextErr   error
 }
@@ -75,6 +77,10 @@ func (f *fakeRenderer) SetNextURI(_ context.Context, item upnp.MediaItem) error 
 func (f *fakeRenderer) Play(_ context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.playCalls++
+	if f.playErr != nil {
+		return f.playErr
+	}
 	f.state = "PLAYING"
 	return nil
 }
@@ -470,5 +476,28 @@ func TestManager_ValidateBeforeMutateAndStandbyClearAndPrevFallback(t *testing.T
 	// Prev when SupportsSeek=false should fall back to re-sending track 0 cleanly instead of ErrUnsupported.
 	if _, err := mgr.Prev(ctx, "uuid:strict"); err != nil {
 		t.Fatalf("expected Prev fallback on non-seeking renderer to succeed, got %v", err)
+	}
+}
+
+func TestPlayNoOpWhenNothingLoaded(t *testing.T) {
+	mgr := NewManager(8080, "http://192.168.1.10:8080", nil)
+	defer mgr.Close()
+
+	r := newFakeRenderer("player:browser1", "This Browser")
+	r.playErr = errors.New("no media loaded")
+	mgr.RegisterRenderer(r)
+
+	snap, err := mgr.Play(context.Background(), "player:browser1")
+	if err != nil {
+		t.Fatalf("Play on empty zone returned error: %v", err)
+	}
+	r.mu.Lock()
+	calls := r.playCalls
+	r.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("expected 0 Play calls to renderer when nothing is loaded, got %d", calls)
+	}
+	if snap.State != "stopped" {
+		t.Fatalf("expected state stopped, got %q", snap.State)
 	}
 }

@@ -79,6 +79,9 @@ export function PlayerBar({
   const shownVol = volDraft ?? activeZone?.volume ?? 0;
   const playing = activeZone?.state === "playing";
   const hasZone = activeZone !== null;
+  const hasPlayable =
+    hasZone &&
+    Boolean(track || (activeZone?.queue?.length ?? 0) > 0 || playing || activeZone?.state === "paused");
   const isBrowserActive = Boolean(browserPlayer.enabled && activeZone?.zoneId === browserPlayer.zoneId);
   const activeDeviceName = activeZone
     ? isBrowserActive
@@ -179,7 +182,7 @@ export function PlayerBar({
               type="button"
               variant="ghost"
               size="icon-sm"
-              disabled={!hasZone}
+              disabled={!hasPlayable}
               onClick={() => onTransport("prev")}
               aria-label="Previous"
             >
@@ -188,10 +191,10 @@ export function PlayerBar({
 
             <button
               type="button"
-              disabled={!hasZone}
+              disabled={!hasPlayable}
               onClick={() => onTransport(playing ? "pause" : "play")}
               aria-label={playing ? "Pause" : "Play"}
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black shadow-md transition-transform hover:scale-105 active:scale-95 disabled:opacity-40 cursor-pointer"
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black shadow-md transition-transform hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 cursor-pointer"
             >
               {playing ? (
                 <Pause className="h-4 w-4 fill-current" />
@@ -204,7 +207,7 @@ export function PlayerBar({
               type="button"
               variant="ghost"
               size="icon-sm"
-              disabled={!hasZone}
+              disabled={!hasPlayable}
               onClick={() => onTransport("next")}
               aria-label="Next"
             >
@@ -389,7 +392,7 @@ export function PlayerBar({
               type="button"
               variant="ghost"
               size="icon-sm"
-              disabled={!hasZone}
+              disabled={!hasPlayable}
               onClick={() => onTransport(playing ? "pause" : "play")}
               aria-label={playing ? "Pause" : "Play"}
               className="text-foreground"
@@ -525,7 +528,7 @@ export function PlayerBar({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    disabled={!hasZone}
+                    disabled={!hasPlayable}
                     onClick={() => onTransport("prev")}
                     aria-label="Previous"
                     className="h-12 w-12"
@@ -534,10 +537,10 @@ export function PlayerBar({
                   </Button>
                   <button
                     type="button"
-                    disabled={!hasZone}
+                    disabled={!hasPlayable}
                     onClick={() => onTransport(playing ? "pause" : "play")}
                     aria-label={playing ? "Pause" : "Play"}
-                    className="flex h-16 w-16 items-center justify-center rounded-full bg-white text-black shadow-xl active:scale-95 transition-transform disabled:opacity-40 cursor-pointer"
+                    className="flex h-16 w-16 items-center justify-center rounded-full bg-white text-black shadow-xl active:scale-95 transition-transform disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                   >
                     {playing ? (
                       <Pause className="h-7 w-7 fill-current" />
@@ -549,7 +552,7 @@ export function PlayerBar({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    disabled={!hasZone}
+                    disabled={!hasPlayable}
                     onClick={() => onTransport("next")}
                     aria-label="Next"
                     className="h-12 w-12"

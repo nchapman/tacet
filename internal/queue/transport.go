@@ -396,10 +396,19 @@ func (m *Manager) Play(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	defer z.opMu.Unlock()
 
 	m.mu.Lock()
+	// Never send a Play command to a renderer when nothing is loaded or paused on it.
+	if len(z.queue) == 0 && z.currentURI == "" && z.status.State != "PLAYING" && z.status.State != "PAUSED_PLAYBACK" {
+		snap := m.snapshotLocked(z)
+		m.mu.Unlock()
+		return snap, nil
+	}
 	z.userStopped = false
-	needsReload := (z.status.State == "STOPPED" || z.status.State == "NO_MEDIA_PRESENT" || z.currentURI == "") &&
-		z.currentIndex >= 0 && z.currentIndex < len(z.queue)
 	idx := z.currentIndex
+	if idx < 0 && len(z.queue) > 0 {
+		idx = 0
+	}
+	needsReload := (z.status.State == "STOPPED" || z.status.State == "NO_MEDIA_PRESENT" || z.currentURI == "") &&
+		idx >= 0 && idx < len(z.queue)
 	var gen uint64
 	if needsReload {
 		z.generation++

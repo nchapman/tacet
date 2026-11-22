@@ -52,6 +52,13 @@ export function App() {
   const albumAbortRef = useRef<AbortController | null>(null);
 
   const activeState = tacet.activeZone?.state;
+  const activeHasPlayable = Boolean(
+    tacet.activeZone &&
+      (tacet.activeZone.currentTrack ||
+        (tacet.activeZone.queue?.length ?? 0) > 0 ||
+        activeState === "playing" ||
+        activeState === "paused"),
+  );
   const activeTransport = tacet.transport;
 
   const navigate = useCallback((next: AppSection) => {
@@ -83,12 +90,13 @@ export function App() {
       }
       if (e.code !== "Space" || e.metaKey || e.ctrlKey || e.altKey) return;
       if (inInput || tag === "BUTTON" || tag === "A") return;
+      if (!activeHasPlayable) return;
       e.preventDefault();
       void activeTransport(activeState === "playing" ? "pause" : "play");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeState, activeTransport, navigate]);
+  }, [activeState, activeHasPlayable, activeTransport, navigate]);
 
   useEffect(() => () => albumAbortRef.current?.abort(), []);
 
