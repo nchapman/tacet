@@ -316,7 +316,6 @@ export function AlbumView({
               const active = tr.id === currentTrackId;
               const trackInLib = Boolean(tr.inLibrary || addedTrackIds[tr.id]);
               const trQual = fmtQuality(tr);
-              const trHiRes = isHiRes(tr.bitDepth, tr.sampleRate);
 
               return (
                 <div
@@ -365,16 +364,7 @@ export function AlbumView({
 
                   {/* Format badge (desktop) */}
                   <div className="hidden sm:flex items-center gap-2">
-                    {trQual && (
-                      <span
-                        className={cn(
-                          "font-mono text-[11px]",
-                          trHiRes ? "text-amber-300/90" : "text-muted-foreground/75",
-                        )}
-                      >
-                        {trQual}
-                      </span>
-                    )}
+                    {trQual && <span className="font-mono text-[11px] text-muted-foreground/75">{trQual}</span>}
                   </div>
 
                   {/* Duration */}

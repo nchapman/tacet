@@ -17,10 +17,9 @@ interface AlbumCardProps {
 function shortHiRes(album: Album): string {
   if (!album.maxBitDepth || !album.maxSampleRate) return "";
   if (album.maxBitDepth === 1 && album.maxSampleRate >= 2822400) {
-    return `DSD${Math.round(album.maxSampleRate / 44100)}`;
+    return "DSD";
   }
-  const khz = album.maxSampleRate % 1000 === 0 ? `${album.maxSampleRate / 1000}` : (album.maxSampleRate / 1000).toFixed(1);
-  return `${album.maxBitDepth}/${khz}`;
+  return "HI-RES";
 }
 
 export function AlbumCard({
@@ -82,7 +81,7 @@ export function AlbumCard({
           <span
             title={fmtAlbumQuality(album)}
             className={cn(
-              "pointer-events-none absolute bottom-2 right-2 rounded-md bg-black/75 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-300 backdrop-blur-md border border-amber-400/30 transition-opacity",
+              "pointer-events-none absolute bottom-2 right-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.06em] text-[#dfc07b] backdrop-blur-md border border-white/[0.12] transition-opacity",
               onPlay && "group-hover:opacity-0",
             )}
           >
