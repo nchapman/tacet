@@ -75,11 +75,9 @@ export function albumPath(
   meta?: { artist?: string; title?: string },
 ): string {
   const key = encodeAlbumKey(albumId);
-  if (meta?.artist && meta?.title) {
-    return `/albums/${slugify(meta.artist)}/${slugify(meta.title)}/${key}`;
-  }
-  if (meta?.title) {
-    return `/albums/${slugify(meta.title)}/${key}`;
+  const parts = [meta?.artist, meta?.title].filter((v): v is string => Boolean(v && v.trim()));
+  if (parts.length > 0) {
+    return `/albums/${slugify(parts.join(" "))}/${key}`;
   }
   return `/albums/${key}`;
 }

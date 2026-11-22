@@ -205,19 +205,6 @@ export function App() {
               }
             />
             <Route
-              path="/albums/:artistSlug/:albumSlug/:albumKey"
-              element={
-                <AlbumRoute
-                  currentTrackId={tacet.activeZone?.currentTrack?.id}
-                  isPlaying={tacet.activeZone?.state === "playing"}
-                  onOpenAlbum={(id) => openAlbumById(id)}
-                  onOpenArtist={openArtist}
-                  onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-                  onAdd={(src, pos) => void tacet.addSource(src, pos)}
-                />
-              }
-            />
-            <Route
               path="/albums/:albumSlug/:albumKey"
               element={
                 <AlbumRoute
@@ -544,7 +531,7 @@ function AlbumRoute({
         if (!ctrl.signal.aborted) {
           setAlbum(full);
           setLoading(false);
-          // Silently canonicalize short/legacy album URLs to /albums/<artist>/<album>/<key>
+          // Silently canonicalize short/legacy album URLs to /albums/<artist-album>/<key>
           const canonical = albumPath(full.id, { artist: full.artist, title: full.title });
           if (latestRef.current.pathname !== canonical) {
             void routerNavigate(canonical, { replace: true, state: latestRef.current.state });
