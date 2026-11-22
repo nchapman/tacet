@@ -116,15 +116,8 @@ export function PlayerBar({
       {/* ==================== DESKTOP PLAYER BAR (>= lg) ==================== */}
       <footer
         aria-label="Player controls"
-        className="hidden lg:grid grid-cols-[minmax(220px,1fr)_minmax(340px,540px)_minmax(240px,1fr)] items-center gap-4 h-[84px] shrink-0 border-t border-white/[0.08] bg-[#09090b]/60 px-4 backdrop-blur-2xl relative overflow-hidden select-none"
+        className="hidden lg:grid grid-cols-[minmax(220px,1fr)_minmax(340px,540px)_minmax(240px,1fr)] items-center gap-4 h-[84px] shrink-0 border-t border-white/[0.08] bg-black/35 px-4 backdrop-blur-2xl relative overflow-hidden select-none"
       >
-        {/* Subtle left-edge now-playing bloom */}
-        {track?.artworkUrl && (
-          <div className="pointer-events-none absolute inset-y-0 left-0 w-80 overflow-hidden opacity-25">
-            <AmbientBackdrop artworkUrl={track.artworkUrl} intensity="subtle" />
-          </div>
-        )}
-
         {/* Left: Track artwork, metadata & format badge */}
         <div className="relative z-10 flex min-w-0 items-center gap-3">
           <button
@@ -497,7 +490,11 @@ export function PlayerBar({
                         {track ? `${track.artist}${track.album ? ` · ${track.album}` : ""}` : "Select an album to begin"}
                       </p>
                     </div>
-                    {qualLabel && <Badge variant={hiRes ? "hires" : "muted"}>{qualLabel}</Badge>}
+                    {qualLabel && (
+                      <Badge variant={hiRes ? "hires" : "muted"} className="shrink-0 whitespace-nowrap">
+                        {qualLabel}
+                      </Badge>
+                    )}
                   </div>
                 </div>
 
