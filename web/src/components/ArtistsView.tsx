@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TacetAPIError, tacetClient } from "@/api/client";
@@ -113,11 +113,10 @@ export function ArtistsView({
         { signal },
       ),
     enabled: Boolean(effectiveArtist),
-    placeholderData: keepPreviousData,
   });
   const albums: Album[] = useMemo(() => albumsQuery.data?.items ?? [], [albumsQuery.data]);
 
-  // Progressively fetch remote Qobuz discography for the selected artist (cached 5 min).
+  // Progressively fetch remote Qobuz discography for the selected artist (cached 1h).
   const remoteQuery = useQuery<QobuzArtistDetail | null>({
     queryKey: queryKeys.qobuz.artist(selectedQobuzId ? { id: selectedQobuzId } : { name: effectiveArtist }),
     queryFn: async ({ signal }) => {

@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, HardDrive, Plus, Radio, RefreshCw, Speaker } from "lucide-react";
 import { useState } from "react";
 import { tacetClient } from "@/api/client";
@@ -32,6 +33,7 @@ export function SettingsView({
   onOpenConnect,
   onGoToQobuz,
 }: SettingsViewProps) {
+  const queryClient = useQueryClient();
   const [syncing, setSyncing] = useState(false);
   const [msg, setMsg] = useState("");
   const [errMsg, setErrMsg] = useState("");
@@ -56,7 +58,7 @@ export function SettingsView({
     try {
       const st = await tacetClient.qobuzLogout();
       onQobuzStatusChange(st);
-      invalidateQobuzLogout();
+      invalidateQobuzLogout(queryClient);
       setMsg("Signed out of Qobuz. Your play history is preserved.");
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : String(err));

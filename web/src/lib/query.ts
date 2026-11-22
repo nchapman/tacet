@@ -63,10 +63,11 @@ export const queryKeys = {
   album: (albumId: string) => ["album", albumId] as const,
 };
 
-/** Marks library & album queries stale after an SSE library ETag change (mounted views refetch in background). */
+/** Marks library, album, and Qobuz queries stale after an SSE library ETag change (mounted views refetch in background; Qobuz overlays fresh inLibrary flags from Go catalogCache). */
 export function invalidateLibraryQueries(client: QueryClient = queryClient): void {
   void client.invalidateQueries({ queryKey: queryKeys.library.all });
   void client.invalidateQueries({ queryKey: queryKeys.albums });
+  void client.invalidateQueries({ queryKey: queryKeys.qobuz.all });
 }
 
 /** Clears cached Qobuz remote queries and marks library/album queries stale on Qobuz sign-out. */

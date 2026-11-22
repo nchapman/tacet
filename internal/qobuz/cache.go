@@ -1,6 +1,7 @@
 package qobuz
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +31,7 @@ const (
 	maxCachedArtistNames = 1000
 	maxCachedSearches    = 250
 
-	defaultCacheFlushDelay = 2 * time.Second
+	defaultCacheFlushDelay = 15 * time.Second
 )
 
 type cacheEntry[T any] struct {
@@ -75,6 +77,7 @@ func newCatalogCache(path string) *catalogCache {
 		searches:    make(map[string]cacheEntry[SearchResult]),
 	}
 	if cc.path != "" {
+		cleanOrphanedTempFiles(cc.path)
 		cc.load()
 	}
 	return cc
@@ -184,7 +187,9 @@ func (cc *catalogCache) getArtistName(name string) (int64, bool) {
 }
 
 // putArtistName caches an artist name -> Qobuz ID mapping (id == 0 records a negative miss).
-func (cc *catalogCache) putArtistName(name string, id int64) {
+// When overwrite is false, an existing unexpired positive ID is preserved so opportunistic
+// search caching cannot replace a primary artist with a less-popular homonymous match.
+func (cc *catalogCache) putArtistName(name string, id int64, overwrite bool) {
 	key := strings.ToLower(strings.TrimSpace(name))
 	if key == "" || id < 0 {
 		return
@@ -196,11 +201,13 @@ func (cc *catalogCache) putArtistName(name string, id int64) {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
 	now := cc.now()
-	if existing, ok := cc.artistNames[key]; ok && existing.Value == id && now.Before(existing.ExpiresAt) {
-		// Avoid dirtying disk cache on identical repeat hits (e.g. from search results).
-		existing.LastAccess = now
-		cc.artistNames[key] = existing
-		return
+	if existing, ok := cc.artistNames[key]; ok && now.Before(existing.ExpiresAt) {
+		if existing.Value == id || (!overwrite && existing.Value > 0) {
+			// Avoid dirtying disk cache on identical repeat hits or lower-priority search overwrites.
+			existing.LastAccess = now
+			cc.artistNames[key] = existing
+			return
+		}
 	}
 	cc.artistNames[key] = cacheEntry[int64]{
 		Value:      id,
@@ -375,11 +382,15 @@ func (cc *catalogCache) load() {
 	defer cc.mu.Unlock()
 	for k, v := range snap.Albums {
 		if now.Before(v.ExpiresAt) {
+			rehydrateTracksQobuzIDs(v.Value.Tracks)
 			cc.albums[k] = v
 		}
 	}
 	for k, v := range snap.Artists {
 		if now.Before(v.ExpiresAt) {
+			for i := range v.Value.Albums {
+				rehydrateTracksQobuzIDs(v.Value.Albums[i].Tracks)
+			}
 			cc.artists[k] = v
 		}
 	}
@@ -390,6 +401,7 @@ func (cc *catalogCache) load() {
 	}
 	for k, v := range snap.Searches {
 		if now.Before(v.ExpiresAt) {
+			rehydrateTracksQobuzIDs(v.Value.Tracks)
 			cc.searches[k] = v
 		}
 	}
@@ -399,14 +411,43 @@ func (cc *catalogCache) load() {
 	evictMap(cc.searches, maxCachedSearches, now)
 }
 
+func rehydrateTrackQobuzID(tr *library.Track) {
+	if tr.QobuzTrackID > 0 {
+		return
+	}
+	if tr.Source != library.SourceQobuz && !strings.HasPrefix(tr.ID, "qobuz:") {
+		return
+	}
+	raw := strings.TrimSpace(tr.ExternalID)
+	if raw == "" {
+		raw = strings.TrimPrefix(strings.TrimSpace(tr.ID), "qobuz:")
+	}
+	if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
+		tr.QobuzTrackID = id
+	}
+}
+
+func rehydrateTracksQobuzIDs(tracks []library.Track) {
+	for i := range tracks {
+		rehydrateTrackQobuzID(&tracks[i])
+	}
+}
+
+func cleanOrphanedTempFiles(cachePath string) {
+	dir := filepath.Dir(cachePath)
+	matches, err := filepath.Glob(filepath.Join(dir, ".qobuz-cache-*.tmp"))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
+}
+
 func writeJSONAtomic(path string, v any) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create cache dir: %w", err)
-	}
-	data, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Errorf("marshal cache: %w", err)
 	}
 	tmp, err := os.CreateTemp(dir, ".qobuz-cache-*.tmp")
 	if err != nil {
@@ -415,15 +456,20 @@ func writeJSONAtomic(path string, v any) error {
 	tmpPath := tmp.Name()
 	cleanup := func() { _ = os.Remove(tmpPath) }
 
-	if err := tmp.Chmod(0o600); err != nil {
+	// os.CreateTemp already sets 0600 on POSIX; ignore chmod errors on ACL/CIFS bind mounts.
+	_ = tmp.Chmod(0o600)
+
+	bw := bufio.NewWriterSize(tmp, 64*1024)
+	enc := json.NewEncoder(bw)
+	if err := enc.Encode(v); err != nil {
 		_ = tmp.Close()
 		cleanup()
-		return fmt.Errorf("chmod temp cache file: %w", err)
+		return fmt.Errorf("encode cache: %w", err)
 	}
-	if _, err := tmp.Write(data); err != nil {
+	if err := bw.Flush(); err != nil {
 		_ = tmp.Close()
 		cleanup()
-		return fmt.Errorf("write temp cache file: %w", err)
+		return fmt.Errorf("flush temp cache file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		cleanup()

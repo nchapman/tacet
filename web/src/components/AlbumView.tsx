@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, Clock3, Layers, ListPlus, Play, Plus, SkipForward, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { tacetClient } from "@/api/client";
@@ -6,7 +7,7 @@ import type { Album, AlbumVersion, QueuePosition, QueueSource } from "@/api/type
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { queryClient, queryKeys } from "@/lib/query";
+import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
 interface AlbumViewProps {
@@ -63,6 +64,7 @@ export function AlbumView({
   onPlay,
   onAdd,
 }: AlbumViewProps) {
+  const queryClient = useQueryClient();
   const [busyLibrary, setBusyLibrary] = useState(false);
   const [busyPrimary, setBusyPrimary] = useState(false);
   const [addedTrackIds, setAddedTrackIds] = useState<Record<string, boolean>>({});
@@ -84,7 +86,13 @@ export function AlbumView({
     try {
       if (album.inLibrary) {
         await tacetClient.removeRemoteAlbum(album.id);
-        onAlbumUpdated?.({ ...album, inLibrary: false, versions: undefined, versionCount: 1 });
+        onAlbumUpdated?.({
+          ...album,
+          inLibrary: false,
+          versions: undefined,
+          versionCount: 1,
+          tracks: album.tracks?.map((t) => ({ ...t, inLibrary: false })),
+        });
       } else {
         const saved = await tacetClient.addRemoteAlbum(provider, externalId);
         onAlbumUpdated?.({ ...album, ...saved, inLibrary: true });

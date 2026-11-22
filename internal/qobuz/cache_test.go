@@ -123,22 +123,22 @@ func TestCatalogCache_DiskPersistenceAndHits(t *testing.T) {
 		t.Fatal("cached album track was mutated by caller")
 	}
 
-	if _, err := c1.GetArtistByName(ctx, "Miles Davis", 50); err != nil {
+	if _, err = c1.GetArtistByName(ctx, "Miles Davis", 50); err != nil {
 		t.Fatalf("GetArtistByName: %v", err)
 	}
 	// Negative artist miss should be cached too.
-	if _, err := c1.GetArtistByName(ctx, "Unknown Local Band", 50); !errors.Is(err, ErrNotFound) {
+	if _, err = c1.GetArtistByName(ctx, "Unknown Local Band", 50); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
-	if _, err := c1.GetArtistByName(ctx, "Unknown Local Band", 50); !errors.Is(err, ErrNotFound) {
+	if _, err = c1.GetArtistByName(ctx, "Unknown Local Band", 50); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected cached ErrNotFound, got %v", err)
 	}
-	if _, err := c1.Search(ctx, "Miles", 12); err != nil {
+	if _, err = c1.Search(ctx, "Miles", 12); err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 
 	// Close flushes JSON cache to disk.
-	if err := c1.Close(); err != nil {
+	if err = c1.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	if _, statErr := os.Stat(cachePath); statErr != nil {
@@ -154,16 +154,24 @@ func TestCatalogCache_DiskPersistenceAndHits(t *testing.T) {
 	c2 := NewClient(cfg)
 	defer func() { _ = c2.Close() }()
 
-	if _, err := c2.GetAlbum(ctx, "qobuz:alb-42"); err != nil {
+	reloadedAlb, err := c2.GetAlbum(ctx, "qobuz:alb-42")
+	if err != nil {
 		t.Fatalf("c2 GetAlbum: %v", err)
 	}
-	if _, err := c2.GetArtistByName(ctx, "Miles Davis", 50); err != nil {
+	if len(reloadedAlb.Tracks) != 1 || reloadedAlb.Tracks[0].QobuzTrackID != 9001 {
+		t.Fatalf("expected QobuzTrackID 9001 to rehydrate from disk cache, got %+v", reloadedAlb.Tracks)
+	}
+	// Track cache should be warmed from reloaded album without calling /track/get.
+	if resolved, rErr := c2.ResolveTrack(ctx, 9001); rErr != nil || resolved.QobuzTrackID != 9001 {
+		t.Fatalf("expected ResolveTrack(9001) to hit trackCache after disk reload, got (%+v, %v)", resolved, rErr)
+	}
+	if _, err = c2.GetArtistByName(ctx, "Miles Davis", 50); err != nil {
 		t.Fatalf("c2 GetArtistByName: %v", err)
 	}
-	if _, err := c2.GetArtistByName(ctx, "Unknown Local Band", 50); !errors.Is(err, ErrNotFound) {
+	if _, err = c2.GetArtistByName(ctx, "Unknown Local Band", 50); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("c2 negative miss expected ErrNotFound, got %v", err)
 	}
-	if _, err := c2.Search(ctx, "miles", 12); err != nil {
+	if _, err = c2.Search(ctx, "miles", 12); err != nil {
 		t.Fatalf("c2 Search: %v", err)
 	}
 
@@ -196,7 +204,7 @@ func TestCatalogCache_TTLExpiryAndCorruptFile(t *testing.T) {
 	cc.now = func() time.Time { return now }
 
 	cc.putSearch("miles", 10, 0, SearchResult{Artists: []Artist{{ID: 1, Name: "Miles"}}})
-	cc.putArtistName("Local Only", 0)
+	cc.putArtistName("Local Only", 0, true)
 
 	if _, ok := cc.getSearch("miles", 10, 0); !ok {
 		t.Fatal("expected search hit before TTL")
@@ -218,5 +226,63 @@ func TestCatalogCache_TTLExpiryAndCorruptFile(t *testing.T) {
 	now = now.Add(24 * time.Hour)
 	if _, ok := cc.getArtistName("Local Only"); ok {
 		t.Fatal("expected negative artist miss to expire after 26h")
+	}
+
+	// Put-if-absent (Search opportunistic caching) must not overwrite an existing positive artist ID.
+	cc.putArtistName("Nirvana", 1001, true)
+	cc.putArtistName("Nirvana", 9999, false)
+	if id, ok := cc.getArtistName("Nirvana"); !ok || id != 1001 {
+		t.Fatalf("expected primary artist ID 1001 to be preserved, got (%d, %v)", id, ok)
+	}
+}
+
+func TestCatalogCache_LogoutPreventsInflightRepopulation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/album/get" {
+			close(started)
+			<-release
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":           "alb-race",
+				"title":        "Race Album",
+				"artist":       map[string]any{"id": 1, "name": "Artist"},
+				"tracks_count": 1,
+				"tracks": map[string]any{
+					"items": []map[string]any{
+						{"id": 777, "title": "Track 1", "track_number": 1, "duration": 200, "streamable": true},
+					},
+				},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{
+		BaseURL:   srv.URL,
+		AppID:     "app",
+		AppSecret: "sec",
+		AuthToken: "tok",
+	})
+	defer func() { _ = c.Close() }()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.GetAlbum(context.Background(), "alb-race")
+		done <- err
+	}()
+
+	<-started
+	c.Logout()
+	close(release)
+
+	if err := <-done; err != nil {
+		t.Fatalf("in-flight GetAlbum returned error: %v", err)
+	}
+	if albs, _, _, _ := c.CacheStats(); albs != 0 {
+		t.Fatalf("expected catalog cache to remain empty after logout, got %d albums", albs)
 	}
 }

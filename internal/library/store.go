@@ -2,7 +2,9 @@ package library
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,6 +48,7 @@ type libraryStore struct {
 	mu               sync.RWMutex
 	db               *sql.DB
 	dbPath           string
+	bootID           string
 	gen              uint64
 	missingRetention time.Duration
 	nowFn            func() time.Time
@@ -95,9 +98,12 @@ func openStore(dbPath string) (*libraryStore, error) {
 		}
 	}
 
+	var nonce [4]byte
+	_, _ = rand.Read(nonce[:])
 	s := &libraryStore{
 		db:               db,
 		dbPath:           dsn,
+		bootID:           hex.EncodeToString(nonce[:]),
 		missingRetention: DefaultMissingRetention,
 		nowFn:            func() time.Time { return time.Now().UTC() },
 	}
@@ -1294,7 +1300,7 @@ FROM albums a WHERE a.id = ?`, id).Scan(
 	a.IsPrimary = isPrimary != 0
 	a.IsPartial = isPartial != 0
 	a.Available = avail != 0
-	a.InLibrary = true
+	a.InLibrary = a.Available && !a.IsPartial
 	if addedUnix > 0 {
 		ts := time.Unix(addedUnix, 0).UTC()
 		a.AddedAt = &ts
@@ -1632,6 +1638,7 @@ type storeCounts struct {
 	remoteAlbums  int
 	missingTracks int
 	missingAlbums int
+	bootID        string
 	gen           uint64
 	states        map[string]ProviderSyncStatus
 }
@@ -1641,6 +1648,7 @@ func (s *libraryStore) countsAndProviders(ctx context.Context) storeCounts {
 	defer s.mu.RUnlock()
 
 	out := storeCounts{
+		bootID: s.bootID,
 		gen:    s.gen,
 		states: make(map[string]ProviderSyncStatus),
 	}

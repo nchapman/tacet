@@ -72,12 +72,6 @@ func (c *Client) LoginWithToken(ctx context.Context, token string) (Status, erro
 		return Status{}, err
 	}
 
-	c.mu.Lock()
-	prevToken := c.authToken
-	c.authToken = token
-	clear(c.urlCache)
-	c.mu.Unlock()
-
 	var resp struct {
 		User struct {
 			DisplayName  string `json:"display_name"`
@@ -88,11 +82,8 @@ func (c *Client) LoginWithToken(ctx context.Context, token string) (Status, erro
 		} `json:"user"`
 		UserAuthToken string `json:"user_auth_token"`
 	}
-	err := c.postFormJSON(ctx, "/user/login", url.Values{"extra": {"partner"}}, true, &resp)
+	err := c.postFormJSONWithToken(ctx, "/user/login", url.Values{"extra": {"partner"}}, token, &resp)
 	if err != nil {
-		c.mu.Lock()
-		c.authToken = prevToken
-		c.mu.Unlock()
 		return Status{}, fmt.Errorf("qobuz token validation failed: %w", err)
 	}
 
@@ -106,11 +97,21 @@ func (c *Client) LoginWithToken(ctx context.Context, token string) (Status, erro
 	}
 
 	c.mu.Lock()
+	switchedAccount := (c.authToken != "" && c.authToken != finalToken) || (c.userName != "" && name != "" && c.userName != name)
 	c.authToken = finalToken
 	c.userName = name
 	c.subscription = resp.User.Subscription.Offer
 	clear(c.urlCache)
+	if switchedAccount {
+		clear(c.trackCache)
+	}
 	c.mu.Unlock()
+	if switchedAccount {
+		c.authGen.Add(1)
+		if c.cache != nil {
+			c.cache.clear()
+		}
+	}
 
 	return c.Status(), nil
 }
@@ -155,11 +156,21 @@ func (c *Client) Login(ctx context.Context, email, password string) (Status, err
 	}
 
 	c.mu.Lock()
+	switchedAccount := (c.authToken != "" && c.authToken != resp.UserAuthToken) || (c.userName != "" && name != "" && c.userName != name)
 	c.authToken = resp.UserAuthToken
 	c.userName = name
 	c.subscription = resp.User.Subscription.Offer
 	clear(c.urlCache)
+	if switchedAccount {
+		clear(c.trackCache)
+	}
 	c.mu.Unlock()
+	if switchedAccount {
+		c.authGen.Add(1)
+		if c.cache != nil {
+			c.cache.clear()
+		}
+	}
 
 	return c.Status(), nil
 }

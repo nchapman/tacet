@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tacet/internal/library"
@@ -135,6 +136,7 @@ type Client struct {
 	urlCache     map[int64]StreamInfo
 	trackCache   map[int64]library.Track
 	cache        *catalogCache
+	authGen      atomic.Uint64
 }
 
 // NewClient initializes a Qobuz client.
@@ -212,11 +214,13 @@ func (c *Client) SetMaxQuality(quality string) error {
 
 // Logout clears the active user session and cached stream/catalog entries.
 func (c *Client) Logout() Status {
+	c.authGen.Add(1)
 	c.mu.Lock()
 	c.authToken = ""
 	c.userName = ""
 	c.subscription = ""
 	clear(c.urlCache)
+	clear(c.trackCache)
 	st := Status{
 		Configured:    c.appID != "" && c.appSecret != "",
 		Authenticated: false,
@@ -280,17 +284,28 @@ func (c *Client) RestoreCredentials(creds PersistedCredentials) {
 // SetCredentials updates explicit app credentials and/or user auth token.
 func (c *Client) SetCredentials(appID, appSecret, authToken string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if strings.TrimSpace(appID) != "" {
 		c.appID = strings.TrimSpace(appID)
 	}
 	if strings.TrimSpace(appSecret) != "" {
 		c.appSecret = strings.TrimSpace(appSecret)
 	}
-	if strings.TrimSpace(authToken) != "" {
-		c.authToken = strings.TrimSpace(authToken)
+	newTok := strings.TrimSpace(authToken)
+	switchedAccount := newTok != "" && c.authToken != "" && c.authToken != newTok
+	if newTok != "" {
+		c.authToken = newTok
 	}
 	clear(c.urlCache)
+	if switchedAccount {
+		clear(c.trackCache)
+	}
+	c.mu.Unlock()
+	if switchedAccount {
+		c.authGen.Add(1)
+		if c.cache != nil {
+			c.cache.clear()
+		}
+	}
 }
 
 // Search searches Qobuz artists, albums, and tracks in a single catalog/search call.
@@ -315,12 +330,11 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 		return empty, err
 	}
 	if cached, ok := c.cache.getSearch(query, limit, off); ok {
-		for _, tr := range cached.Tracks {
-			c.cacheTrack(tr)
-		}
+		c.cacheTracks(cached.Tracks)
 		return cached, nil
 	}
 
+	gen := c.authGen.Load()
 	params := url.Values{
 		"query":  {query},
 		"limit":  {strconv.Itoa(limit)},
@@ -352,13 +366,10 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 			continue
 		}
 		art := qa.toArtist()
-		c.cacheArtistName(art.Name, art.ID)
 		res.Artists = append(res.Artists, art)
 	}
 	for _, qt := range resp.Tracks.Items {
-		tr := qt.toLibraryTrack(nil)
-		c.cacheTrack(tr)
-		res.Tracks = append(res.Tracks, tr)
+		res.Tracks = append(res.Tracks, qt.toLibraryTrack(nil))
 	}
 	for _, qa := range resp.Albums.Items {
 		if qa.Streamable != nil && !*qa.Streamable {
@@ -366,7 +377,13 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 		}
 		res.Albums = append(res.Albums, qa.toLibraryAlbum(false))
 	}
-	c.cache.putSearch(query, limit, off, res)
+	if c.authGen.Load() == gen {
+		for _, art := range res.Artists {
+			c.cacheArtistName(art.Name, art.ID, false)
+		}
+		c.cacheTracks(res.Tracks)
+		c.cache.putSearch(query, limit, off, res)
+	}
 	return res, nil
 }
 
@@ -384,6 +401,7 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 	if cached, ok := c.cache.getArtist(artistID, limit); ok {
 		return cached, nil
 	}
+	gen := c.authGen.Load()
 	params := url.Values{
 		"artist_id": {strconv.FormatInt(artistID, 10)},
 		"extra":     {"albums"},
@@ -407,9 +425,6 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 	if art.ID == 0 {
 		art.ID = artistID
 	}
-	if art.Name != "" {
-		c.cacheArtistName(art.Name, art.ID)
-	}
 	albums := make([]library.Album, 0, len(resp.Albums.Items))
 	for _, qa := range resp.Albums.Items {
 		if qa.Streamable != nil && !*qa.Streamable {
@@ -425,7 +440,12 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 		art.ArtworkURL = albums[0].ArtworkURL
 	}
 	detail := ArtistDetail{Artist: art, Albums: albums}
-	c.cache.putArtist(artistID, limit, detail)
+	if c.authGen.Load() == gen {
+		if art.Name != "" {
+			c.cacheArtistName(art.Name, art.ID, true)
+		}
+		c.cache.putArtist(artistID, limit, detail)
+	}
 	return detail, nil
 }
 
@@ -447,6 +467,7 @@ func (c *Client) GetArtistByName(ctx context.Context, name string, limit int) (A
 		return c.GetArtist(ctx, cachedID, limit)
 	}
 
+	gen := c.authGen.Load()
 	params := url.Values{
 		"query":  {name},
 		"limit":  {"10"},
@@ -472,18 +493,22 @@ func (c *Client) GetArtistByName(ctx context.Context, name string, limit int) (A
 		}
 	}
 	if matchedID == 0 {
-		c.cache.putArtistName(name, 0)
+		if c.authGen.Load() == gen {
+			c.cache.putArtistName(name, 0, true)
+		}
 		return ArtistDetail{}, fmt.Errorf("%w: artist %q", ErrNotFound, name)
 	}
-	c.cacheArtistName(name, matchedID)
+	if c.authGen.Load() == gen {
+		c.cacheArtistName(name, matchedID, true)
+	}
 	return c.GetArtist(ctx, matchedID, limit)
 }
 
-func (c *Client) cacheArtistName(name string, id int64) {
+func (c *Client) cacheArtistName(name string, id int64, overwrite bool) {
 	if c.cache == nil || id <= 0 {
 		return
 	}
-	c.cache.putArtistName(name, id)
+	c.cache.putArtistName(name, id, overwrite)
 }
 
 // GetAlbum fetches a Qobuz album and its track listing. Accepts bare or "qobuz:"-prefixed IDs.
@@ -493,11 +518,10 @@ func (c *Client) GetAlbum(ctx context.Context, albumID string) (library.Album, e
 	}
 	rawID := strings.TrimPrefix(strings.TrimSpace(albumID), "qobuz:")
 	if cached, ok := c.cache.getAlbum(rawID); ok {
-		for _, tr := range cached.Tracks {
-			c.cacheTrack(tr)
-		}
+		c.cacheTracks(cached.Tracks)
 		return cached, nil
 	}
+	gen := c.authGen.Load()
 	params := url.Values{
 		"album_id": {rawID},
 		"limit":    {"500"},
@@ -511,10 +535,10 @@ func (c *Client) GetAlbum(ctx context.Context, albumID string) (library.Album, e
 		return library.Album{}, err
 	}
 	alb := qa.toLibraryAlbum(true)
-	for _, tr := range alb.Tracks {
-		c.cacheTrack(tr)
+	if c.authGen.Load() == gen {
+		c.cacheTracks(alb.Tracks)
+		c.cache.putAlbum(rawID, alb)
 	}
-	c.cache.putAlbum(rawID, alb)
 	return alb, nil
 }
 
@@ -553,18 +577,48 @@ func (c *Client) ResolveTrack(ctx context.Context, trackID int64) (library.Track
 	return c.GetTrack(ctx, trackID)
 }
 
-const maxTrackCacheEntries = 512
+const maxTrackCacheEntries = 2048
 
 func (c *Client) cacheTrack(tr library.Track) {
+	rehydrateTrackQobuzID(&tr)
 	if tr.QobuzTrackID <= 0 {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.trackCache) >= maxTrackCacheEntries {
-		clear(c.trackCache)
-	}
+	c.evictTrackCacheLocked()
 	c.trackCache[tr.QobuzTrackID] = tr
+}
+
+func (c *Client) cacheTracks(tracks []library.Track) {
+	if len(tracks) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range tracks {
+		tr := tracks[i]
+		rehydrateTrackQobuzID(&tr)
+		if tr.QobuzTrackID <= 0 {
+			continue
+		}
+		c.evictTrackCacheLocked()
+		c.trackCache[tr.QobuzTrackID] = tr
+	}
+}
+
+func (c *Client) evictTrackCacheLocked() {
+	if len(c.trackCache) < maxTrackCacheEntries {
+		return
+	}
+	// Evict roughly half the map to avoid cliff-clearing recently viewed tracks.
+	target := maxTrackCacheEntries / 2
+	for k := range c.trackCache {
+		delete(c.trackCache, k)
+		if len(c.trackCache) <= target {
+			break
+		}
+	}
 }
 
 const maxURLCacheEntries = 128
@@ -780,9 +834,18 @@ func (c *Client) getJSON(ctx context.Context, path string, params url.Values, wi
 }
 
 func (c *Client) postFormJSON(ctx context.Context, path string, form url.Values, withAuth bool, dst any) error {
+	var token string
+	if withAuth {
+		c.mu.RLock()
+		token = c.authToken
+		c.mu.RUnlock()
+	}
+	return c.postFormJSONWithToken(ctx, path, form, token, dst)
+}
+
+func (c *Client) postFormJSONWithToken(ctx context.Context, path string, form url.Values, token string, dst any) error {
 	c.mu.RLock()
 	appID := c.appID
-	token := c.authToken
 	base := c.baseURL
 	c.mu.RUnlock()
 
@@ -795,7 +858,7 @@ func (c *Client) postFormJSON(ctx context.Context, path string, form url.Values,
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-App-Id", appID)
-	if withAuth && token != "" {
+	if token != "" {
 		req.Header.Set("X-User-Auth-Token", token)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")

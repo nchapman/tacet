@@ -217,7 +217,7 @@ func (c *Catalog) Status() Status {
 		MissingTracks: counts.missingTracks,
 		MissingAlbums: counts.missingAlbums,
 		Providers:     providers,
-		ETag:          fmt.Sprintf(`"lib-%d-%d-%d"`, counts.gen, counts.totalTracks, counts.totalAlbums),
+		ETag:          fmt.Sprintf(`"lib-%s-%d-%d-%d"`, counts.bootID, counts.gen, counts.totalTracks, counts.totalAlbums),
 	}
 }
 

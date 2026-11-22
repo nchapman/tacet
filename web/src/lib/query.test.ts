@@ -26,7 +26,7 @@ describe("query config and helpers", () => {
     expect(shouldRetryQuery(1, new Error("network down"))).toBe(false);
   });
 
-  it("invalidates library and album queries without touching qobuz remote queries", () => {
+  it("invalidates library, album, and qobuz queries on library ETag change", () => {
     const client = createQueryClient();
     client.setQueryData(queryKeys.library.albums({ sort: "title" }), { items: [] });
     client.setQueryData(queryKeys.album("local:1"), { id: "local:1" });
@@ -36,7 +36,7 @@ describe("query config and helpers", () => {
 
     expect(client.getQueryState(queryKeys.library.albums({ sort: "title" }))?.isInvalidated).toBe(true);
     expect(client.getQueryState(queryKeys.album("local:1"))?.isInvalidated).toBe(true);
-    expect(client.getQueryState(queryKeys.qobuz.artist({ id: 42 }))?.isInvalidated).toBe(false);
+    expect(client.getQueryState(queryKeys.qobuz.artist({ id: 42 }))?.isInvalidated).toBe(true);
   });
 
   it("removes cached qobuz queries and invalidates library/albums on Qobuz logout", () => {

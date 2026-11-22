@@ -78,7 +78,7 @@ export function SearchView({
     enabled: Boolean(debouncedLib),
   });
 
-  // Tier 2: Progressive Qobuz remote catalog search below library results (cached 5 min, 280ms debounce while typing).
+  // Tier 2: Progressive Qobuz remote catalog search below library results (cached 15 min, 280ms debounce while typing).
   const qobuzQuery = useQuery<QobuzSearchResult>({
     queryKey: queryKeys.qobuz.search(debouncedQobuz),
     queryFn: ({ signal }) => tacetClient.qobuzSearch(debouncedQobuz, { limit: 12 }, { signal }),
@@ -87,12 +87,14 @@ export function SearchView({
     gcTime: QOBUZ_SEARCH_GC_TIME_MS,
   });
 
+  const normalizedTrimmed = trimmed.toLowerCase();
   const libRes = trimmed ? (libQuery.data ?? null) : null;
-  const libLoading = Boolean(trimmed) && (debouncedLib !== trimmed || libQuery.isLoading);
+  const libLoading = Boolean(trimmed) && (debouncedLib.toLowerCase() !== normalizedTrimmed || libQuery.isLoading);
   const libErr = trimmed ? queryErrorMessage(libQuery.error) : "";
 
   const qobuzRes = trimmed && qobuzConnected ? (qobuzQuery.data ?? null) : null;
-  const qobuzLoading = Boolean(trimmed && qobuzConnected) && (debouncedQobuz !== trimmed || qobuzQuery.isLoading);
+  const qobuzLoading =
+    Boolean(trimmed && qobuzConnected) && (debouncedQobuz.toLowerCase() !== normalizedTrimmed || qobuzQuery.isLoading);
   const qobuzErr = trimmed && qobuzConnected ? queryErrorMessage(qobuzQuery.error) : "";
 
   // Deduplicate Qobuz items that already appeared in the Library section above.
@@ -213,7 +215,7 @@ export function SearchView({
                 </div>
               )}
 
-              {!libErr && libRes && !hasLibMatches && (
+              {!libErr && !libLoading && libRes && !hasLibMatches && (
                 <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-sm text-muted-foreground">
                   No matches in your library for <span className="text-foreground">“{trimmed}”</span>.
                 </p>

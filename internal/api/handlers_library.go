@@ -716,8 +716,8 @@ func (s *Server) handleQobuzSearch(w http.ResponseWriter, r *http.Request) {
 		res.Albums[i].InLibrary = s.catalog.HasAlbum(res.Albums[i].ID)
 	}
 	for i := range res.Tracks {
-		_, inLib := s.catalog.Track(res.Tracks[i].ID)
-		res.Tracks[i].InLibrary = inLib
+		tr, inLib := s.catalog.Track(res.Tracks[i].ID)
+		res.Tracks[i].InLibrary = inLib && tr.Available
 	}
 	writeJSON(w, http.StatusOK, res)
 }
@@ -775,17 +775,20 @@ func (s *Server) handleQobuzAlbum(w http.ResponseWriter, r *http.Request) {
 	// Enrich with library membership and sibling versions so the unified Album
 	// Landing Page renders identically for in-library and out-of-library albums.
 	if libAlb, ok := s.catalog.Album(alb.ID); ok {
-		alb.InLibrary = true
-		alb.VersionGroupID = libAlb.VersionGroupID
-		alb.VersionCount = libAlb.VersionCount
-		alb.IsPrimary = libAlb.IsPrimary
-		alb.Versions = libAlb.Versions
+		if libAlb.Available {
+			alb.IsPartial = libAlb.IsPartial
+			alb.InLibrary = !libAlb.IsPartial
+			alb.VersionGroupID = libAlb.VersionGroupID
+			alb.VersionCount = libAlb.VersionCount
+			alb.IsPrimary = libAlb.IsPrimary
+			alb.Versions = libAlb.Versions
+			alb.AddedAt = libAlb.AddedAt
+		}
 		alb.PlayCount = libAlb.PlayCount
-		alb.AddedAt = libAlb.AddedAt
 	}
 	for i := range alb.Tracks {
 		if libTr, ok := s.catalog.Track(alb.Tracks[i].ID); ok {
-			alb.Tracks[i].InLibrary = true
+			alb.Tracks[i].InLibrary = libTr.Available
 			alb.Tracks[i].PlayCount = libTr.PlayCount
 			alb.Tracks[i].LastPlayedAt = libTr.LastPlayedAt
 		}

@@ -29,7 +29,9 @@ import { Button } from "@/components/ui/button";
 import { useBrowserPlayer } from "@/hooks/useBrowserPlayer";
 import { useTacet } from "@/hooks/useTacet";
 import {
+  DEFAULT_GC_TIME_MS,
   invalidateLibraryQueries,
+  invalidateQobuzLogout,
   QOBUZ_ALBUM_GC_TIME_MS,
   QOBUZ_ALBUM_STALE_TIME_MS,
   queryErrorMessage,
@@ -81,6 +83,23 @@ export function App() {
     }
     prevEtagRef.current = libraryEtag;
   }, [libraryEtag, queryClient]);
+
+  // Clear Qobuz queries across all LAN clients when Qobuz signs out or switches accounts over SSE.
+  const prevQobuzRef = useRef<{ authenticated: boolean; userName: string } | null>(null);
+  const qobuzAuth = tacet.qobuzStatus?.authenticated;
+  const qobuzUser = tacet.qobuzStatus?.userName ?? "";
+  useEffect(() => {
+    if (qobuzAuth === undefined) return;
+    const prev = prevQobuzRef.current;
+    if (
+      prev &&
+      ((prev.authenticated && !qobuzAuth) ||
+        (prev.authenticated && qobuzAuth && prev.userName && qobuzUser && prev.userName !== qobuzUser))
+    ) {
+      invalidateQobuzLogout(queryClient);
+    }
+    prevQobuzRef.current = { authenticated: qobuzAuth, userName: qobuzUser };
+  }, [qobuzAuth, qobuzUser, queryClient]);
 
   const isSplitPane = location.pathname === "/artists" || location.pathname.startsWith("/artists/");
 
@@ -244,6 +263,7 @@ export function App() {
               path="/albums/:albumSlug/:albumKey"
               element={
                 <AlbumRoute
+                  qobuzConnected={Boolean(tacet.qobuzStatus?.authenticated)}
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
                   isPlaying={tacet.activeZone?.state === "playing"}
                   onAmbientArt={setAlbumAmbientArt}
@@ -258,6 +278,7 @@ export function App() {
               path="/albums/:albumKey"
               element={
                 <AlbumRoute
+                  qobuzConnected={Boolean(tacet.qobuzStatus?.authenticated)}
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
                   isPlaying={tacet.activeZone?.state === "playing"}
                   onAmbientArt={setAlbumAmbientArt}
@@ -513,6 +534,7 @@ function ArtistsRoute({
 }
 
 function AlbumRoute({
+  qobuzConnected,
   currentTrackId,
   isPlaying,
   onAmbientArt,
@@ -521,6 +543,7 @@ function AlbumRoute({
   onPlay,
   onAdd,
 }: {
+  qobuzConnected: boolean;
   currentTrackId?: string;
   isPlaying: boolean;
   onAmbientArt?: (artworkUrl?: string) => void;
@@ -545,11 +568,14 @@ function AlbumRoute({
     queryKey: queryKeys.album(albumId ?? ""),
     queryFn: ({ signal }) => {
       if (!albumId) return Promise.reject(new Error("Missing album id"));
-      if (isOutOfLibraryQobuz) {
+      // Always fetch Qobuz albums via qobuzAlbum when connected (served from Go catalogCache
+      // with live SQLite inLibrary/versions/playCount overlay) so partial 1-track SQLite albums
+      // never hide the rest of the album's tracklist.
+      if (isOutOfLibraryQobuz || (isQobuzAlbum && qobuzConnected)) {
         return tacetClient.qobuzAlbum(albumId, { signal });
       }
       return tacetClient.getLibraryAlbum(albumId, { signal }).catch((err) => {
-        if (err instanceof TacetAPIError && err.status === 404 && albumId.startsWith("qobuz:")) {
+        if (err instanceof TacetAPIError && err.status === 404 && isQobuzAlbum) {
           return tacetClient.qobuzAlbum(albumId, { signal });
         }
         throw err;
@@ -557,7 +583,7 @@ function AlbumRoute({
     },
     enabled: Boolean(albumId),
     staleTime: isQobuzAlbum ? QOBUZ_ALBUM_STALE_TIME_MS : 60_000,
-    gcTime: isQobuzAlbum ? QOBUZ_ALBUM_GC_TIME_MS : undefined,
+    gcTime: isQobuzAlbum ? QOBUZ_ALBUM_GC_TIME_MS : DEFAULT_GC_TIME_MS,
     placeholderData: hint,
   });
 
@@ -626,6 +652,7 @@ function AlbumRoute({
         </div>
       )}
       <AlbumView
+        key={album.id}
         album={album}
         backLabel={state?.backLabel ?? "Albums"}
         loadingTracks={albumQuery.isFetching && (album.tracks?.length ?? 0) === 0}
