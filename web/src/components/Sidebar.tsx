@@ -1,8 +1,8 @@
-import { Compass, Disc3, Home, ListMusic, Loader2, Settings, Users } from "lucide-react";
+import { Compass, Disc3, Home, ListMusic, Loader2, Search, Settings, Users } from "lucide-react";
 import type { LibraryStatus } from "@/api/types";
 import { cn } from "@/lib/utils";
 
-export type AppSection = "home" | "albums" | "artists" | "songs" | "qobuz" | "settings";
+export type AppSection = "home" | "search" | "albums" | "artists" | "songs" | "qobuz" | "settings";
 
 interface SidebarProps {
   activeSection: AppSection;
@@ -58,6 +58,13 @@ export function Sidebar({ activeSection, libraryStatus, onNavigate }: SidebarPro
             label="Home"
             onClick={() => onNavigate("home")}
           />
+          <NavItem
+            active={activeSection === "search"}
+            icon={Search}
+            label="Search"
+            shortcut="⌘K"
+            onClick={() => onNavigate("search")}
+          />
         </div>
 
         <div className="space-y-1">
@@ -105,11 +112,13 @@ function NavItem({
   active,
   icon: Icon,
   label,
+  shortcut,
   onClick,
 }: {
   active: boolean;
   icon: typeof Home;
   label: string;
+  shortcut?: string;
   onClick: () => void;
 }) {
   return (
@@ -125,16 +134,21 @@ function NavItem({
       )}
     >
       <Icon className={cn("h-4 w-4 shrink-0", active ? "text-foreground" : "text-muted-foreground")} />
-      <span className="truncate">{label}</span>
+      <span className="truncate flex-1 text-left">{label}</span>
+      {shortcut && (
+        <kbd className="rounded border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/70">
+          {shortcut}
+        </kbd>
+      )}
     </button>
   );
 }
 
 const MOBILE_ITEMS: Array<{ id: AppSection; label: string; icon: typeof Home }> = [
   { id: "home", label: "Home", icon: Home },
+  { id: "search", label: "Search", icon: Search },
   { id: "albums", label: "Albums", icon: Disc3 },
   { id: "artists", label: "Artists", icon: Users },
-  { id: "qobuz", label: "Qobuz", icon: Compass },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 

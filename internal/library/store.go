@@ -1497,8 +1497,10 @@ func (s *libraryStore) listArtists(ctx context.Context, f FacetFilter) ([]Artist
 		args = append(args, genre)
 	}
 	if q := strings.TrimSpace(f.Query); q != "" {
-		where = append(where, "LOWER(a.artist) LIKE LOWER(?)")
-		args = append(args, "%"+q+"%")
+		for _, tok := range strings.Fields(q) {
+			where = append(where, "LOWER(a.artist) LIKE LOWER(?)")
+			args = append(args, "%"+tok+"%")
+		}
 	}
 
 	whereSQL := ""
@@ -1742,4 +1744,232 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// unifiedSearch queries artists, albums (version-grouped), and tracks in SQLite
+// and ranks results with intent scoring so exact/prefix matches surface the right
+// entity type (artist, album, or track) as TopResult.
+func (s *libraryStore) unifiedSearch(ctx context.Context, rawQuery string, limit int) (UnifiedSearchResult, error) {
+	q := strings.TrimSpace(rawQuery)
+	if limit <= 0 {
+		limit = 8
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	res := UnifiedSearchResult{
+		Query:   q,
+		Artists: make([]ArtistSummary, 0),
+		Albums:  make([]Album, 0),
+		Tracks:  make([]Track, 0),
+	}
+	if q == "" {
+		return res, nil
+	}
+
+	candidateLimit := max(limit*4, 32)
+	artists, _, err := s.listArtists(ctx, FacetFilter{
+		Query: q,
+		Limit: candidateLimit,
+	})
+	if err != nil {
+		return res, err
+	}
+	albums, _, err := s.queryAlbums(ctx, AlbumFilter{
+		Query:         q,
+		GroupVersions: true,
+		Limit:         candidateLimit,
+	})
+	if err != nil {
+		return res, err
+	}
+	tracks, _, err := s.queryTracks(ctx, TrackFilter{
+		Query: q,
+		Limit: candidateLimit,
+	})
+	if err != nil {
+		return res, err
+	}
+
+	normQ := normalizeSearchText(q)
+	qTokens := strings.Fields(normQ)
+
+	type scoredArtist struct {
+		item  ArtistSummary
+		score int
+	}
+	scoredArtists := make([]scoredArtist, 0, len(artists))
+	for _, a := range artists {
+		sc := scoreSearchText(a.Name, normQ, qTokens)
+		if sc > 0 {
+			// Exact artist match gets a small boost over an eponymous track/album.
+			if normalizeSearchText(a.Name) == normQ {
+				sc += 40
+			}
+			sc += min(a.AlbumCount*5, 30)
+		}
+		scoredArtists = append(scoredArtists, scoredArtist{item: a, score: sc})
+	}
+	sort.SliceStable(scoredArtists, func(i, j int) bool {
+		if scoredArtists[i].score != scoredArtists[j].score {
+			return scoredArtists[i].score > scoredArtists[j].score
+		}
+		if scoredArtists[i].item.AlbumCount != scoredArtists[j].item.AlbumCount {
+			return scoredArtists[i].item.AlbumCount > scoredArtists[j].item.AlbumCount
+		}
+		return strings.ToLower(scoredArtists[i].item.Name) < strings.ToLower(scoredArtists[j].item.Name)
+	})
+
+	type scoredAlbum struct {
+		item  Album
+		score int
+	}
+	scoredAlbums := make([]scoredAlbum, 0, len(albums))
+	for _, a := range albums {
+		titleScore := scoreSearchText(a.Title, normQ, qTokens)
+		comboScore := scoreSearchText(a.Artist+" "+a.Title, normQ, qTokens)
+		// Artist-only hits still appear in Albums, but score lower than direct title matches
+		// so searching an artist name surfaces the Artist as TopResult instead of a random album.
+		artistScore := scoreSearchText(a.Artist, normQ, qTokens) / 3
+		sc := max(titleScore, comboScore, artistScore)
+		if titleScore >= 500 {
+			sc += min(a.PlayCount*3, 25)
+		}
+		scoredAlbums = append(scoredAlbums, scoredAlbum{item: a, score: sc})
+	}
+	sort.SliceStable(scoredAlbums, func(i, j int) bool {
+		if scoredAlbums[i].score != scoredAlbums[j].score {
+			return scoredAlbums[i].score > scoredAlbums[j].score
+		}
+		if scoredAlbums[i].item.PlayCount != scoredAlbums[j].item.PlayCount {
+			return scoredAlbums[i].item.PlayCount > scoredAlbums[j].item.PlayCount
+		}
+		return strings.ToLower(scoredAlbums[i].item.Title) < strings.ToLower(scoredAlbums[j].item.Title)
+	})
+
+	type scoredTrack struct {
+		item  Track
+		score int
+	}
+	scoredTracks := make([]scoredTrack, 0, len(tracks))
+	for _, t := range tracks {
+		titleScore := scoreSearchText(t.Title, normQ, qTokens)
+		comboScore := scoreSearchText(t.Artist+" "+t.Title, normQ, qTokens)
+		metaScore := max(scoreSearchText(t.Artist, normQ, qTokens), scoreSearchText(t.Album, normQ, qTokens)) / 4
+		sc := max(titleScore, comboScore, metaScore)
+		if titleScore >= 500 {
+			sc += min(t.PlayCount*3, 25)
+		}
+		scoredTracks = append(scoredTracks, scoredTrack{item: t, score: sc})
+	}
+	sort.SliceStable(scoredTracks, func(i, j int) bool {
+		if scoredTracks[i].score != scoredTracks[j].score {
+			return scoredTracks[i].score > scoredTracks[j].score
+		}
+		if scoredTracks[i].item.PlayCount != scoredTracks[j].item.PlayCount {
+			return scoredTracks[i].item.PlayCount > scoredTracks[j].item.PlayCount
+		}
+		return strings.ToLower(scoredTracks[i].item.Title) < strings.ToLower(scoredTracks[j].item.Title)
+	})
+
+	for i := 0; i < len(scoredArtists) && i < limit; i++ {
+		res.Artists = append(res.Artists, scoredArtists[i].item)
+	}
+	for i := 0; i < len(scoredAlbums) && i < limit; i++ {
+		res.Albums = append(res.Albums, scoredAlbums[i].item)
+	}
+	for i := 0; i < len(scoredTracks) && i < limit; i++ {
+		res.Tracks = append(res.Tracks, scoredTracks[i].item)
+	}
+
+	var best *TopSearchResult
+	if len(scoredArtists) > 0 {
+		a := scoredArtists[0].item
+		best = &TopSearchResult{Type: "artist", Score: scoredArtists[0].score, Artist: &a}
+	}
+	if len(scoredAlbums) > 0 && (best == nil || scoredAlbums[0].score > best.Score) {
+		a := scoredAlbums[0].item
+		best = &TopSearchResult{Type: "album", Score: scoredAlbums[0].score, Album: &a}
+	}
+	if len(scoredTracks) > 0 && (best == nil || scoredTracks[0].score > best.Score) {
+		t := scoredTracks[0].item
+		best = &TopSearchResult{Type: "track", Score: scoredTracks[0].score, Track: &t}
+	}
+	res.TopResult = best
+	return res, nil
+}
+
+func normalizeSearchText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	lastSpace := true
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			lastSpace = false
+		} else if !lastSpace {
+			b.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func scoreSearchText(candidate, normQ string, qTokens []string) int {
+	if normQ == "" {
+		return 0
+	}
+	cand := normalizeSearchText(candidate)
+	if cand == "" {
+		return 0
+	}
+	if cand == normQ {
+		return 1000
+	}
+	// Match ignoring leading "the " (e.g. "beatles" matches "The Beatles").
+	trimmedCand := strings.TrimPrefix(cand, "the ")
+	if trimmedCand != cand && trimmedCand == normQ {
+		return 960
+	}
+	if strings.HasPrefix(cand, normQ) {
+		return 820 - min(len(cand)-len(normQ), 120)
+	}
+	if trimmedCand != cand && strings.HasPrefix(trimmedCand, normQ) {
+		return 790 - min(len(trimmedCand)-len(normQ), 120)
+	}
+	words := strings.Fields(cand)
+	if len(qTokens) > 0 {
+		allPrefix := true
+		for _, qt := range qTokens {
+			matched := false
+			for _, w := range words {
+				if strings.HasPrefix(w, qt) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				allPrefix = false
+				break
+			}
+		}
+		if allPrefix {
+			return 620 - min(len(cand)-len(normQ), 120)
+		}
+	}
+	if strings.Contains(cand, normQ) {
+		return 420 - min(len(cand)-len(normQ), 120)
+	}
+	if len(qTokens) > 0 {
+		matched := 0
+		for _, qt := range qTokens {
+			if strings.Contains(cand, qt) {
+				matched++
+			}
+		}
+		if matched == len(qTokens) {
+			return 260
+		}
+	}
+	return 100
 }

@@ -942,6 +942,11 @@ func (c *Catalog) Search(query string, limit int) []Track {
 	return items
 }
 
+// UnifiedSearch returns intent-ranked artists, albums, and tracks matching query.
+func (c *Catalog) UnifiedSearch(ctx context.Context, query string, limit int) (UnifiedSearchResult, error) {
+	return c.store.unifiedSearch(ctx, query, limit)
+}
+
 const maxCoverArtBytes = 10 << 20 // 10 MiB safety cap
 
 // CoverArt loads embedded or folder artwork bytes and MIME type for a local track.

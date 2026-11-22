@@ -1,10 +1,9 @@
-import { ListPlus, Play, Search, SkipForward } from "lucide-react";
+import { ListPlus, Play, SkipForward } from "lucide-react";
 import { useEffect, useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type { GenreSummary, LibraryStatus, QueuePosition, QueueSource, Track } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
-import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 type TrackSort = "artist" | "title" | "album" | "added" | "plays" | "quality";
@@ -30,8 +29,6 @@ export function SongsView({
   onPlay,
   onAdd,
 }: SongsViewProps) {
-  const [query, setQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [sort, setSort] = useState<TrackSort>("artist");
   const [genre, setGenre] = useState("");
   const [genres, setGenres] = useState<GenreSummary[]>([]);
@@ -39,11 +36,6 @@ export function SongsView({
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [errMsg, setErrMsg] = useState("");
-
-  useEffect(() => {
-    const id = window.setTimeout(() => setDebouncedQuery(query.trim()), 150);
-    return () => window.clearTimeout(id);
-  }, [query]);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -64,7 +56,6 @@ export function SongsView({
     void tacetClient
       .listLibraryTracks(
         {
-          q: debouncedQuery || undefined,
           genre: genre || undefined,
           sort,
           dir,
@@ -84,29 +75,18 @@ export function SongsView({
         if (!ctrl.signal.aborted) setLoading(false);
       });
     return () => ctrl.abort();
-  }, [debouncedQuery, genre, sort, libraryStatus?.etag]);
+  }, [genre, sort, libraryStatus?.etag]);
 
   return (
     <div className="min-h-full pb-12">
       <div className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/85 px-4 sm:px-8 py-4 backdrop-blur-xl">
-        <div className="mx-auto max-w-6xl space-y-3">
+        <div className="mx-auto max-w-6xl flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-baseline gap-2.5">
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Songs</h1>
             <span className="text-xs font-mono text-muted-foreground">{total}</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            <div className="relative flex-1 min-w-[180px] max-w-sm">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="search"
-                placeholder="Search songs, artists, albums…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                className="pl-8.5 h-8.5 text-xs"
-              />
-            </div>
-
             {genres.length > 0 && (
               <select
                 aria-label="Filter by genre"

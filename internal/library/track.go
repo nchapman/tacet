@@ -138,6 +138,24 @@ type ArtistSummary struct {
 	Providers  []string `json:"providers"`
 }
 
+// TopSearchResult identifies the highest-intent match across artists, albums, and tracks.
+type TopSearchResult struct {
+	Type   string         `json:"type"` // "artist", "album", or "track"
+	Score  int            `json:"score"`
+	Artist *ArtistSummary `json:"artist,omitempty"`
+	Album  *Album         `json:"album,omitempty"`
+	Track  *Track         `json:"track,omitempty"`
+}
+
+// UnifiedSearchResult holds ranked local+synced library matches across all entity types.
+type UnifiedSearchResult struct {
+	Query     string           `json:"query"`
+	TopResult *TopSearchResult `json:"topResult,omitempty"`
+	Artists   []ArtistSummary  `json:"artists"`
+	Albums    []Album          `json:"albums"`
+	Tracks    []Track          `json:"tracks"`
+}
+
 // GenreSummary summarizes a genre facet across the unified library.
 type GenreSummary struct {
 	Name       string `json:"name"`

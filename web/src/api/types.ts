@@ -137,6 +137,22 @@ export interface ArtistSummary {
   providers: string[];
 }
 
+export interface TopSearchResult {
+  type: "artist" | "album" | "track";
+  score: number;
+  artist?: ArtistSummary;
+  album?: Album;
+  track?: Track;
+}
+
+export interface LibrarySearchResult {
+  query: string;
+  topResult?: TopSearchResult;
+  artists: ArtistSummary[];
+  albums: Album[];
+  tracks: Track[];
+}
+
 export interface GenreSummary {
   name: string;
   albumCount: number;
@@ -255,7 +271,20 @@ export interface QobuzStatus {
   maxQuality: QobuzQuality;
 }
 
+export interface QobuzArtist {
+  id: number;
+  name: string;
+  artworkUrl?: string;
+  albumsCount?: number;
+}
+
+export interface QobuzArtistDetail {
+  artist: QobuzArtist;
+  albums: Album[];
+}
+
 export interface QobuzSearchResult {
+  artists: QobuzArtist[];
   tracks: Track[];
   albums: Album[];
 }

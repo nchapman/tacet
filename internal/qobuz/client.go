@@ -97,27 +97,43 @@ type StreamInfo struct {
 	ExpiresAt  time.Time
 }
 
+// Artist represents a Qobuz artist match or profile.
+type Artist struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	ArtworkURL  string `json:"artworkUrl,omitempty"`
+	AlbumsCount int    `json:"albumsCount,omitempty"`
+}
+
+// ArtistDetail pairs a Qobuz artist profile with their remote discography.
+type ArtistDetail struct {
+	Artist Artist          `json:"artist"`
+	Albums []library.Album `json:"albums"`
+}
+
 // SearchResult holds Qobuz search matches mapped to unified library types.
 type SearchResult struct {
-	Tracks []library.Track `json:"tracks"`
-	Albums []library.Album `json:"albums"`
+	Artists []Artist        `json:"artists"`
+	Tracks  []library.Track `json:"tracks"`
+	Albums  []library.Album `json:"albums"`
 }
 
 // Client talks to the Qobuz v0.2 REST API.
 type Client struct {
-	mu           sync.RWMutex
-	baseURL      string
-	http         *http.Client
-	appID        string
-	appSecret    string
-	privateKey   string
-	altSecrets   []string
-	authToken    string
-	userName     string
-	subscription string
-	formatID     int
-	urlCache     map[int64]StreamInfo
-	trackCache   map[int64]library.Track
+	mu              sync.RWMutex
+	baseURL         string
+	http            *http.Client
+	appID           string
+	appSecret       string
+	privateKey      string
+	altSecrets      []string
+	authToken       string
+	userName        string
+	subscription    string
+	formatID        int
+	urlCache        map[int64]StreamInfo
+	trackCache      map[int64]library.Track
+	artistNameCache map[string]int64
 }
 
 // NewClient initializes a Qobuz client.
@@ -131,14 +147,15 @@ func NewClient(cfg Config) *Client {
 		fmtID = FormatFLAC192
 	}
 	return &Client{
-		baseURL:    base,
-		http:       &http.Client{Timeout: 15 * time.Second},
-		appID:      strings.TrimSpace(cfg.AppID),
-		appSecret:  strings.TrimSpace(cfg.AppSecret),
-		authToken:  strings.TrimSpace(cfg.AuthToken),
-		formatID:   fmtID,
-		urlCache:   make(map[int64]StreamInfo),
-		trackCache: make(map[int64]library.Track),
+		baseURL:         base,
+		http:            &http.Client{Timeout: 15 * time.Second},
+		appID:           strings.TrimSpace(cfg.AppID),
+		appSecret:       strings.TrimSpace(cfg.AppSecret),
+		authToken:       strings.TrimSpace(cfg.AuthToken),
+		formatID:        fmtID,
+		urlCache:        make(map[int64]StreamInfo),
+		trackCache:      make(map[int64]library.Track),
+		artistNameCache: make(map[string]int64),
 	}
 }
 
@@ -209,11 +226,12 @@ func (c *Client) SetCredentials(appID, appSecret, authToken string) {
 	clear(c.urlCache)
 }
 
-// Search searches Qobuz tracks and albums.
+// Search searches Qobuz artists, albums, and tracks in a single catalog/search call.
 func (c *Client) Search(ctx context.Context, query string, limit int, offset ...int) (SearchResult, error) {
 	empty := SearchResult{
-		Tracks: make([]library.Track, 0),
-		Albums: make([]library.Album, 0),
+		Artists: make([]Artist, 0),
+		Tracks:  make([]library.Track, 0),
+		Albums:  make([]library.Album, 0),
 	}
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -237,6 +255,9 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 	}
 
 	var resp struct {
+		Artists struct {
+			Items []qArtist `json:"items"`
+		} `json:"artists"`
 		Tracks struct {
 			Items []qTrack `json:"items"`
 		} `json:"tracks"`
@@ -249,8 +270,17 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 	}
 
 	res := SearchResult{
-		Tracks: make([]library.Track, 0, len(resp.Tracks.Items)),
-		Albums: make([]library.Album, 0, len(resp.Albums.Items)),
+		Artists: make([]Artist, 0, len(resp.Artists.Items)),
+		Tracks:  make([]library.Track, 0, len(resp.Tracks.Items)),
+		Albums:  make([]library.Album, 0, len(resp.Albums.Items)),
+	}
+	for _, qa := range resp.Artists.Items {
+		if qa.ID <= 0 || strings.TrimSpace(qa.Name) == "" {
+			continue
+		}
+		art := qa.toArtist()
+		c.cacheArtistName(art.Name, art.ID)
+		res.Artists = append(res.Artists, art)
 	}
 	for _, qt := range resp.Tracks.Items {
 		tr := qt.toLibraryTrack(nil)
@@ -258,9 +288,131 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 		res.Tracks = append(res.Tracks, tr)
 	}
 	for _, qa := range resp.Albums.Items {
+		if qa.Streamable != nil && !*qa.Streamable {
+			continue
+		}
 		res.Albums = append(res.Albums, qa.toLibraryAlbum(false))
 	}
 	return res, nil
+}
+
+// GetArtist fetches a Qobuz artist profile and their remote discography.
+func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (ArtistDetail, error) {
+	if err := c.requireAuth(); err != nil {
+		return ArtistDetail{}, err
+	}
+	if artistID <= 0 {
+		return ArtistDetail{}, fmt.Errorf("%w: invalid artist id", ErrNotFound)
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	params := url.Values{
+		"artist_id": {strconv.FormatInt(artistID, 10)},
+		"extra":     {"albums"},
+		"limit":     {strconv.Itoa(limit)},
+		"offset":    {"0"},
+	}
+	var resp struct {
+		qArtist
+		Albums struct {
+			Items []qAlbum `json:"items"`
+		} `json:"albums"`
+	}
+	if err := c.getJSON(ctx, "/artist/get", params, true, &resp); err != nil {
+		var ae *apiError
+		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
+			return ArtistDetail{}, fmt.Errorf("%w: artist %d", ErrNotFound, artistID)
+		}
+		return ArtistDetail{}, err
+	}
+	art := resp.toArtist()
+	if art.ID == 0 {
+		art.ID = artistID
+	}
+	if art.Name != "" {
+		c.cacheArtistName(art.Name, art.ID)
+	}
+	albums := make([]library.Album, 0, len(resp.Albums.Items))
+	for _, qa := range resp.Albums.Items {
+		if qa.Streamable != nil && !*qa.Streamable {
+			continue
+		}
+		alb := qa.toLibraryAlbum(false)
+		if alb.Artist == "" {
+			alb.Artist = art.Name
+		}
+		albums = append(albums, alb)
+	}
+	if art.ArtworkURL == "" && len(albums) > 0 {
+		art.ArtworkURL = albums[0].ArtworkURL
+	}
+	return ArtistDetail{Artist: art, Albums: albums}, nil
+}
+
+// GetArtistByName resolves an artist name via Qobuz /artist/search (exact normalized match, cached)
+// and fetches their remote discography.
+func (c *Client) GetArtistByName(ctx context.Context, name string, limit int) (ArtistDetail, error) {
+	if err := c.requireAuth(); err != nil {
+		return ArtistDetail{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ArtistDetail{}, fmt.Errorf("%w: empty artist name", ErrNotFound)
+	}
+	key := strings.ToLower(name)
+
+	c.mu.RLock()
+	cachedID, ok := c.artistNameCache[key]
+	c.mu.RUnlock()
+	if ok && cachedID > 0 {
+		return c.GetArtist(ctx, cachedID, limit)
+	}
+
+	params := url.Values{
+		"query":  {name},
+		"limit":  {"10"},
+		"offset": {"0"},
+	}
+	var resp struct {
+		Artists struct {
+			Items []qArtist `json:"items"`
+		} `json:"artists"`
+	}
+	if err := c.getJSON(ctx, "/artist/search", params, true, &resp); err != nil {
+		return ArtistDetail{}, err
+	}
+
+	var matchedID int64
+	for _, qa := range resp.Artists.Items {
+		if qa.ID <= 0 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(qa.Name), name) {
+			matchedID = qa.ID
+			break
+		}
+	}
+	if matchedID == 0 {
+		return ArtistDetail{}, fmt.Errorf("%w: artist %q", ErrNotFound, name)
+	}
+	c.cacheArtistName(name, matchedID)
+	return c.GetArtist(ctx, matchedID, limit)
+}
+
+const maxArtistNameCacheEntries = 256
+
+func (c *Client) cacheArtistName(name string, id int64) {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" || id <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.artistNameCache) >= maxArtistNameCacheEntries {
+		clear(c.artistNameCache)
+	}
+	c.artistNameCache[key] = id
 }
 
 // GetAlbum fetches a Qobuz album and its track listing. Accepts bare or "qobuz:"-prefixed IDs.
@@ -626,8 +778,45 @@ func (img qImage) best() string {
 	return img.Thumbnail
 }
 
+type qArtistImage struct {
+	Small      string `json:"small"`
+	Medium     string `json:"medium"`
+	Large      string `json:"large"`
+	ExtraLarge string `json:"extralarge"`
+	Mega       string `json:"mega"`
+}
+
+func (img *qArtistImage) best() string {
+	if img == nil {
+		return ""
+	}
+	for _, u := range []string{img.Large, img.Medium, img.ExtraLarge, img.Small, img.Mega} {
+		if u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
 type qArtist struct {
-	Name string `json:"name"`
+	ID          int64         `json:"id"`
+	Name        string        `json:"name"`
+	AlbumsCount int           `json:"albums_count"`
+	Picture     string        `json:"picture"`
+	Image       *qArtistImage `json:"image"`
+}
+
+func (qa qArtist) toArtist() Artist {
+	art := qa.Image.best()
+	if art == "" {
+		art = qa.Picture
+	}
+	return Artist{
+		ID:          qa.ID,
+		Name:        strings.TrimSpace(qa.Name),
+		ArtworkURL:  art,
+		AlbumsCount: qa.AlbumsCount,
+	}
 }
 
 type qGenre struct {
@@ -637,6 +826,7 @@ type qGenre struct {
 type qAlbum struct {
 	ID                  string  `json:"id"`
 	Title               string  `json:"title"`
+	Version             string  `json:"version"`
 	Artist              qArtist `json:"artist"`
 	Genre               qGenre  `json:"genre"`
 	Image               qImage  `json:"image"`
@@ -644,6 +834,7 @@ type qAlbum struct {
 	ReleaseDateOriginal string  `json:"release_date_original"`
 	MaximumBitDepth     int     `json:"maximum_bit_depth"`
 	MaximumSamplingRate float64 `json:"maximum_sampling_rate"`
+	Streamable          *bool   `json:"streamable"`
 	Tracks              struct {
 		Items []qTrack `json:"items"`
 	} `json:"tracks"`

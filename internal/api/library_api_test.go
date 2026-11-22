@@ -232,6 +232,99 @@ func TestPlayerCookiePathMatchesEncodeURIComponent(t *testing.T) {
 	}
 }
 
+func TestLibrarySearchAndQobuzArtistEndpoints(t *testing.T) {
+	qSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/artist/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"artists": map[string]any{
+					"items": []map[string]any{{"id": 77, "name": "Miles Davis", "albums_count": 40}},
+				},
+			})
+		case "/artist/get":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":   77,
+				"name": "Miles Davis",
+				"albums": map[string]any{
+					"items": []map[string]any{
+						{
+							"id":                    "q-bitches-brew",
+							"title":                 "Bitches Brew",
+							"artist":                map[string]any{"id": 77, "name": "Miles Davis"},
+							"tracks_count":          6,
+							"release_date_original": "1970-03-30",
+							"maximum_bit_depth":     24,
+							"maximum_sampling_rate": 96.0,
+						},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer qSrv.Close()
+
+	dir := t.TempDir()
+	flac := makeTestFLACBytes(96000, 24, map[string]string{
+		"TITLE":       "So What",
+		"ARTIST":      "Miles Davis",
+		"ALBUMARTIST": "Miles Davis",
+		"ALBUM":       "Kind of Blue",
+	})
+	if err := os.WriteFile(filepath.Join(dir, "01.flac"), flac, 0o600); err != nil {
+		t.Fatalf("write flac: %v", err)
+	}
+	cat, err := library.NewCatalogWithDB(":memory:", dir)
+	if err != nil {
+		t.Fatalf("NewCatalogWithDB: %v", err)
+	}
+	defer func() { _ = cat.Close() }()
+	if _, err := cat.Scan(); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	qc := qobuz.NewClient(qobuz.Config{
+		BaseURL:   qSrv.URL,
+		AppID:     "app",
+		AppSecret: "sec",
+		AuthToken: "tok",
+	})
+	mgr := queue.NewManager(8080, "", qc)
+	defer mgr.Close()
+	srv := NewServer(cat, qc, mgr)
+	defer srv.Close()
+	h := srv.Handler()
+
+	// 1. Unified library search
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/library/search?q=Miles+Davis", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /library/search status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var sr library.UnifiedSearchResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &sr); err != nil {
+		t.Fatalf("unmarshal search: %v", err)
+	}
+	if sr.TopResult == nil || sr.TopResult.Type != "artist" || sr.TopResult.Artist.Name != "Miles Davis" {
+		t.Fatalf("TopResult = %+v, want artist Miles Davis", sr.TopResult)
+	}
+
+	// 2. Qobuz artist by name
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/qobuz/artist?name=Miles+Davis", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /qobuz/artist status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var ad qobuz.ArtistDetail
+	if err := json.Unmarshal(rec.Body.Bytes(), &ad); err != nil {
+		t.Fatalf("unmarshal artist: %v", err)
+	}
+	if ad.Artist.ID != 77 || len(ad.Albums) != 1 || ad.Albums[0].Title != "Bitches Brew" {
+		t.Fatalf("ArtistDetail = %+v", ad)
+	}
+}
+
 func makeTestFLACBytes(sampleRate, bitDepth int, tags map[string]string) []byte {
 	// Valid 42-byte FLAC header + STREAMINFO block (2 channels, 180s), plus optional Vorbis Comment block.
 	buf := make([]byte, 42)

@@ -116,6 +116,24 @@ describe("TacetClient v1", () => {
     expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/library/albums/local%3Aa%2Fb");
   });
 
+  it("queries unified library search and qobuz artist endpoints", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ query: "al green", artists: [], albums: [], tracks: [] }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ artist: { id: 42, name: "Al Green" }, albums: [] }), { status: 200 }),
+      );
+    const client = new TacetClient({ fetchImpl: fetchMock });
+
+    await client.searchLibrary("al green", 8);
+    await client.qobuzArtist({ name: "Al Green", limit: 50 });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/library/search?q=al+green&limit=8");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/qobuz/artist?name=Al+Green&limit=50");
+  });
+
   it("rejects empty or non-JSON 2xx responses with TacetAPIError", async () => {
     const emptyFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response("", { status: 200 }));
     await expect(new TacetClient({ fetchImpl: emptyFetch }).listZones()).rejects.toMatchObject({

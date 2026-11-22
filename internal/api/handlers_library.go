@@ -572,6 +572,30 @@ func (s *Server) handleQobuzLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeJSON(w, http.StatusOK, library.UnifiedSearchResult{
+			Query:   "",
+			Artists: make([]library.ArtistSummary, 0),
+			Albums:  make([]library.Album, 0),
+			Tracks:  make([]library.Track, 0),
+		})
+		return
+	}
+	limit, _, err := parsePageParams(r, 8, 50)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	res, err := s.catalog.UnifiedSearch(r.Context(), q, limit)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 func (s *Server) handleQobuzSearch(w http.ResponseWriter, r *http.Request) {
 	if s.qobuz == nil {
 		writeDomainError(w, ErrQobuzUnavailable)
@@ -600,6 +624,45 @@ func (s *Server) handleQobuzSearch(w http.ResponseWriter, r *http.Request) {
 		res.Tracks[i].InLibrary = inLib
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleQobuzArtist(w http.ResponseWriter, r *http.Request) {
+	if s.qobuz == nil {
+		writeDomainError(w, ErrQobuzUnavailable)
+		return
+	}
+	limit, _, err := parsePageParams(r, 50, 200)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+
+	rawID := strings.TrimSpace(r.URL.Query().Get("id"))
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if rawID == "" && name == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "id or name query parameter is required", false)
+		return
+	}
+
+	var detail qobuz.ArtistDetail
+	if rawID != "" {
+		id, parseErr := strconv.ParseInt(rawID, 10, 64)
+		if parseErr != nil || id <= 0 {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "id must be a positive integer", false)
+			return
+		}
+		detail, err = s.qobuz.GetArtist(r.Context(), id, limit)
+	} else {
+		detail, err = s.qobuz.GetArtistByName(r.Context(), name, limit)
+	}
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	for i := range detail.Albums {
+		detail.Albums[i].InLibrary = s.catalog.HasAlbum(detail.Albums[i].ID)
+	}
+	writeJSON(w, http.StatusOK, detail)
 }
 
 func (s *Server) handleQobuzAlbum(w http.ResponseWriter, r *http.Request) {

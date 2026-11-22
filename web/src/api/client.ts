@@ -8,6 +8,7 @@ import type {
   HeavyRotationAlbum,
   LibraryAlbumsQuery,
   LibraryArtistsQuery,
+  LibrarySearchResult,
   LibraryStatus,
   LibraryTracksQuery,
   PagedResponse,
@@ -15,6 +16,7 @@ import type {
   PlayerCommand,
   PlayerRegistration,
   PlayerStateReport,
+  QobuzArtistDetail,
   QobuzLoginRequest,
   QobuzQuality,
   QobuzSearchResult,
@@ -566,6 +568,14 @@ export class TacetClient {
     return this.request("/api/v1/library/heavy-rotation", {}, { days, limit }, opts);
   }
 
+  searchLibrary(
+    query: string,
+    limit = 8,
+    opts?: RequestOptions,
+  ): Promise<LibrarySearchResult> {
+    return this.request("/api/v1/library/search", {}, { q: query, limit }, opts);
+  }
+
   rescanLibrary(wait = false, opts?: RequestOptions): Promise<LibraryStatus> {
     return this.request("/api/v1/library/rescan", { method: "POST" }, wait ? { wait: "true" } : undefined, opts);
   }
@@ -650,6 +660,18 @@ export class TacetClient {
     opts?: RequestOptions,
   ): Promise<QobuzSearchResult> {
     return this.request("/api/v1/qobuz/search", {}, { q: query, ...paging }, opts);
+  }
+
+  qobuzArtist(
+    params: { id?: number; name?: string; limit?: number },
+    opts?: RequestOptions,
+  ): Promise<QobuzArtistDetail> {
+    return this.request(
+      "/api/v1/qobuz/artist",
+      {},
+      { id: params.id, name: params.name, limit: params.limit },
+      opts,
+    );
   }
 
   qobuzAlbum(id: string, opts?: RequestOptions): Promise<Album> {

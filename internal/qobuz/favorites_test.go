@@ -183,3 +183,114 @@ func TestRemoteSource_FavoritesSyncAndMutations(t *testing.T) {
 		t.Fatalf("deletedTracks = %v, want [8888]", deletedTracks)
 	}
 }
+
+func TestSearchArtistsAndGetArtistByName(t *testing.T) {
+	var artistSearchCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/catalog/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"artists": map[string]any{
+					"items": []map[string]any{
+						{
+							"id":           4201,
+							"name":         "Al Green",
+							"albums_count": 18,
+							"image":        map[string]any{"large": "https://img/al-large.jpg"},
+						},
+					},
+				},
+				"albums": map[string]any{
+					"items": []map[string]any{
+						{
+							"id":                    "q-ok",
+							"title":                 "Call Me",
+							"artist":                map[string]any{"id": 4201, "name": "Al Green"},
+							"image":                 map[string]any{"large": "https://img/callme.jpg"},
+							"tracks_count":          9,
+							"release_date_original": "1973-04-29",
+							"maximum_bit_depth":     24,
+							"maximum_sampling_rate": 96.0,
+							"streamable":            true,
+						},
+						{
+							"id":         "q-unstreamable",
+							"title":      "Blocked Album",
+							"artist":     map[string]any{"id": 4201, "name": "Al Green"},
+							"streamable": false,
+						},
+					},
+				},
+				"tracks": map[string]any{"items": []any{}},
+			})
+		case "/artist/search":
+			artistSearchCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"artists": map[string]any{
+					"items": []map[string]any{
+						{"id": 9999, "name": "Al Green Tribute Band"},
+						{"id": 4201, "name": "Al Green", "albums_count": 18},
+					},
+				},
+			})
+		case "/artist/get":
+			if r.URL.Query().Get("artist_id") != "4201" || r.URL.Query().Get("extra") != "albums" {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":           4201,
+				"name":         "Al Green",
+				"albums_count": 18,
+				"picture":      "https://img/al-pic.jpg",
+				"albums": map[string]any{
+					"items": []map[string]any{
+						{
+							"id":                    "q-call-me",
+							"title":                 "Call Me",
+							"artist":                map[string]any{"id": 4201, "name": "Al Green"},
+							"image":                 map[string]any{"large": "https://img/callme.jpg"},
+							"tracks_count":          9,
+							"release_date_original": "1973-04-29",
+							"maximum_bit_depth":     24,
+							"maximum_sampling_rate": 96.0,
+						},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(Config{BaseURL: srv.URL, AppID: "app", AppSecret: "sec", AuthToken: "tok"})
+
+	// Resolve by name first -> hits /artist/search + /artist/get, skipping partial name match.
+	det, err := client.GetArtistByName(context.Background(), "al green", 50)
+	if err != nil {
+		t.Fatalf("GetArtistByName: %v", err)
+	}
+	if det.Artist.ID != 4201 || det.Artist.ArtworkURL != "https://img/al-pic.jpg" || len(det.Albums) != 1 {
+		t.Fatalf("detail = %+v", det)
+	}
+	// Second lookup should use cached artist ID without calling /artist/search again.
+	if _, cachedErr := client.GetArtistByName(context.Background(), "Al Green", 50); cachedErr != nil {
+		t.Fatalf("GetArtistByName cached: %v", cachedErr)
+	}
+	if artistSearchCalls != 1 {
+		t.Fatalf("artistSearchCalls = %d, want 1 (cached)", artistSearchCalls)
+	}
+
+	// Catalog search decodes artists and filters streamable=false albums.
+	res, err := client.Search(context.Background(), "Al Green", 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(res.Artists) != 1 || res.Artists[0].ID != 4201 || res.Artists[0].ArtworkURL != "https://img/al-large.jpg" {
+		t.Fatalf("res.Artists = %+v", res.Artists)
+	}
+	if len(res.Albums) != 1 || res.Albums[0].ID != "qobuz:q-ok" {
+		t.Fatalf("res.Albums = %+v, want only streamable q-ok", res.Albums)
+	}
+}

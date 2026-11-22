@@ -241,6 +241,7 @@ func (s *Server) routes() {
 	s.apiMux.HandleFunc("GET /api/v1/library/artists", s.handleLibraryArtists)
 	s.apiMux.HandleFunc("GET /api/v1/library/genres", s.handleLibraryGenres)
 	s.apiMux.HandleFunc("GET /api/v1/library/heavy-rotation", s.handleHeavyRotation)
+	s.apiMux.HandleFunc("GET /api/v1/library/search", s.handleLibrarySearch)
 	s.apiMux.HandleFunc("POST /api/v1/library/rescan", s.handleLibraryRescan)
 	s.apiMux.HandleFunc("POST /api/v1/library/sync", s.handleLibrarySync)
 	s.apiMux.HandleFunc("POST /api/v1/library/remote/albums", s.handleAddRemoteAlbum)
@@ -255,6 +256,7 @@ func (s *Server) routes() {
 	s.apiMux.HandleFunc("POST /api/v1/qobuz/login", s.handleQobuzLogin)
 	s.apiMux.HandleFunc("DELETE /api/v1/qobuz/session", s.handleQobuzLogout)
 	s.apiMux.HandleFunc("GET /api/v1/qobuz/search", s.handleQobuzSearch)
+	s.apiMux.HandleFunc("GET /api/v1/qobuz/artist", s.handleQobuzArtist)
 	s.apiMux.HandleFunc("GET /api/v1/qobuz/albums/{id}", s.handleQobuzAlbum)
 
 	// Embedded React/Vite Web UI

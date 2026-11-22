@@ -10,6 +10,7 @@ import { HomeView } from "@/components/HomeView";
 import { PlayerBar } from "@/components/PlayerBar";
 import { QobuzView } from "@/components/QobuzView";
 import { DesktopQueueDrawer, MobileQueueSheet } from "@/components/QueueDrawer";
+import { SearchView } from "@/components/SearchView";
 import { SettingsView } from "@/components/SettingsView";
 import { type AppSection, MobileBottomNav, Sidebar } from "@/components/Sidebar";
 import { SongsView } from "@/components/SongsView";
@@ -24,6 +25,7 @@ function initialSection(): AppSection {
 
 const SECTION_LABELS: Record<AppSection, string> = {
   home: "Home",
+  search: "Search",
   albums: "Albums",
   artists: "Artists",
   songs: "Songs",
@@ -36,7 +38,10 @@ export function App() {
   const browserPlayer = useBrowserPlayer(tacet.selectZone);
 
   const [section, setSection] = useState<AppSection>(initialSection);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchFocusNonce, setSearchFocusNonce] = useState(0);
   const [selectedArtist, setSelectedArtist] = useState<string | undefined>(undefined);
+  const [selectedArtistQobuzId, setSelectedArtistQobuzId] = useState<number | undefined>(undefined);
   const [openAlbum, setOpenAlbum] = useState<Album | null>(null);
   const [albumLoading, setAlbumLoading] = useState(false);
   const [albumErr, setAlbumErr] = useState("");
@@ -49,29 +54,43 @@ export function App() {
   const activeState = tacet.activeZone?.state;
   const activeTransport = tacet.transport;
 
-  // Spacebar toggles play/pause when focus is not in an interactive control.
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code !== "Space" || e.metaKey || e.ctrlKey || e.altKey) return;
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || tag === "A") return;
-      e.preventDefault();
-      void activeTransport(activeState === "playing" ? "pause" : "play");
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeState, activeTransport]);
-
-  useEffect(() => () => albumAbortRef.current?.abort(), []);
-
   const navigate = useCallback((next: AppSection) => {
     albumAbortRef.current?.abort();
     setOpenAlbum(null);
     setAlbumLoading(false);
     setAlbumErr("");
     setSection(next);
+    if (next === "search") {
+      setSearchFocusNonce((n) => n + 1);
+    }
     stageRef.current?.scrollTo({ top: 0 });
   }, []);
+
+  // Global keyboard shortcuts: Space toggles play/pause, Cmd/Ctrl+K or '/' opens Search.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        navigate("search");
+        return;
+      }
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      const inInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target as HTMLElement | null)?.isContentEditable;
+      if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && !inInput) {
+        e.preventDefault();
+        navigate("search");
+        return;
+      }
+      if (e.code !== "Space" || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (inInput || tag === "BUTTON" || tag === "A") return;
+      e.preventDefault();
+      void activeTransport(activeState === "playing" ? "pause" : "play");
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeState, activeTransport, navigate]);
+
+  useEffect(() => () => albumAbortRef.current?.abort(), []);
 
   const openAlbumById = useCallback(async (albumId: string, hint?: Album) => {
     albumAbortRef.current?.abort();
@@ -107,12 +126,13 @@ export function App() {
     }
   }, []);
 
-  const openArtist = useCallback((artistName: string) => {
+  const openArtist = useCallback((artistName: string, qobuzArtistId?: number) => {
     albumAbortRef.current?.abort();
     setOpenAlbum(null);
     setAlbumLoading(false);
     setAlbumErr("");
     setSelectedArtist(artistName);
+    setSelectedArtistQobuzId(qobuzArtistId);
     setSection("artists");
   }, []);
 
@@ -187,6 +207,18 @@ export function App() {
               onNavigate={navigate}
               onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
             />
+          ) : section === "search" ? (
+            <SearchView
+              query={searchQuery}
+              onQueryChange={setSearchQuery}
+              focusNonce={searchFocusNonce}
+              qobuzStatus={tacet.qobuzStatus}
+              currentTrackId={tacet.activeZone?.currentTrack?.id}
+              onOpenAlbum={(alb) => void openAlbumById(alb.id, alb)}
+              onOpenArtist={openArtist}
+              onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
+              onAdd={(src, pos) => void tacet.addSource(src, pos)}
+            />
           ) : section === "albums" ? (
             <AlbumsView
               libraryStatus={tacet.libraryStatus}
@@ -196,7 +228,9 @@ export function App() {
           ) : section === "artists" ? (
             <ArtistsView
               libraryStatus={tacet.libraryStatus}
+              qobuzStatus={tacet.qobuzStatus}
               initialArtist={selectedArtist}
+              initialQobuzArtistId={selectedArtistQobuzId}
               onOpenAlbum={(alb) => void openAlbumById(alb.id, alb)}
               onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
               onAdd={(src, pos) => void tacet.addSource(src, pos)}
@@ -213,10 +247,11 @@ export function App() {
           ) : section === "qobuz" ? (
             <QobuzView
               status={tacet.qobuzStatus}
+              libraryStatus={tacet.libraryStatus}
               onStatusChange={tacet.setQobuzStatus}
               onOpenAlbum={(alb) => void openAlbumById(alb.id, alb)}
               onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
-              onAdd={(src, pos) => void tacet.addSource(src, pos)}
+              onOpenSearch={() => navigate("search")}
             />
           ) : (
             <SettingsView

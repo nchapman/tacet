@@ -470,3 +470,64 @@ func TestRemoteAddRemoveHeavyRotationAndFTS(t *testing.T) {
 		t.Fatalf("remote.removedAlbs = %v, want [ext-42]", remote.removedAlbs)
 	}
 }
+
+func TestUnifiedSearchIntentRanking(t *testing.T) {
+	cat, err := NewCatalogWithDB(":memory:")
+	if err != nil {
+		t.Fatalf("NewCatalogWithDB: %v", err)
+	}
+	defer func() { _ = cat.Close() }()
+
+	albs := []Album{
+		{
+			ID: "local:alb-al", Source: SourceLocal, SourceType: SourceTypeLocal, Provider: "local",
+			Title: "Greatest Hits", Artist: "Al Green", Year: 1975, TrackCount: 1, Available: true,
+		},
+		{
+			ID: "local:alb-miles", Source: SourceLocal, SourceType: SourceTypeLocal, Provider: "local",
+			Title: "Kind of Blue", Artist: "Miles Davis", Year: 1959, TrackCount: 1, Available: true,
+		},
+	}
+	trs := []Track{
+		{
+			ID: "local:t1", Source: SourceLocal, SourceType: SourceTypeLocal, Provider: "local",
+			Title: "Tired of Being Alone", Artist: "Al Green", AlbumArtist: "Al Green", Album: "Greatest Hits",
+			AlbumID: "local:alb-al", TrackNumber: 1, DurationSec: 163, Available: true,
+		},
+		{
+			ID: "local:t2", Source: SourceLocal, SourceType: SourceTypeLocal, Provider: "local",
+			Title: "So What", Artist: "Miles Davis", AlbumArtist: "Miles Davis", Album: "Kind of Blue",
+			AlbumID: "local:alb-miles", TrackNumber: 1, DurationSec: 545, Available: true,
+		},
+	}
+	if seedErr := cat.store.replaceProvider(context.Background(), SourceTypeLocal, "local", albs, trs, nil); seedErr != nil {
+		t.Fatalf("seed: %v", seedErr)
+	}
+
+	// Artist query -> Artist TopResult
+	rArtist, err := cat.UnifiedSearch(context.Background(), "Al Green", 8)
+	if err != nil {
+		t.Fatalf("UnifiedSearch artist: %v", err)
+	}
+	if rArtist.TopResult == nil || rArtist.TopResult.Type != "artist" || rArtist.TopResult.Artist.Name != "Al Green" {
+		t.Fatalf("artist TopResult = %+v, want artist Al Green", rArtist.TopResult)
+	}
+
+	// Album query -> Album TopResult
+	rAlbum, err := cat.UnifiedSearch(context.Background(), "Kind of Blue", 8)
+	if err != nil {
+		t.Fatalf("UnifiedSearch album: %v", err)
+	}
+	if rAlbum.TopResult == nil || rAlbum.TopResult.Type != "album" || rAlbum.TopResult.Album.Title != "Kind of Blue" {
+		t.Fatalf("album TopResult = %+v, want album Kind of Blue", rAlbum.TopResult)
+	}
+
+	// Track query -> Track TopResult
+	rTrack, err := cat.UnifiedSearch(context.Background(), "Tired of Being Alone", 8)
+	if err != nil {
+		t.Fatalf("UnifiedSearch track: %v", err)
+	}
+	if rTrack.TopResult == nil || rTrack.TopResult.Type != "track" || rTrack.TopResult.Track.Title != "Tired of Being Alone" {
+		t.Fatalf("track TopResult = %+v, want track Tired of Being Alone", rTrack.TopResult)
+	}
+}

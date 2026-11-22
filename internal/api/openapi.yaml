@@ -866,9 +866,25 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/QobuzStatus" }
+  /api/v1/library/search:
+    get:
+      summary: Unified FTS5 search across library artists, albums, and tracks with smart TopResult ranking
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 8 }
+      responses:
+        "200":
+          description: Ranked library search matches
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LibrarySearchResult" }
   /api/v1/qobuz/search:
     get:
-      summary: Search Qobuz tracks and albums
+      summary: Search Qobuz artists, albums, and tracks
       parameters:
         - name: q
           in: query
@@ -889,6 +905,28 @@ paths:
         "400": { $ref: "#/components/responses/ErrorResponse" }
         "401": { $ref: "#/components/responses/ErrorResponse" }
         "503": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/qobuz/artist:
+    get:
+      summary: Fetch Qobuz artist profile and remote discography by ID or exact artist name
+      parameters:
+        - name: id
+          in: query
+          schema: { type: integer }
+        - name: name
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Qobuz artist profile and albums
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QobuzArtistDetail" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "401": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/qobuz/albums/{id}:
     get:
       summary: Fetch Qobuz album and ordered tracks
@@ -1230,10 +1268,51 @@ components:
         subscription: { type: string }
         maxFormatId: { type: integer }
         maxQuality: { $ref: "#/components/schemas/QobuzQuality" }
+    LibrarySearchResult:
+      type: object
+      required: [query, artists, albums, tracks]
+      properties:
+        query: { type: string }
+        topResult:
+          type: object
+          properties:
+            type: { type: string, enum: [artist, album, track] }
+            score: { type: integer }
+            artist: { $ref: "#/components/schemas/ArtistSummary" }
+            album: { $ref: "#/components/schemas/Album" }
+            track: { $ref: "#/components/schemas/Track" }
+        artists:
+          type: array
+          items: { $ref: "#/components/schemas/ArtistSummary" }
+        albums:
+          type: array
+          items: { $ref: "#/components/schemas/Album" }
+        tracks:
+          type: array
+          items: { $ref: "#/components/schemas/Track" }
+    QobuzArtist:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        artworkUrl: { type: string }
+        albumsCount: { type: integer }
+    QobuzArtistDetail:
+      type: object
+      required: [artist, albums]
+      properties:
+        artist: { $ref: "#/components/schemas/QobuzArtist" }
+        albums:
+          type: array
+          items: { $ref: "#/components/schemas/Album" }
     QobuzSearchResult:
       type: object
-      required: [tracks, albums]
+      required: [artists, tracks, albums]
       properties:
+        artists:
+          type: array
+          items: { $ref: "#/components/schemas/QobuzArtist" }
         tracks:
           type: array
           items: { $ref: "#/components/schemas/Track" }

@@ -1,9 +1,7 @@
-import { Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { tacetClient } from "@/api/client";
 import type { Album, LibraryStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 
@@ -20,17 +18,10 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
   const [source, setSource] = useState<SourceFilter>("all");
   const [sort, setSort] = useState<AlbumSort>("artist");
   const [groupVersions, setGroupVersions] = useState(true);
-  const [query, setQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [albums, setAlbums] = useState<Album[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [errMsg, setErrMsg] = useState("");
-
-  useEffect(() => {
-    const id = window.setTimeout(() => setDebouncedQuery(query.trim()), 150);
-    return () => window.clearTimeout(id);
-  }, [query]);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -39,7 +30,6 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
     void tacetClient
       .listLibraryAlbums(
         {
-          q: debouncedQuery || undefined,
           source,
           sort,
           groupVersions,
@@ -59,7 +49,7 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
         if (!ctrl.signal.aborted) setLoading(false);
       });
     return () => ctrl.abort();
-  }, [source, sort, groupVersions, debouncedQuery, libraryStatus?.etag]);
+  }, [source, sort, groupVersions, libraryStatus?.etag]);
 
   const hasRemote = (libraryStatus?.remoteAlbums ?? 0) > 0;
 
@@ -67,13 +57,13 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
     <div className="min-h-full pb-12">
       {/* Sticky sleek filter header */}
       <div className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/85 px-4 sm:px-8 py-4 backdrop-blur-xl">
-        <div className="mx-auto max-w-7xl flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-baseline gap-2.5">
-              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Albums</h1>
-              <span className="text-xs font-mono text-muted-foreground">{total}</span>
-            </div>
+        <div className="mx-auto max-w-7xl flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-baseline gap-2.5">
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Albums</h1>
+            <span className="text-xs font-mono text-muted-foreground">{total}</span>
+          </div>
 
+          <div className="flex flex-wrap items-center gap-3">
             {hasRemote && (
               <div className="inline-flex rounded-full border border-white/[0.08] bg-white/[0.03] p-0.5">
                 {(["all", "local", "remote"] as SourceFilter[]).map((f) => (
@@ -91,19 +81,6 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
                 ))}
               </div>
             )}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="relative flex-1 min-w-[180px] max-w-sm">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="search"
-                placeholder="Filter albums…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                className="pl-8.5 h-8.5 text-xs"
-              />
-            </div>
 
             <select
               aria-label="Sort albums"
@@ -118,7 +95,7 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
               <option value="plays">Most Played</option>
             </select>
 
-            <label className="ml-auto inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+            <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
               <Switch checked={groupVersions} onCheckedChange={setGroupVersions} />
               <span>Group versions</span>
             </label>
