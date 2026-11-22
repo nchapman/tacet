@@ -46,24 +46,27 @@ function EndpointQualityPanel({ zone, transcodeAvailable, onChange }: EndpointQu
         </div>
       </div>
 
-      <Slider
-        aria-label={`Audio quality for ${zone.renderer.name}`}
-        min={0}
-        max={AUDIO_QUALITY_STOPS.length - 1}
-        step={1}
-        alwaysShowThumb
-        disabled={!transcodeAvailable}
-        value={[idx]}
-        onValueChange={([v]) => {
-          const next = AUDIO_QUALITY_STOPS[v];
-          if (next && next.value !== current) {
-            onChange(next.value);
-          }
-        }}
-        className="my-1"
-      />
+      {/* Inset slider so Radix thumb centers (radius 7px) align dead-center over the 6 grid columns */}
+      <div className="px-[calc(100%/12-7px)]">
+        <Slider
+          aria-label={`Audio quality for ${zone.renderer.name}`}
+          min={0}
+          max={AUDIO_QUALITY_STOPS.length - 1}
+          step={1}
+          alwaysShowThumb
+          disabled={!transcodeAvailable}
+          value={[idx]}
+          onValueChange={([v]) => {
+            const next = AUDIO_QUALITY_STOPS[v];
+            if (next && next.value !== current) {
+              onChange(next.value);
+            }
+          }}
+          className="my-1"
+        />
+      </div>
 
-      <div className="mt-2 grid grid-cols-6 gap-0.5 text-center">
+      <div className="mt-2 grid grid-cols-6 text-center">
         {AUDIO_QUALITY_STOPS.map((s) => {
           const selected = s.value === current;
           return (
@@ -75,7 +78,7 @@ function EndpointQualityPanel({ zone, transcodeAvailable, onChange }: EndpointQu
                 if (s.value !== current) onChange(s.value);
               }}
               className={cn(
-                "rounded px-0.5 py-0.5 text-[10px] font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed",
+                "mx-0.5 rounded px-0.5 py-0.5 text-[10px] font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed",
                 selected ? "text-emerald-300 bg-emerald-500/15" : "text-muted-foreground hover:text-foreground",
               )}
               title={`${s.label} (${s.detail})`}
