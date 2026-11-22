@@ -72,6 +72,22 @@ export function App() {
   const activeTransport = tacet.transport;
 
   const queryClient = useQueryClient();
+  const [groupVersions, setGroupVersions] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("tacet.groupVersions") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const handleGroupVersionsChange = useCallback((enabled: boolean) => {
+    setGroupVersions(enabled);
+    try {
+      window.localStorage.setItem("tacet.groupVersions", enabled ? "1" : "0");
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
   const prevEtagRef = useRef<string | undefined>(undefined);
   const libraryEtag = tacet.libraryStatus?.etag;
 
@@ -254,6 +270,7 @@ export function App() {
               element={
                 <AlbumsView
                   libraryStatus={tacet.libraryStatus}
+                  groupVersions={groupVersions}
                   onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
                   onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
                 />
@@ -346,9 +363,11 @@ export function App() {
                   libraryStatus={tacet.libraryStatus}
                   qobuzStatus={tacet.qobuzStatus}
                   streamMode={tacet.settings.streamMode}
+                  groupVersions={groupVersions}
                   zones={tacet.zones}
                   discovering={tacet.discovering}
                   onStreamModeChange={(mode) => void tacet.setStreamMode(mode)}
+                  onGroupVersionsChange={handleGroupVersionsChange}
                   onQobuzStatusChange={tacet.setQobuzStatus}
                   onDiscover={() => void tacet.discoverZones()}
                   onOpenConnect={() => setConnectOpen(true)}

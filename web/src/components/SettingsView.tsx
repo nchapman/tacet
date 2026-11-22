@@ -5,6 +5,7 @@ import { tacetClient } from "@/api/client";
 import type { LibraryStatus, QobuzStatus, StreamMode, ZoneSnapshot } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { invalidateQobuzLogout } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -12,9 +13,11 @@ interface SettingsViewProps {
   libraryStatus: LibraryStatus | null;
   qobuzStatus: QobuzStatus | null;
   streamMode: StreamMode;
+  groupVersions: boolean;
   zones: ZoneSnapshot[];
   discovering: boolean;
   onStreamModeChange: (mode: StreamMode) => void;
+  onGroupVersionsChange: (enabled: boolean) => void;
   onQobuzStatusChange: (status: QobuzStatus) => void;
   onDiscover: () => void;
   onOpenConnect: () => void;
@@ -25,9 +28,11 @@ export function SettingsView({
   libraryStatus,
   qobuzStatus,
   streamMode,
+  groupVersions,
   zones,
   discovering,
   onStreamModeChange,
+  onGroupVersionsChange,
   onQobuzStatusChange,
   onDiscover,
   onOpenConnect,
@@ -132,6 +137,20 @@ export function SettingsView({
             >
               Rescan Local Files
             </Button>
+          </div>
+
+          <div className="border-t border-white/[0.06] pt-4 flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-white">Group album versions</div>
+              <p className="text-xs text-muted-foreground">
+                Combine duplicate local and Qobuz editions of the same album into a single entry.
+              </p>
+            </div>
+            <Switch
+              aria-label="Group album versions"
+              checked={groupVersions}
+              onCheckedChange={onGroupVersionsChange}
+            />
           </div>
         </section>
 

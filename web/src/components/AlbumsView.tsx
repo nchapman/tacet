@@ -4,7 +4,6 @@ import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
 import type { Album, LibraryStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
-import { Switch } from "@/components/ui/switch";
 import { queryErrorMessage, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -16,21 +15,21 @@ const VALID_SORTS = new Set<AlbumSort>(["artist", "title", "year", "added", "pla
 
 interface AlbumsViewProps {
   libraryStatus: LibraryStatus | null;
+  groupVersions: boolean;
   onOpenAlbum: (album: Album) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
 }
 
-export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewProps) {
+export function AlbumsView({ libraryStatus, groupVersions, onOpenAlbum, onPlay }: AlbumsViewProps) {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const rawSource = searchParams.get("source") as SourceFilter | null;
   const source: SourceFilter = rawSource && VALID_SOURCES.has(rawSource) ? rawSource : "all";
   const rawSort = searchParams.get("sort") as AlbumSort | null;
   const sort: AlbumSort = rawSort && VALID_SORTS.has(rawSort) ? rawSort : "artist";
-  const groupVersions = searchParams.get("group") !== "0";
 
   const updateParams = useCallback(
-    (patch: { source?: SourceFilter; sort?: AlbumSort; groupVersions?: boolean }) => {
+    (patch: { source?: SourceFilter; sort?: AlbumSort }) => {
       const next = new URLSearchParams(searchParams);
       if (patch.source !== undefined) {
         if (patch.source === "all") next.delete("source");
@@ -39,10 +38,6 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
       if (patch.sort !== undefined) {
         if (patch.sort === "artist") next.delete("sort");
         else next.set("sort", patch.sort);
-      }
-      if (patch.groupVersions !== undefined) {
-        if (patch.groupVersions) next.delete("group");
-        else next.set("group", "0");
       }
       setSearchParams(next, { replace: true });
     },
@@ -112,11 +107,6 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
               <option value="added">Recently Added</option>
               <option value="plays">Most Played</option>
             </select>
-
-            <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
-              <Switch checked={groupVersions} onCheckedChange={(v) => updateParams({ groupVersions: v })} />
-              <span>Group versions</span>
-            </label>
           </div>
         </div>
       </div>
