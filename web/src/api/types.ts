@@ -338,6 +338,8 @@ export interface PlayerMediaPayload {
   durationSec: number;
   sampleRate?: number;
   bitDepth?: number;
+  seekable?: boolean;
+  transcoded?: boolean;
 }
 
 export interface PlayerCommand {

@@ -89,6 +89,8 @@ type MediaPayload struct {
 	DurationSec int    `json:"durationSec"`
 	SampleRate  int    `json:"sampleRate,omitempty"`
 	BitDepth    int    `json:"bitDepth,omitempty"`
+	Seekable    bool   `json:"seekable"`
+	Transcoded  bool   `json:"transcoded,omitempty"`
 }
 
 // Command is pushed to a connected player endpoint over its SSE command stream.
@@ -896,6 +898,8 @@ func mediaPayloadFromItem(item upnp.MediaItem) *MediaPayload {
 		DurationSec: int(item.Duration.Seconds() + 0.5),
 		SampleRate:  item.SampleRate,
 		BitDepth:    item.BitDepth,
+		Seekable:    item.Seekable,
+		Transcoded:  item.Transcoded,
 	}
 }
 

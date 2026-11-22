@@ -35,10 +35,13 @@ const CANDIDATE_CODECS = [
   "audio/x-flac",
   "audio/mpeg",
   "audio/mp4",
+  'audio/mp4; codecs="opus"',
   "audio/aac",
   "audio/wav",
   "audio/ogg",
+  'audio/ogg; codecs="opus"',
   "audio/webm",
+  'audio/webm; codecs="opus"',
 ];
 
 export function detectBrowserCodecs(audio?: Pick<AudioLike, "canPlayType">): string[] {
@@ -87,6 +90,7 @@ export class BrowserAudioEngine {
   private nextMedia: PlayerMediaPayload | null = null;
   private currentURI = "";
   private nextURI = "";
+  private standbyLoaded = false;
   private volume = 100;
   private muted = false;
   private disposed = false;
@@ -108,6 +112,7 @@ export class BrowserAudioEngine {
 
     this.progressTimer = setInterval(() => {
       if (!this.disposed && !this.active.paused && !this.active.ended && this.currentURI) {
+        this.loadStandbyIfReady();
         this.emitState("playing");
       }
     }, 3000);
@@ -195,11 +200,10 @@ export class BrowserAudioEngine {
         try {
           this.nextMedia = cmd.media;
           this.nextURI = cmd.media.url;
+          this.standbyLoaded = false;
           this.standby.pause();
-          this.standby.src = this.resolve(cmd.media.url);
-          this.standby.volume = this.volume / 100;
-          this.standby.muted = this.muted;
-          this.standby.load();
+          this.standby.src = "";
+          this.loadStandbyIfReady();
           this.ack(cmd.id, true);
         } catch (err) {
           this.clearStandby();
@@ -318,6 +322,26 @@ export class BrowserAudioEngine {
     this.standby.src = "";
     this.nextMedia = null;
     this.nextURI = "";
+    this.standbyLoaded = false;
+  }
+
+  /**
+   * Delays opening the next track's HTTP connection until ~20s before track end
+   * so long tracks do not pin an extra transcoder/Qobuz socket for minutes.
+   */
+  private loadStandbyIfReady(): void {
+    if (!this.nextURI || !this.nextMedia || this.standbyLoaded) return;
+    const dur = this.effectiveDuration();
+    const pos = safeTime(this.active.currentTime) ?? 0;
+    if (dur && dur > 25 && dur - pos > 20) {
+      return;
+    }
+    this.standby.pause();
+    this.standby.src = this.resolve(this.nextURI);
+    this.standby.volume = this.volume / 100;
+    this.standby.muted = this.muted;
+    this.standby.load();
+    this.standbyLoaded = true;
   }
 
   private attachActiveListeners(el: AudioLike): void {
@@ -365,9 +389,11 @@ export class BrowserAudioEngine {
     if (this.nextURI && this.nextMedia) {
       // Gapless swap: promote preloaded standby element to active immediately.
       const prev = this.active;
+      const prevURI = this.currentURI;
       const promoted = this.standby;
       const promotedMedia = this.nextMedia;
       const promotedURI = this.nextURI;
+      const wasLoaded = this.standbyLoaded;
 
       prev.pause();
       prev.src = "";
@@ -378,8 +404,13 @@ export class BrowserAudioEngine {
       this.currentURI = promotedURI;
       this.nextMedia = null;
       this.nextURI = "";
+      this.standbyLoaded = false;
       this.active.volume = this.volume / 100;
       this.active.muted = this.muted;
+      if (!wasLoaded) {
+        this.active.src = this.resolve(promotedURI);
+        this.active.load();
+      }
       this.attachActiveListeners(this.active);
       this.updateMediaSessionMetadata(promotedMedia);
 
@@ -390,8 +421,22 @@ export class BrowserAudioEngine {
       } catch (err) {
         if (isNotAllowedError(err)) {
           this.callbacks.onAutoplayBlocked?.(true);
+          this.emitState("stopped");
+          return;
         }
-        this.emitState("stopped");
+        // Retry once with a fresh load in case the preloaded socket went stale.
+        try {
+          this.active.src = this.resolve(promotedURI);
+          this.active.load();
+          await this.active.play();
+          this.setMediaSessionPlaybackState("playing");
+          this.emitState("playing");
+        } catch {
+          // Report stopped on prevURI so server fallback auto-advance recovers cleanly.
+          this.currentURI = prevURI;
+          this.setMediaSessionPlaybackState("none");
+          this.emitState("stopped");
+        }
       }
       return;
     }
@@ -433,11 +478,21 @@ export class BrowserAudioEngine {
   }
 
   private effectiveDuration(): number | undefined {
-    if (Number.isFinite(this.active.duration) && this.active.duration > 0) {
-      return this.active.duration;
+    const known = this.currentMedia?.durationSec && this.currentMedia.durationSec > 0 ? this.currentMedia.durationSec : 0;
+    const raw = this.active.duration;
+    // Live transcoded streams (0xFFFFFFFF WAV = 6h45m, initial fMP4 = 1s) often
+    // report bogus finite durations on <audio>; trust server metadata instead.
+    if (known > 0 && (this.currentMedia?.transcoded || this.currentMedia?.seekable === false)) {
+      return known;
     }
-    if (this.currentMedia?.durationSec && this.currentMedia.durationSec > 0) {
-      return this.currentMedia.durationSec;
+    if (Number.isFinite(raw) && raw > 0) {
+      if (known > 0 && (raw > known * 1.5 || raw < known * 0.5)) {
+        return known;
+      }
+      return raw;
+    }
+    if (known > 0) {
+      return known;
     }
     return undefined;
   }

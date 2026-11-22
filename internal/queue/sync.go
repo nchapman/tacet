@@ -134,13 +134,19 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 		outExt := track.Ext
 		outQuery := ""
 		outSize := track.Size
+		outRate := track.SampleRate
+		outDepth := track.BitDepth
+		outCh := track.Channels
 		seekable := true
+		transcoded := false
 		if effQuality.NeedsTranscode() {
 			outMIME = transcodeMIME
 			outExt = transcodeExt
 			outQuery = transcodeQuery
 			outSize = 0
+			outRate, outDepth, outCh = transcodedAudioParams(effQuality, track.SampleRate, track.BitDepth, track.Channels)
 			seekable = false
+			transcoded = true
 		}
 		if err := checkEndpointMIME(info, outMIME); err != nil {
 			return upnp.MediaItem{}, track, effQuality, err
@@ -164,10 +170,11 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 			MIME:        outMIME,
 			Duration:    time.Duration(track.DurationSec) * time.Second,
 			Size:        outSize,
-			SampleRate:  track.SampleRate,
-			BitDepth:    track.BitDepth,
-			Channels:    track.Channels,
+			SampleRate:  outRate,
+			BitDepth:    outDepth,
+			Channels:    outCh,
 			Seekable:    seekable,
+			Transcoded:  transcoded,
 		}, track, effQuality, nil
 
 	case library.SourceQobuz:
@@ -199,10 +206,16 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 		}
 
 		outMIME := track.MIME
+		outRate := track.SampleRate
+		outDepth := track.BitDepth
+		outCh := 2
 		seekable := true
+		transcoded := false
 		if effQuality.NeedsTranscode() {
 			outMIME = transcodeMIME
+			outRate, outDepth, outCh = transcodedAudioParams(effQuality, track.SampleRate, track.BitDepth, 2)
 			seekable = false
+			transcoded = true
 		}
 
 		// Validate codec AFTER resolving the real Qobuz stream MIME (or transcoded output MIME).
@@ -246,15 +259,41 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 			TrackNumber: track.TrackNumber,
 			MIME:        outMIME,
 			Duration:    time.Duration(track.DurationSec) * time.Second,
-			SampleRate:  track.SampleRate,
-			BitDepth:    track.BitDepth,
-			Channels:    2,
+			SampleRate:  outRate,
+			BitDepth:    outDepth,
+			Channels:    outCh,
 			Seekable:    seekable,
+			Transcoded:  transcoded,
 		}, track, effQuality, nil
 
 	default:
 		return upnp.MediaItem{}, track, effQuality, fmt.Errorf("%w: unsupported track source %q", ErrInvalidArgument, track.Source)
 	}
+}
+
+func transcodedAudioParams(q AudioQuality, srcRate, srcDepth, srcCh int) (rate, depth, ch int) {
+	ch = srcCh
+	if ch <= 0 {
+		ch = 2
+	}
+	if q.IsOpus() {
+		if ch > 2 {
+			ch = 2
+		}
+		// Opus always encodes at 48 kHz and is lossy (bitsPerSample omitted in DIDL).
+		return 48000, 0, ch
+	}
+	if q == AudioQualityWAV {
+		if srcDepth == 1 {
+			return 88200, 24, ch
+		}
+		depth = 24
+		if srcDepth > 1 && srcDepth <= 16 {
+			depth = 16
+		}
+		return srcRate, depth, ch
+	}
+	return srcRate, srcDepth, ch
 }
 
 func transcodeOutputFor(info upnp.RendererInfo, q AudioQuality) (ext, mime, query string) {
@@ -264,14 +303,41 @@ func transcodeOutputFor(info upnp.RendererInfo, q AudioQuality) (ext, mime, quer
 	if !q.IsOpus() {
 		return "", "", ""
 	}
-	// Prefer Ogg/Opus universally; fall back to fragmented MP4/Opus only when a
-	// remote player explicitly advertises audio/mp4 without audio/ogg (e.g. older Safari).
-	if info.Kind == "player" && len(info.SinkProtocols) > 0 &&
-		!sinkSupportsMIME(info.SinkProtocols, "audio/ogg") &&
-		sinkSupportsMIME(info.SinkProtocols, "audio/mp4") {
-		return ".m4a", "audio/mp4", "?q=" + string(q) + "&container=mp4"
+	if info.Kind == "player" && len(info.SinkProtocols) > 0 {
+		// Prefer explicit Opus codec capability matches in priority order:
+		// Ogg/Opus -> WebM/Opus (Safari 17.4+) -> fragmented MP4/Opus (older Safari).
+		if sinkHasExactCodec(info.SinkProtocols, "audio/ogg", "opus") {
+			return ".ogg", "audio/ogg", "?q=" + string(q)
+		}
+		if sinkHasExactCodec(info.SinkProtocols, "audio/webm", "opus") {
+			return ".webm", "audio/webm", "?q=" + string(q) + "&container=webm"
+		}
+		if sinkHasExactCodec(info.SinkProtocols, "audio/mp4", "opus") {
+			return ".m4a", "audio/mp4", "?q=" + string(q) + "&container=mp4"
+		}
+		// Fallback for non-browser player clients that only advertise bare container MIMEs.
+		if !sinkSupportsMIME(info.SinkProtocols, "audio/ogg") {
+			if sinkSupportsMIME(info.SinkProtocols, "audio/webm") {
+				return ".webm", "audio/webm", "?q=" + string(q) + "&container=webm"
+			}
+			if sinkSupportsMIME(info.SinkProtocols, "audio/mp4") {
+				return ".m4a", "audio/mp4", "?q=" + string(q) + "&container=mp4"
+			}
+		}
 	}
 	return ".ogg", "audio/ogg", "?q=" + string(q)
+}
+
+func sinkHasExactCodec(protocols []string, containerMIME, codec string) bool {
+	containerMIME = strings.ToLower(strings.TrimSpace(containerMIME))
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	for _, proto := range protocols {
+		p := strings.ToLower(strings.TrimSpace(proto))
+		if strings.HasPrefix(p, containerMIME+";") && strings.Contains(p, codec) {
+			return true
+		}
+	}
+	return false
 }
 
 func sinkSupportsMIME(protocols []string, mime string) bool {

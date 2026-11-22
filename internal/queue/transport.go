@@ -599,6 +599,13 @@ func (m *Manager) seekLockedOp(ctx context.Context, zoneID string, z *zone, posi
 	if !z.ctrl.Info().SupportsSeek {
 		return ZoneSnapshot{}, fmt.Errorf("%w: renderer does not support Seek", ErrCapabilityUnsupported)
 	}
+	m.mu.RLock()
+	activeTranscode := z.activeQuality.NeedsTranscode()
+	isPlayer := z.ctrl.Info().Kind == "player"
+	m.mu.RUnlock()
+	if activeTranscode && !isPlayer {
+		return ZoneSnapshot{}, fmt.Errorf("%w: seeking is unavailable on live-transcoded UPnP streams", ErrCapabilityUnsupported)
+	}
 	d := time.Duration(positionSec) * time.Second
 	if err := z.ctrl.Seek(ctx, d); err != nil {
 		return ZoneSnapshot{}, wrapRendererErr("Seek", err)

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"tacet/internal/library"
@@ -20,6 +21,13 @@ import (
 )
 
 const relayReadIdleTimeout = 30 * time.Second
+
+var relayBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 128*1024)
+		return &b
+	},
+}
 
 // Handler serves local NAS audio files, cover art, and Qobuz Quiet Relay
 // streams over plain HTTP with DLNA streaming headers and Range support.
@@ -45,8 +53,15 @@ func NewHandler(cat *library.Catalog, qb *qobuz.Client) *Handler {
 					Timeout:   10 * time.Second,
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
+				ForceAttemptHTTP2:     true,
+				DisableCompression:    true,
+				TLSHandshakeTimeout:   10 * time.Second,
 				ResponseHeaderTimeout: 15 * time.Second,
-				IdleConnTimeout:       60 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+				MaxIdleConns:          32,
+				MaxIdleConnsPerHost:   8,
+				ReadBufferSize:        128 * 1024,
+				WriteBufferSize:       64 * 1024,
 			},
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 5 {
@@ -102,13 +117,19 @@ func (h *Handler) serveLocal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if spec, transcode := parseTranscodeSpec(r.URL.Query().Get("q"), r.URL.Query().Get("container"), track); transcode {
+	if qParam := r.URL.Query().Get("q"); qParam != "" {
 		if _, err := os.Stat(track.FilePath); err != nil {
 			http.Error(w, "audio file unavailable", http.StatusNotFound)
 			return
 		}
-		h.streamTranscode(w, r, spec, track.FilePath, nil)
-		return
+		var totalSamples uint64
+		if strings.EqualFold(strings.TrimSpace(qParam), "wav") {
+			totalSamples = library.ProbeAudio(track.FilePath).TotalSamples
+		}
+		if spec, transcode := parseTranscodeSpec(qParam, r.URL.Query().Get("container"), track, totalSamples, h.transcoderInfo().HasLibSoxr); transcode {
+			h.streamTranscode(w, r, spec, track.FilePath, "", nil, nil)
+			return
+		}
 	}
 
 	f, err := os.Open(track.FilePath)
@@ -227,11 +248,12 @@ func (h *Handler) serveQobuzRelay(w http.ResponseWriter, r *http.Request) {
 	qTrack := library.Track{
 		SampleRate: stream.SampleRate,
 		BitDepth:   stream.BitDepth,
+		Channels:   2,
 		MIME:       stream.MIME,
 	}
-	spec, transcode := parseTranscodeSpec(r.URL.Query().Get("q"), r.URL.Query().Get("container"), qTrack)
+	spec, transcode := parseTranscodeSpec(r.URL.Query().Get("q"), r.URL.Query().Get("container"), qTrack, 0, h.transcoderInfo().HasLibSoxr)
 	if transcode && r.Method == http.MethodHead {
-		h.streamTranscode(w, r, spec, "", nil)
+		h.streamTranscode(w, r, spec, "", "", nil, nil)
 		return
 	}
 
@@ -258,8 +280,17 @@ func (h *Handler) serveQobuzRelay(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("upstream qobuz returned HTTP %d", upResp.StatusCode), http.StatusBadGateway)
 			return
 		}
-		body := &idleTimeoutReader{rc: upResp.Body, timeout: relayReadIdleTimeout}
-		h.streamTranscode(w, r, spec, "", body)
+		inFmt := ""
+		lowerMIME := strings.ToLower(stream.MIME)
+		switch {
+		case strings.Contains(lowerMIME, "flac"):
+			inFmt = "flac"
+		case strings.Contains(lowerMIME, "mpeg"), strings.Contains(lowerMIME, "mp3"):
+			inFmt = "mp3"
+		}
+		body := newIdleTimeoutReader(upResp.Body, relayReadIdleTimeout)
+		defer body.Close()
+		h.streamTranscode(w, r, spec, "", inFmt, body, func() { _ = upResp.Body.Close() })
 		return
 	}
 
@@ -302,23 +333,37 @@ func (h *Handler) serveQobuzRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body := &idleTimeoutReader{rc: upResp.Body, timeout: relayReadIdleTimeout}
-	if _, err := io.Copy(w, body); err != nil && !errors.Is(err, context.Canceled) && r.Context().Err() == nil {
-		log.Printf("qobuz relay stream %d interrupted: %v", trackID, err)
+	body := newIdleTimeoutReader(upResp.Body, relayReadIdleTimeout)
+	defer body.Close()
+	bufPtr := relayBufPool.Get().(*[]byte)
+	_, copyErr := io.CopyBuffer(w, body, *bufPtr)
+	relayBufPool.Put(bufPtr)
+	if copyErr != nil && !errors.Is(copyErr, context.Canceled) && r.Context().Err() == nil {
+		log.Printf("qobuz relay stream %d interrupted: %v", trackID, copyErr)
 	}
 }
 
 // idleTimeoutReader closes the underlying ReadCloser if a single Read stalls
-// longer than timeout, preventing leaked relay goroutines on dead upstreams.
+// longer than timeout, reusing a single timer to avoid per-Read allocations.
 type idleTimeoutReader struct {
 	rc      io.ReadCloser
 	timeout time.Duration
+	timer   *time.Timer
+}
+
+func newIdleTimeoutReader(rc io.ReadCloser, timeout time.Duration) *idleTimeoutReader {
+	t := time.AfterFunc(timeout, func() { _ = rc.Close() })
+	t.Stop()
+	return &idleTimeoutReader{rc: rc, timeout: timeout, timer: t}
 }
 
 func (r *idleTimeoutReader) Read(p []byte) (int, error) {
-	timer := time.AfterFunc(r.timeout, func() {
-		_ = r.rc.Close()
-	})
-	defer timer.Stop()
-	return r.rc.Read(p)
+	r.timer.Reset(r.timeout)
+	n, err := r.rc.Read(p)
+	r.timer.Stop()
+	return n, err
+}
+
+func (r *idleTimeoutReader) Close() {
+	r.timer.Stop()
 }

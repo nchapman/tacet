@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"log"
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,10 +20,11 @@ import (
 	"tacet/internal/upnp"
 )
 
-// TranscoderInfo reports detected ffmpeg and libopus encoder capabilities.
+// TranscoderInfo reports detected ffmpeg, libopus, and libsoxr capabilities.
 type TranscoderInfo struct {
 	FFmpegPath string
 	HasLibOpus bool
+	HasLibSoxr bool
 }
 
 // Available reports whether ffmpeg with the Xiph libopus encoder is available.
@@ -31,9 +35,18 @@ func (t TranscoderInfo) Available() bool {
 var (
 	detectOnce sync.Once
 	detected   TranscoderInfo
+
+	transcodeBufPool = sync.Pool{
+		New: func() any {
+			b := make([]byte, 64*1024)
+			return &b
+		},
+	}
+
+	transcodeSem = make(chan struct{}, max(4, runtime.NumCPU()))
 )
 
-// DetectTranscoder probes $PATH for ffmpeg and verifies libopus encoder support.
+// DetectTranscoder probes $PATH for ffmpeg and verifies libopus and libsoxr support.
 func DetectTranscoder() TranscoderInfo {
 	detectOnce.Do(func() {
 		detected = probeTranscoder()
@@ -64,23 +77,38 @@ func probeTranscoder() TranscoderInfo {
 			break
 		}
 	}
+
+	hasLibSoxr := false
+	//nolint:gosec // ffmpeg binary resolved strictly from PATH via exec.LookPath
+	if cfgOut, cfgErr := exec.CommandContext(ctx, path, "-hide_banner", "-buildconf").Output(); cfgErr == nil {
+		hasLibSoxr = bytes.Contains(cfgOut, []byte("--enable-libsoxr"))
+	}
+
 	return TranscoderInfo{
 		FFmpegPath: path,
 		HasLibOpus: hasLibOpus,
+		HasLibSoxr: hasLibSoxr,
 	}
 }
 
 type transcodeSpec struct {
-	quality   string
-	mime      string
-	codecArgs []string
-	fmtArgs   []string
+	quality     string
+	mime        string
+	filterArgs  []string
+	codecArgs   []string
+	fmtArgs     []string
+	wavHeader   []byte // canonical 44-byte WAVE_FORMAT_PCM header when piping raw PCM
+	exactLength int64  // >0 when exact HTTP Content-Length is known (canonical local lossless WAV)
 }
 
-func parseTranscodeSpec(quality, container string, track library.Track) (transcodeSpec, bool) {
+func parseTranscodeSpec(quality, container string, track library.Track, totalSamples uint64, hasSoxr bool) (transcodeSpec, bool) {
 	q := strings.ToLower(strings.TrimSpace(quality))
 	if q == "" || q == "original" {
 		return transcodeSpec{}, false
+	}
+
+	if q == "wav" {
+		return buildWAVSpec(track, totalSamples, hasSoxr), true
 	}
 
 	var opusBitrate string
@@ -93,25 +121,17 @@ func parseTranscodeSpec(quality, container string, track library.Track) (transco
 		opusBitrate = "160k"
 	case "opus_256":
 		opusBitrate = "256k"
-	case "wav":
-		codec := "pcm_s16le"
-		var extra []string
-		if track.BitDepth == 1 {
-			// Decimate DSD cleanly to 24-bit / 88.2 kHz PCM.
-			codec = "pcm_s24le"
-			extra = []string{"-ar", "88200"}
-		} else if track.BitDepth > 16 {
-			codec = "pcm_s24le"
-		}
-		codecArgs := append([]string{"-c:a", codec}, extra...)
-		return transcodeSpec{
-			quality:   "wav",
-			mime:      "audio/wav",
-			codecArgs: codecArgs,
-			fmtArgs:   []string{"-f", "wav"},
-		}, true
 	default:
 		return transcodeSpec{}, false
+	}
+
+	// Resample in 32-bit float (osf=flt) so hot masters never clip on 44.1->48kHz
+	// interpolation before libopus, and fold multichannel cleanly to mono|stereo.
+	var af string
+	if hasSoxr {
+		af = "aresample=48000:resampler=soxr:precision=28:osf=flt:rematrix_maxval=1.0,aformat=channel_layouts=mono|stereo"
+	} else {
+		af = "aresample=48000:resampler=swr:filter_size=128:phase_shift=10:kaiser_beta=12:cutoff=0.96:tsf=fltp:osf=flt:rematrix_maxval=1.0,aformat=channel_layouts=mono|stereo"
 	}
 
 	// Explicitly select Xiph libopus with highest-complexity VBR music encoding.
@@ -121,21 +141,137 @@ func parseTranscodeSpec(quality, container string, track library.Track) (transco
 		"-vbr", "on",
 		"-compression_level", "10",
 		"-application", "audio",
+		"-frame_duration", "20",
 	}
-	if strings.EqualFold(strings.TrimSpace(container), "mp4") {
+	if track.Channels > 2 {
+		codecArgs = append(codecArgs, "-ac", "2")
+	}
+
+	switch strings.ToLower(strings.TrimSpace(container)) {
+	case "webm":
 		return transcodeSpec{
-			quality:   q,
-			mime:      "audio/mp4",
-			codecArgs: codecArgs,
-			fmtArgs:   []string{"-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof"},
+			quality:    q,
+			mime:       "audio/webm",
+			filterArgs: []string{"-af", af},
+			codecArgs:  codecArgs,
+			fmtArgs:    []string{"-f", "webm", "-cluster_time_limit", "1000"},
+		}, true
+	case "mp4":
+		return transcodeSpec{
+			quality:    q,
+			mime:       "audio/mp4",
+			filterArgs: []string{"-af", af},
+			codecArgs:  codecArgs,
+			fmtArgs: []string{
+				"-f", "mp4",
+				"-movflags", "empty_moov+default_base_moof+omit_tfhd_offset+skip_trailer",
+				"-frag_duration", "1000000",
+			},
+		}, true
+	default:
+		return transcodeSpec{
+			quality:    q,
+			mime:       "audio/ogg",
+			filterArgs: []string{"-af", af},
+			codecArgs:  codecArgs,
+			fmtArgs:    []string{"-f", "ogg", "-page_duration", "500000"},
 		}, true
 	}
+}
+
+func buildWAVSpec(track library.Track, totalSamples uint64, hasSoxr bool) transcodeSpec {
+	// Only use 16-bit PCM when source is confirmed <=16-bit (and not 1-bit DSD).
+	// Unknown bit depth (e.g. 24-bit ALAC .m4a or lossy) defaults to 24-bit PCM.
+	bitsPerSample := 24
+	pcmCodec := "pcm_s24le"
+	rawFmt := "s24le"
+	if track.BitDepth > 1 && track.BitDepth <= 16 {
+		bitsPerSample = 16
+		pcmCodec = "pcm_s16le"
+		rawFmt = "s16le"
+	}
+
+	sampleRate := track.SampleRate
+	var filterArgs []string
+	if track.BitDepth == 1 {
+		// Decimate DSD cleanly to 24-bit / 88.2 kHz PCM with ultrasonic noise filtering.
+		sampleRate = 88200
+		if hasSoxr {
+			filterArgs = []string{"-af", "aresample=88200:resampler=soxr:precision=28:dither_method=triangular,lowpass=f=28000:poles=2"}
+		} else {
+			filterArgs = []string{"-af", "aresample=88200:resampler=swr:filter_size=128:phase_shift=10:kaiser_beta=12:cutoff=0.68:tsf=fltp:dither_method=triangular"}
+		}
+	} else if track.BitDepth > 24 {
+		// Triangular dither when reducing 32-bit/float sources to 24-bit PCM.
+		filterArgs = []string{"-af", "aresample=dither_method=triangular"}
+	}
+
+	channels := track.Channels
+	if channels <= 0 {
+		channels = 2
+	}
+
+	// For 1-2 channel streams with a known sample rate, emit a canonical 44-byte
+	// WAVE_FORMAT_PCM (0x0001) header directly and pipe raw PCM from ffmpeg.
+	// This avoids WAVE_FORMAT_EXTENSIBLE (0xFFFE) and LIST/INFO compatibility issues
+	// on strict UPnP renderers (Sonos, HEOS, Linn) and enables exact Content-Length
+	// for local lossless files.
+	if channels <= 2 && sampleRate > 0 {
+		var dataSize uint32 = 0xFFFFFFFF
+		var exactLen int64
+		if totalSamples > 0 && track.BitDepth != 1 {
+			bytesPerFrame := uint64(channels) * uint64(bitsPerSample/8)
+			totalBytes := totalSamples * bytesPerFrame
+			// Standard RIFF/WAVE caps data chunk at < 4 GiB (~3.2h of 24/192 stereo).
+			if totalBytes > 0 && totalBytes <= 0xFFFFFF00 {
+				dataSize = uint32(totalBytes)
+				exactLen = int64(44 + totalBytes)
+			}
+		}
+		return transcodeSpec{
+			quality:     "wav",
+			mime:        "audio/wav",
+			filterArgs:  filterArgs,
+			codecArgs:   []string{"-c:a", pcmCodec},
+			fmtArgs:     []string{"-f", rawFmt},
+			wavHeader:   buildCanonicalWAVHeader(sampleRate, channels, bitsPerSample, dataSize),
+			exactLength: exactLen,
+		}
+	}
+
+	// Fallback for multichannel (>2ch) or unknown sample rate: standard ffmpeg WAV muxer.
 	return transcodeSpec{
-		quality:   q,
-		mime:      "audio/ogg",
-		codecArgs: codecArgs,
-		fmtArgs:   []string{"-f", "ogg"},
-	}, true
+		quality:    "wav",
+		mime:       "audio/wav",
+		filterArgs: filterArgs,
+		codecArgs:  []string{"-c:a", pcmCodec},
+		fmtArgs:    []string{"-f", "wav", "-fflags", "+bitexact"},
+	}
+}
+
+func buildCanonicalWAVHeader(sampleRate, channels, bitsPerSample int, dataSize uint32) []byte {
+	hdr := make([]byte, 44)
+	blockAlign := uint16(channels * (bitsPerSample / 8)) //nolint:gosec // channels <= 2, bitsPerSample in {16, 24}
+	byteRate := uint32(sampleRate) * uint32(blockAlign)  //nolint:gosec // validated positive audio sample rate
+	riffSize := uint32(0xFFFFFFFF)
+	if dataSize != 0xFFFFFFFF {
+		riffSize = 36 + dataSize
+	}
+
+	copy(hdr[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(hdr[4:8], riffSize)
+	copy(hdr[8:12], "WAVE")
+	copy(hdr[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(hdr[16:20], 16)                    // PCM fmt chunk size
+	binary.LittleEndian.PutUint16(hdr[20:22], 1)                     // WAVE_FORMAT_PCM (0x0001)
+	binary.LittleEndian.PutUint16(hdr[22:24], uint16(channels))      //nolint:gosec // channels is 1 or 2
+	binary.LittleEndian.PutUint32(hdr[24:28], uint32(sampleRate))    //nolint:gosec // validated > 0
+	binary.LittleEndian.PutUint32(hdr[28:32], byteRate)              // bytes/sec
+	binary.LittleEndian.PutUint16(hdr[32:34], blockAlign)            // bytes/frame
+	binary.LittleEndian.PutUint16(hdr[34:36], uint16(bitsPerSample)) //nolint:gosec // 16 or 24
+	copy(hdr[36:40], "data")
+	binary.LittleEndian.PutUint32(hdr[40:44], dataSize)
+	return hdr
 }
 
 type limitedBuffer struct {
@@ -160,7 +296,9 @@ func (h *Handler) streamTranscode(
 	r *http.Request,
 	spec transcodeSpec,
 	inputPath string,
+	inputFormat string,
 	stdin io.Reader,
+	closeStdin func(),
 ) {
 	info := h.transcoderInfo()
 	if !info.Available() {
@@ -170,30 +308,50 @@ func (h *Handler) streamTranscode(
 
 	w.Header().Set("Content-Type", spec.mime)
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Accept-Ranges", "none")
 	w.Header().Set("transferMode.dlna.org", "Streaming")
 	w.Header().Set("contentFeatures.dlna.org", upnp.DLNAFeaturesTranscoded)
+	if spec.exactLength > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(spec.exactLength, 10))
+	}
 
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
+	select {
+	case transcodeSem <- struct{}{}:
+		defer func() { <-transcodeSem }()
+	case <-r.Context().Done():
+		return
+	}
+
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "error",
+		"-threads", "2",
 	}
 	if inputPath != "" {
-		args = append(args, "-i", filepath.Clean(inputPath))
+		args = append(args, "-nostdin", "-i", filepath.Clean(inputPath))
 	} else {
+		if inputFormat != "" {
+			args = append(args, "-f", inputFormat)
+		}
 		args = append(args, "-i", "pipe:0")
 	}
-	args = append(args, "-vn", "-map", "0:a:0")
+	args = append(args, "-vn", "-map", "0:a:0", "-map_metadata", "-1")
+	args = append(args, spec.filterArgs...)
 	args = append(args, spec.codecArgs...)
 	args = append(args, spec.fmtArgs...)
-	args = append(args, "pipe:1")
+	args = append(args, "-flush_packets", "1", "pipe:1")
+
+	cmdCtx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	//nolint:gosec // ffmpeg binary resolved via LookPath; args are validated enum flags + library path or pipe:0
-	cmd := exec.CommandContext(r.Context(), info.FFmpegPath, args...)
+	cmd := exec.CommandContext(cmdCtx, info.FFmpegPath, args...)
+	cmd.WaitDelay = 2 * time.Second
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
@@ -215,6 +373,11 @@ func (h *Handler) streamTranscode(
 	first := make([]byte, 4096)
 	n, firstErr := stdout.Read(first)
 	if n == 0 {
+		cancel()
+		if closeStdin != nil {
+			closeStdin()
+		}
+		_ = stdout.Close()
 		waitErr := cmd.Wait()
 		if r.Context().Err() != nil {
 			return
@@ -225,6 +388,8 @@ func (h *Handler) streamTranscode(
 			log.Printf("media transcode (%s) failed before output: wait=%v read=%v", spec.quality, waitErr, firstErr)
 		}
 		w.Header().Del("Content-Type")
+		w.Header().Del("Content-Length")
+		w.Header().Del("Accept-Ranges")
 		w.Header().Del("transferMode.dlna.org")
 		w.Header().Del("contentFeatures.dlna.org")
 		http.Error(w, "audio transcoding failed", http.StatusBadGateway)
@@ -232,10 +397,34 @@ func (h *Handler) streamTranscode(
 	}
 
 	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(first[:n]); err == nil && firstErr == nil {
-		_, _ = io.Copy(w, stdout)
+	var writeErr error
+	if len(spec.wavHeader) > 0 {
+		_, writeErr = w.Write(spec.wavHeader)
 	}
-	if err := cmd.Wait(); err != nil && r.Context().Err() == nil {
+	if writeErr == nil {
+		_, writeErr = w.Write(first[:n])
+	}
+	if writeErr == nil {
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if firstErr == nil {
+			bufPtr := transcodeBufPool.Get().(*[]byte)
+			_, writeErr = io.CopyBuffer(w, stdout, *bufPtr)
+			transcodeBufPool.Put(bufPtr)
+		}
+	}
+
+	// Always unblock ffmpeg & stdin before Wait() so write errors or early exits
+	// never hang waiting on an idle upstream pipe.
+	if writeErr != nil {
+		cancel()
+		if closeStdin != nil {
+			closeStdin()
+		}
+	}
+	_ = stdout.Close()
+	if err := cmd.Wait(); err != nil && r.Context().Err() == nil && writeErr == nil {
 		if msg := strings.TrimSpace(errBuf.buf.String()); msg != "" {
 			log.Printf("media transcode (%s) error: %v: %s", spec.quality, err, msg)
 		} else {

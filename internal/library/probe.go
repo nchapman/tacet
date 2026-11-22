@@ -12,10 +12,11 @@ import (
 
 // AudioProps holds stream-level technical properties probed from audio headers.
 type AudioProps struct {
-	SampleRate int
-	BitDepth   int
-	Channels   int
-	Duration   time.Duration
+	SampleRate   int
+	BitDepth     int
+	Channels     int
+	TotalSamples uint64
+	Duration     time.Duration
 }
 
 // ProbeAudio reads stream-level audio properties (sample rate, bit depth,
@@ -74,10 +75,11 @@ func probeFLAC(r io.ReadSeeker) AudioProps {
 		dur = time.Duration(float64(totalSamples)/float64(sampleRate)*float64(time.Second) + 0.5)
 	}
 	return AudioProps{
-		SampleRate: sampleRate,
-		BitDepth:   bitDepth,
-		Channels:   channels,
-		Duration:   dur,
+		SampleRate:   sampleRate,
+		BitDepth:     bitDepth,
+		Channels:     channels,
+		TotalSamples: totalSamples,
+		Duration:     dur,
 	}
 }
 
@@ -138,8 +140,14 @@ func probeWAV(r io.ReadSeeker) AudioProps {
 	}
 
 done:
-	if byteRate > 0 && dataSize > 0 {
+	if byteRate > 0 && dataSize > 0 && dataSize != 0xFFFFFFFF {
 		props.Duration = time.Duration(float64(dataSize)/float64(byteRate)*float64(time.Second) + 0.5)
+		if props.Channels > 0 && props.BitDepth > 0 {
+			bytesPerFrame := uint64(props.Channels) * uint64((props.BitDepth+7)/8)
+			if bytesPerFrame > 0 {
+				props.TotalSamples = uint64(dataSize) / bytesPerFrame
+			}
+		}
 	}
 	return props
 }
@@ -181,10 +189,11 @@ func probeAIFF(r io.ReadSeeker) AudioProps {
 				dur = time.Duration(float64(numFrames)/float64(sampleRate)*float64(time.Second) + 0.5)
 			}
 			return AudioProps{
-				SampleRate: sampleRate,
-				BitDepth:   bitDepth,
-				Channels:   channels,
-				Duration:   dur,
+				SampleRate:   sampleRate,
+				BitDepth:     bitDepth,
+				Channels:     channels,
+				TotalSamples: uint64(numFrames),
+				Duration:     dur,
 			}
 		}
 		if _, err := r.Seek(nextOffset, io.SeekCurrent); err != nil {

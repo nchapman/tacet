@@ -118,7 +118,7 @@ func run() error {
 	transcoder := media.DetectTranscoder()
 	mgr.SetTranscodeAvailable(transcoder.Available())
 	if transcoder.Available() {
-		log.Printf("audio transcoder ready: %s (libopus + wav)", transcoder.FFmpegPath)
+		log.Printf("audio transcoder ready: %s (libopus + wav, soxr=%v)", transcoder.FFmpegPath, transcoder.HasLibSoxr)
 	} else {
 		log.Printf("audio transcoder unavailable (install ffmpeg with libopus for Opus/WAV output)")
 	}
@@ -156,8 +156,9 @@ func run() error {
 		Addr:              fmt.Sprintf(":%d", *port),
 		Handler:           apiServer.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       90 * time.Second,
 	}
-	var lc net.ListenConfig
+	lc := net.ListenConfig{KeepAlive: 30 * time.Second}
 	ln, err := lc.Listen(ctx, "tcp", httpSrv.Addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", httpSrv.Addr, err)

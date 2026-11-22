@@ -125,16 +125,38 @@ describe("BrowserAudioEngine", () => {
         durationSec: 200,
       },
     });
-    expect(audios[1].src).toBe("/media/local/local:t2.flac");
+    // Standby defers opening Track 2 until <=20s remaining (Track 1 is at 42s of 180s).
+    expect(audios[1].src).toBe("");
 
     // When Track 1 ends, standby (Track 2) promotes immediately and reports PLAYING with new URI.
     audios[0].emit("ended");
     await new Promise((r) => setTimeout(r, 0));
+    expect(audios[1].src).toBe("/media/local/local:t2.flac");
     expect(audios[1].paused).toBe(false);
     expect(reports.at(-1)).toMatchObject({
       state: "playing",
       trackUri: "/media/local/local:t2.flac",
     });
+
+    // Transcoded streams trust server durationSec over bogus 0xFFFFFFFF WAV durations.
+    await engine.handleCommand({
+      id: "cmd_7",
+      type: "set_uri",
+      media: {
+        id: "local:t3",
+        url: "/media/local/local:t3.wav?q=wav",
+        title: "Track 3",
+        artist: "Artist",
+        album: "Album",
+        mime: "audio/wav",
+        durationSec: 215,
+        seekable: false,
+        transcoded: true,
+      },
+    });
+    audios[1].duration = 24347.9;
+    audios[1].emit("playing");
+    expect(reports.at(-1)?.durationSec).toBe(215);
 
     engine.dispose();
   });

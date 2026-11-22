@@ -134,8 +134,8 @@ func (s *Server) Handler() http.Handler {
 		if s.corsOrigin != "" && (isAPI || strings.HasPrefix(r.URL.Path, "/media/")) {
 			w.Header().Set("Access-Control-Allow-Origin", s.corsOrigin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, If-None-Match, Last-Event-ID")
-			w.Header().Set("Access-Control-Expose-Headers", "ETag, Allow")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, If-None-Match, Last-Event-ID, Range")
+			w.Header().Set("Access-Control-Expose-Headers", "ETag, Allow, Content-Length, Content-Range, Accept-Ranges")
 			if s.corsOrigin != "*" {
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 				w.Header().Add("Vary", "Origin")

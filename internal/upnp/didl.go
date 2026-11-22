@@ -35,6 +35,7 @@ type MediaItem struct {
 	BitDepth    int
 	Channels    int
 	Seekable    bool
+	Transcoded  bool
 }
 
 // NegotiateMIME picks the MIME type spelling a renderer actually advertises in
@@ -64,7 +65,7 @@ func NegotiateMIME(preferred string, sinkProtocols []string) string {
 	aliases := map[string][]string{
 		"audio/flac":   {"audio/x-flac"},
 		"audio/x-flac": {"audio/flac"},
-		"audio/wav":    {"audio/x-wav", "audio/wave", "audio/L16"},
+		"audio/wav":    {"audio/x-wav", "audio/wave"},
 		"audio/x-wav":  {"audio/wav", "audio/wave"},
 		"audio/aiff":   {"audio/x-aiff"},
 		"audio/x-aiff": {"audio/aiff"},
@@ -72,6 +73,9 @@ func NegotiateMIME(preferred string, sinkProtocols []string) string {
 		"audio/x-dsf":  {"audio/dsf", "audio/x-dsd", "audio/dsd"},
 		"audio/dsf":    {"audio/x-dsf", "audio/x-dsd", "audio/dsd"},
 		"audio/mpeg":   {"audio/mp3"},
+		"audio/ogg":    {"application/ogg", "audio/x-ogg", "audio/opus"},
+		"audio/opus":   {"audio/ogg", "application/ogg"},
+		"audio/webm":   {"video/webm"},
 	}
 
 	for _, alt := range aliases[preferred] {
@@ -87,7 +91,10 @@ func NegotiateMIME(preferred string, sinkProtocols []string) string {
 func BuildDIDL(m MediaItem, sinkProtocols []string) string {
 	mime := NegotiateMIME(m.MIME, sinkProtocols)
 	features := DLNAFeaturesStreaming
-	if m.Seekable {
+	switch {
+	case m.Transcoded:
+		features = DLNAFeaturesTranscoded
+	case m.Seekable:
 		features = DLNAFeaturesSeekable
 	}
 	protocolInfo := fmt.Sprintf("http-get:*:%s:%s", mime, features)
