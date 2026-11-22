@@ -1,0 +1,32 @@
+services:
+  tacet:
+    image: ghcr.io/nchapman/tacet:latest
+    # Uncomment to build locally instead of pulling from GHCR:
+    # build: .
+    container_name: tacet
+    restart: unless-stopped
+    # Host networking is recommended on Linux/NAS hosts so UPnP/DLNA SSDP
+    # multicast discovery (239.255.255.250:1900) and GENA event callbacks work
+    # automatically with LAN renderers (e.g. WiiM Ultra).
+    #
+    # On macOS / Docker Desktop (where host networking isn't bridged to LAN),
+    # comment out `network_mode: host`, expose `ports: ["8080:8080"]`, and set
+    # `TACET_PUBLIC_URL` + `TACET_RENDERER_URL` below.
+    network_mode: host
+    environment:
+      TACET_PORT: "8080"
+      TACET_DATA_DIR: /data
+      TACET_MUSIC_DIR: /music
+      TACET_STREAM_MODE: direct
+      # Optional: override base URL advertised to renderers when behind NAT/bridge
+      # TACET_PUBLIC_URL: http://192.168.1.10:8080
+      # Optional: connect directly to a renderer description XML URL
+      # TACET_RENDERER_URL: http://192.168.1.50:49152/description.xml
+      # Optional: preconfigure Qobuz credentials (otherwise sign in via Web UI)
+      # QOBUZ_AUTH_TOKEN: ""
+    volumes:
+      - ./music:/music:ro
+      - tacet-data:/data
+
+volumes:
+  tacet-data:

@@ -24,10 +24,34 @@ An open-source, headless UPnP/DLNA control point server written in Go for lossle
 
 ## Quick Start
 
+### Binary
+
 ```bash
 make build
 ./tacet --music-dir /path/to/music
 ```
+
+### Docker (Linux / NAS)
+
+Multi-architecture images (`linux/amd64`, `linux/arm64`) are published to GitHub Container Registry on every `main` build and release tag:
+
+```bash
+docker run -d \
+  --name tacet \
+  --restart unless-stopped \
+  --network host \
+  -v /path/to/music:/music:ro \
+  -v tacet-data:/data \
+  ghcr.io/nchapman/tacet:latest
+```
+
+Or use the included `docker-compose.yml`:
+
+```bash
+docker compose up -d
+```
+
+> **Note:** `--network host` is recommended on Linux/NAS hosts so UPnP/DLNA SSDP discovery (`239.255.255.250:1900`) and GENA event callbacks work out of the box. On bridge networks (such as Docker Desktop on macOS), publish `-p 8080:8080` and set `TACET_PUBLIC_URL` + `TACET_RENDERER_URL`.
 
 For frontend development with hot reload against a running Go server on `:8080`:
 
@@ -43,7 +67,9 @@ Open `http://localhost:8080` (or `http://<your-lan-ip>:8080` from your phone/tab
 |---|---|---|---|
 | `--port` | `TACET_PORT` | `8080` | HTTP server port (media, API, web remote) |
 | `--music-dir` | `TACET_MUSIC_DIR` | *(empty)* | Comma-separated local music directories |
-| `--public-url` | `TACET_PUBLIC_URL` | *(auto)* | Override base URL sent to renderers (useful in Docker) |
+| `--data-dir` | `TACET_DATA_DIR` | OS user config dir | Persistent data directory for `library.db` (SQLite catalog, prefs, saved Qobuz session) |
+| `--missing-retention-days` | `TACET_MISSING_RETENTION_DAYS` | `30` | Days to retain soft-deleted missing music before purging on scan (`0` = never purge) |
+| `--public-url` | `TACET_PUBLIC_URL` | *(auto)* | Override base URL sent to renderers (useful behind NAT/bridge Docker) |
 | `--renderer-url` | `TACET_RENDERER_URL` | *(empty)* | Connect directly to a renderer XML URL (e.g. `http://192.168.1.50:49152/description.xml`) |
 | `--stream-mode` | `TACET_STREAM_MODE` | `direct` | Default Qobuz mode: `direct` or `relay` |
 | `--cors-origin` | `TACET_CORS_ORIGIN` | *(empty)* | Optional `Access-Control-Allow-Origin` header for external web/hybrid clients |
