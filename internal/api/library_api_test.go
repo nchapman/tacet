@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"tacet/internal/library"
@@ -322,6 +323,85 @@ func TestLibrarySearchAndQobuzArtistEndpoints(t *testing.T) {
 	}
 	if ad.Artist.ID != 77 || len(ad.Albums) != 1 || ad.Albums[0].Title != "Bitches Brew" {
 		t.Fatalf("ArtistDetail = %+v", ad)
+	}
+}
+
+func TestSettingsAndQobuzCredentialsPersistence(t *testing.T) {
+	ctx := context.Background()
+	qSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/user/login":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"user": map[string]any{
+					"display_name": "Nolan",
+					"subscription": map[string]any{"offer": "Studio Premier"},
+				},
+				"user_auth_token": "tok-xyz",
+			})
+		case "/favorite/getUserFavorites":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"albums": map[string]any{"items": []any{}, "total": 0},
+				"tracks": map[string]any{"items": []any{}, "total": 0},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer qSrv.Close()
+
+	cat, err := library.NewCatalogWithDB(":memory:")
+	if err != nil {
+		t.Fatalf("NewCatalogWithDB: %v", err)
+	}
+	defer func() { _ = cat.Close() }()
+
+	qb := qobuz.NewClient(qobuz.Config{BaseURL: qSrv.URL, AppID: "app1", AppSecret: "sec1"})
+	cat.RegisterRemoteSource(qb.AsRemoteSource())
+	mgr := queue.NewManager(8080, "http://127.0.0.1:8080", qb)
+	defer mgr.Close()
+	srv := NewServer(cat, qb, mgr)
+	defer srv.Close()
+	h := srv.Handler()
+
+	// 1. PATCH /api/v1/settings persists stream_mode and qobuz_max_quality into app_prefs.
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", strings.NewReader(`{"streamMode":"relay","qobuzMaxQuality":"flac_24_96"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH /api/v1/settings = %d: %s", rec.Code, rec.Body.String())
+	}
+	if mode, ok, err := cat.GetPref(ctx, library.PrefStreamMode); err != nil || !ok || mode != "relay" {
+		t.Fatalf("persisted stream_mode = (%q, %v, %v)", mode, ok, err)
+	}
+	if maxQ, ok, err := cat.GetPref(ctx, library.PrefQobuzMaxQuality); err != nil || !ok || maxQ != "flac_24_96" {
+		t.Fatalf("persisted qobuz_max_quality = (%q, %v, %v)", maxQ, ok, err)
+	}
+
+	// 2. POST /api/v1/qobuz/login persists credentials into provider_credentials.
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/qobuz/login", strings.NewReader(`{"authToken":"tok-xyz"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v1/qobuz/login = %d: %s", rec.Code, rec.Body.String())
+	}
+	var saved qobuz.PersistedCredentials
+	if ok, err := cat.GetProviderCredentials(ctx, "qobuz", &saved); err != nil || !ok {
+		t.Fatalf("GetProviderCredentials = (%v, %v)", ok, err)
+	}
+	if saved.AuthToken != "tok-xyz" || saved.UserName != "Nolan" {
+		t.Fatalf("saved credentials = %+v", saved)
+	}
+
+	// 3. DELETE /api/v1/qobuz/session wipes persisted credentials.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/v1/qobuz/session", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE /api/v1/qobuz/session = %d: %s", rec.Code, rec.Body.String())
+	}
+	if ok, err := cat.GetProviderCredentials(ctx, "qobuz", &saved); err != nil || ok {
+		t.Fatalf("expected cleared credentials after logout, got ok=%v err=%v", ok, err)
 	}
 }
 

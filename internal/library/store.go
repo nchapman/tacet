@@ -3,6 +3,7 @@ package library
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,13 @@ import (
 	"unicode"
 
 	_ "modernc.org/sqlite" // Pure-Go zero-CGo SQLite driver.
+)
+
+// Well-known keys stored in the SQLite app_prefs KV table.
+const (
+	PrefStreamMode      = "stream_mode"
+	PrefQobuzMaxQuality = "qobuz_max_quality"
+	PrefManualRenderers = "manual_renderers"
 )
 
 const (
@@ -50,9 +58,12 @@ func openStore(dbPath string) (*libraryStore, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolve db path: %w", err)
 		}
-		if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil {
+		dir := filepath.Dir(abs)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create data dir: %w", err)
 		}
+		// Tighten data directory permissions because the DB stores provider credentials.
+		_ = os.Chmod(dir, 0o700) //nolint:gosec // directory requires owner execute bit (0700) to traverse
 		dsn = abs
 	}
 
@@ -90,6 +101,13 @@ func openStore(dbPath string) (*libraryStore, error) {
 	if err := runMigrations(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if dsn != ":memory:" {
+		for _, p := range []string{dsn, dsn + "-wal", dsn + "-shm"} {
+			if _, statErr := os.Stat(p); statErr == nil {
+				_ = os.Chmod(p, 0o600)
+			}
+		}
 	}
 	return s, nil
 }
@@ -1972,4 +1990,116 @@ func scoreSearchText(candidate, normQ string, qTokens []string) int {
 		}
 	}
 	return 100
+}
+
+func (s *libraryStore) getPref(ctx context.Context, key string) (string, bool, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", false, ErrInvalidArgument
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var val string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM app_prefs WHERE key = ?`, key).Scan(&val)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return val, true, nil
+}
+
+func (s *libraryStore) setPref(ctx context.Context, key, value string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ErrInvalidArgument
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO app_prefs(key, value, updated_at) VALUES (?, ?, ?)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+		key, value, s.now().Unix())
+	return err
+}
+
+func (s *libraryStore) deletePref(ctx context.Context, key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ErrInvalidArgument
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx, `DELETE FROM app_prefs WHERE key = ?`, key)
+	return err
+}
+
+func (s *libraryStore) listPrefs(ctx context.Context) (map[string]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM app_prefs ORDER BY key ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
+func (s *libraryStore) getProviderCredentials(ctx context.Context, provider string, dst any) (bool, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return false, ErrInvalidArgument
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var raw string
+	err := s.db.QueryRowContext(ctx, `SELECT data_json FROM provider_credentials WHERE provider = ?`, provider).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := json.Unmarshal([]byte(raw), dst); err != nil {
+		return false, fmt.Errorf("decode credentials for %q: %w", provider, err)
+	}
+	return true, nil
+}
+
+func (s *libraryStore) setProviderCredentials(ctx context.Context, provider string, src any) error {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return ErrInvalidArgument
+	}
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return fmt.Errorf("encode credentials for %q: %w", provider, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO provider_credentials(provider, data_json, updated_at) VALUES (?, ?, ?)
+ON CONFLICT(provider) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at`,
+		provider, string(raw), s.now().Unix())
+	return err
+}
+
+func (s *libraryStore) deleteProviderCredentials(ctx context.Context, provider string) error {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return ErrInvalidArgument
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx, `DELETE FROM provider_credentials WHERE provider = ?`, provider)
+	return err
 }

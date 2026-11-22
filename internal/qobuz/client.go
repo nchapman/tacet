@@ -210,6 +210,53 @@ func (c *Client) Logout() Status {
 	return st
 }
 
+// PersistedCredentials captures the Qobuz session state stored in SQLite
+// so restarts keep the user signed in without re-running browser OAuth.
+type PersistedCredentials struct {
+	AppID        string   `json:"appId,omitempty"`
+	AppSecret    string   `json:"appSecret,omitempty"`
+	AltSecrets   []string `json:"altSecrets,omitempty"`
+	AuthToken    string   `json:"authToken,omitempty"`
+	UserName     string   `json:"userName,omitempty"`
+	Subscription string   `json:"subscription,omitempty"`
+}
+
+// ExportCredentials returns a snapshot of the active Qobuz credentials for persistence.
+func (c *Client) ExportCredentials() PersistedCredentials {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return PersistedCredentials{
+		AppID:        c.appID,
+		AppSecret:    c.appSecret,
+		AltSecrets:   append([]string(nil), c.altSecrets...),
+		AuthToken:    c.authToken,
+		UserName:     c.userName,
+		Subscription: c.subscription,
+	}
+}
+
+// RestoreCredentials loads previously persisted Qobuz credentials into any fields
+// not already overridden by explicit environment variables.
+func (c *Client) RestoreCredentials(creds PersistedCredentials) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.appID == "" && strings.TrimSpace(creds.AppID) != "" {
+		c.appID = strings.TrimSpace(creds.AppID)
+	}
+	if c.appSecret == "" && strings.TrimSpace(creds.AppSecret) != "" {
+		c.appSecret = strings.TrimSpace(creds.AppSecret)
+	}
+	if len(c.altSecrets) == 0 && len(creds.AltSecrets) > 0 {
+		c.altSecrets = append([]string(nil), creds.AltSecrets...)
+	}
+	if c.authToken == "" && strings.TrimSpace(creds.AuthToken) != "" {
+		c.authToken = strings.TrimSpace(creds.AuthToken)
+		c.userName = strings.TrimSpace(creds.UserName)
+		c.subscription = strings.TrimSpace(creds.Subscription)
+	}
+	clear(c.urlCache)
+}
+
 // SetCredentials updates explicit app credentials and/or user auth token.
 func (c *Client) SetCredentials(appID, appSecret, authToken string) {
 	c.mu.Lock()

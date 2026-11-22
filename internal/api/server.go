@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"mime"
 	"net/http"
 	"net/url"
@@ -316,6 +317,11 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 			writeDomainError(w, err)
 			return
 		}
+		if s.catalog != nil {
+			if err := s.catalog.SetPref(r.Context(), library.PrefStreamMode, string(*body.StreamMode)); err != nil {
+				log.Printf("warning: failed to persist stream_mode preference: %v", err)
+			}
+		}
 	}
 	if body.QobuzMaxQuality != nil {
 		if s.qobuz == nil {
@@ -325,6 +331,11 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		if err := s.qobuz.SetMaxQuality(*body.QobuzMaxQuality); err != nil {
 			writeDomainError(w, err)
 			return
+		}
+		if s.catalog != nil {
+			if err := s.catalog.SetPref(r.Context(), library.PrefQobuzMaxQuality, s.qobuz.MaxQuality()); err != nil {
+				log.Printf("warning: failed to persist qobuz_max_quality preference: %v", err)
+			}
 		}
 		s.manager.Publish("qobuz.status", s.qobuz.Status())
 	}

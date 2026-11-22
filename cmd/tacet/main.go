@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -40,6 +41,13 @@ func run() error {
 	corsOrigin := flag.String("cors-origin", os.Getenv("TACET_CORS_ORIGIN"), "Optional CORS Allow-Origin header for external web/hybrid clients (e.g. * or http://localhost:5173)")
 	flag.Parse()
 
+	// Track which flags were explicitly set on the CLI so explicit flags/env vars
+	// take precedence over persisted SQLite preferences.
+	explicitFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		explicitFlags[f.Name] = true
+	})
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -70,19 +78,42 @@ func run() error {
 		log.Printf("loaded %d cached tracks across %d albums from SQLite", initStatus.Tracks, initStatus.Albums)
 	}
 
-	// 2. Qobuz client (optional credentials from env or web UI OAuth/token login).
+	// 2. Qobuz client (env vars take precedence; otherwise restore saved session from SQLite).
 	qb := qobuz.NewClient(qobuz.Config{
 		AppID:     os.Getenv("QOBUZ_APP_ID"),
 		AppSecret: os.Getenv("QOBUZ_APP_SECRET"),
 		AuthToken: os.Getenv("QOBUZ_AUTH_TOKEN"),
 		FormatID:  qobuz.FormatFLAC192,
 	})
+	var savedQobuz qobuz.PersistedCredentials
+	if found, credErr := cat.GetProviderCredentials(ctx, "qobuz", &savedQobuz); credErr != nil {
+		log.Printf("warning: failed to load saved Qobuz credentials: %v", credErr)
+	} else if found {
+		wasAuth := qb.Status().Authenticated
+		qb.RestoreCredentials(savedQobuz)
+		if !wasAuth && qb.Status().Authenticated {
+			st := qb.Status()
+			log.Printf("restored Qobuz session from SQLite (%s)", st.UserName)
+		}
+	}
+	if maxQ, ok, prefErr := cat.GetPref(ctx, library.PrefQobuzMaxQuality); prefErr == nil && ok && maxQ != "" {
+		if qErr := qb.SetMaxQuality(maxQ); qErr != nil {
+			log.Printf("warning: ignoring invalid saved qobuz_max_quality %q: %v", maxQ, qErr)
+		}
+	}
 	cat.RegisterRemoteSource(qb.AsRemoteSource())
 
 	// 3. Queue / playback manager + UPnP GENA event subscriber.
 	mgr := queue.NewManager(*port, *publicURL, qb)
 	if err = mgr.SetStreamMode(queue.StreamMode(*streamMode)); err != nil {
 		return fmt.Errorf("invalid --stream-mode: %w", err)
+	}
+	if !explicitFlags["stream-mode"] && strings.TrimSpace(os.Getenv("TACET_STREAM_MODE")) == "" {
+		if savedMode, ok, prefErr := cat.GetPref(ctx, library.PrefStreamMode); prefErr == nil && ok && savedMode != "" {
+			if modeErr := mgr.SetStreamMode(queue.StreamMode(savedMode)); modeErr != nil {
+				log.Printf("warning: ignoring invalid saved stream_mode %q: %v", savedMode, modeErr)
+			}
+		}
 	}
 	mgr.SetOnTrackPlayed(cat.RecordPlay)
 	gena := upnp.NewGENAClient(mgr.HandleDeviceEvent)
@@ -150,18 +181,49 @@ func run() error {
 		}
 	}()
 
-	// 5. Initial UPnP renderer discovery (plus optional explicit URL).
-	if *rendererURL != "" {
-		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if dev, err := upnp.ConnectByURL(cctx, *rendererURL); err != nil {
-			log.Printf("warning: failed to connect to %s: %v", *rendererURL, err)
-		} else {
-			mgr.RegisterRenderer(dev)
-			info := dev.Info()
-			log.Printf("connected renderer: %s (%s, gapless=%v, events=%v)",
-				info.Name, info.Location, info.SupportsSetNext, info.SupportsEvents)
+	// 6. Initial UPnP renderer discovery + saved manual renderers (non-blocking).
+	var manualURLs []string
+	if raw, ok, prefErr := cat.GetPref(ctx, library.PrefManualRenderers); prefErr != nil {
+		log.Printf("warning: failed to load saved manual_renderers: %v", prefErr)
+	} else if ok && strings.TrimSpace(raw) != "" {
+		if unmarshalErr := json.Unmarshal([]byte(raw), &manualURLs); unmarshalErr != nil {
+			log.Printf("warning: ignoring corrupt saved manual_renderers: %v", unmarshalErr)
+			manualURLs = nil
 		}
-		cancel()
+	}
+	if *rendererURL != "" {
+		seen := false
+		for _, u := range manualURLs {
+			if u == *rendererURL {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			manualURLs = append([]string{*rendererURL}, manualURLs...)
+		}
+	}
+	if len(manualURLs) > 16 {
+		manualURLs = manualURLs[:16]
+	}
+	if len(manualURLs) > 0 {
+		go func(urls []string) {
+			for _, u := range urls {
+				if ctx.Err() != nil {
+					return
+				}
+				cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				if dev, connErr := upnp.ConnectByURL(cctx, u); connErr != nil {
+					log.Printf("warning: failed to reconnect renderer %s: %v", u, connErr)
+				} else {
+					mgr.RegisterRenderer(dev)
+					info := dev.Info()
+					log.Printf("connected renderer: %s (%s, gapless=%v, events=%v)",
+						info.Name, info.Location, info.SupportsSetNext, info.SupportsEvents)
+				}
+				cancel()
+			}
+		}(manualURLs)
 	}
 
 	go func() {

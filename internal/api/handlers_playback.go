@@ -68,11 +68,65 @@ func (s *Server) handleConnectZone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.manager.RegisterRenderer(dev)
+	manualURL := strings.TrimSpace(dev.Info().Location)
+	if manualURL == "" {
+		manualURL = strings.TrimSpace(body.URL)
+	}
+	s.rememberManualRenderer(r.Context(), manualURL)
 	zone, _ := s.manager.Zone(dev.Info().ID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"zone":  zone,
 		"zones": s.manager.Zones(),
 	})
+}
+
+const maxPersistedManualRenderers = 16
+
+func (s *Server) rememberManualRenderer(ctx context.Context, rawURL string) {
+	if s.catalog == nil || rawURL == "" {
+		return
+	}
+	urls := make([]string, 0, 1)
+	if raw, ok, err := s.catalog.GetPref(ctx, library.PrefManualRenderers); err == nil && ok && strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &urls); err != nil {
+			return
+		}
+	}
+	for _, existing := range urls {
+		if existing == rawURL {
+			return
+		}
+	}
+	urls = append(urls, rawURL)
+	if len(urls) > maxPersistedManualRenderers {
+		urls = urls[len(urls)-maxPersistedManualRenderers:]
+	}
+	if encoded, err := json.Marshal(urls); err == nil {
+		_ = s.catalog.SetPref(ctx, library.PrefManualRenderers, string(encoded))
+	}
+}
+
+func (s *Server) forgetManualRenderer(ctx context.Context, locationURL string) {
+	if s.catalog == nil || locationURL == "" {
+		return
+	}
+	var urls []string
+	raw, ok, err := s.catalog.GetPref(ctx, library.PrefManualRenderers)
+	if err != nil || !ok || json.Unmarshal([]byte(raw), &urls) != nil {
+		return
+	}
+	filtered := make([]string, 0, len(urls))
+	for _, u := range urls {
+		if u != locationURL {
+			filtered = append(filtered, u)
+		}
+	}
+	if len(filtered) == len(urls) {
+		return
+	}
+	if encoded, err := json.Marshal(filtered); err == nil {
+		_ = s.catalog.SetPref(ctx, library.PrefManualRenderers, string(encoded))
+	}
 }
 
 func (s *Server) handleDeleteZone(w http.ResponseWriter, r *http.Request) {
@@ -87,6 +141,7 @@ func (s *Server) handleDeleteZone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.manager.UnregisterRenderer(zoneID)
+	s.forgetManualRenderer(r.Context(), snap.Renderer.Location)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"removed": true,
 		"zoneId":  zoneID,

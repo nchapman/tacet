@@ -147,6 +147,23 @@ CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(
 );
 `,
 	},
+	{
+		version: 2,
+		name:    "app_prefs_and_credentials",
+		sql: `
+CREATE TABLE IF NOT EXISTS app_prefs (
+	key        TEXT PRIMARY KEY,
+	value      TEXT NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS provider_credentials (
+	provider   TEXT PRIMARY KEY,
+	data_json  TEXT NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+`,
+	},
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

@@ -294,3 +294,34 @@ func TestSearchArtistsAndGetArtistByName(t *testing.T) {
 		t.Fatalf("res.Albums = %+v, want only streamable q-ok", res.Albums)
 	}
 }
+
+func TestCredentialsExportAndRestorePrecedence(t *testing.T) {
+	src := NewClient(Config{AppID: "saved-app", AppSecret: "saved-sec", AuthToken: "saved-tok"})
+	snap := src.ExportCredentials()
+	snap.UserName = "Alice"
+	snap.Subscription = "Studio"
+	snap.AltSecrets = []string{"alt-1"}
+
+	// Empty client restores every saved field.
+	restored := NewClient(Config{})
+	restored.RestoreCredentials(snap)
+	st := restored.Status()
+	if !st.Authenticated || !st.Configured || st.UserName != "Alice" || st.Subscription != "Studio" {
+		t.Fatalf("restored status = %+v", st)
+	}
+	got := restored.ExportCredentials()
+	if got.AppID != "saved-app" || got.AppSecret != "saved-sec" || got.AuthToken != "saved-tok" || len(got.AltSecrets) != 1 {
+		t.Fatalf("restored export = %+v", got)
+	}
+
+	// Explicit env credentials take precedence over persisted values.
+	envClient := NewClient(Config{AuthToken: "env-tok"})
+	envClient.RestoreCredentials(snap)
+	gotEnv := envClient.ExportCredentials()
+	if gotEnv.AuthToken != "env-tok" {
+		t.Fatalf("expected env AuthToken preserved, got %q", gotEnv.AuthToken)
+	}
+	if gotEnv.AppID != "saved-app" || gotEnv.AppSecret != "saved-sec" {
+		t.Fatalf("expected missing AppID/AppSecret restored, got %+v", gotEnv)
+	}
+}

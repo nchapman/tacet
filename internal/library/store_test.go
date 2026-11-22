@@ -531,3 +531,88 @@ func TestUnifiedSearchIntentRanking(t *testing.T) {
 		t.Fatalf("track TopResult = %+v, want track Tired of Being Alone", rTrack.TopResult)
 	}
 }
+
+func TestPrefsAndProviderCredentialsPersistence(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "state")
+	dbPath := filepath.Join(dataDir, "library.db")
+
+	cat1, err := NewCatalogWithDB(dbPath)
+	if err != nil {
+		t.Fatalf("NewCatalogWithDB(1): %v", err)
+	}
+
+	// Verify tightened directory (0700) and DB file (0600) permissions.
+	if info, statErr := os.Stat(dataDir); statErr != nil {
+		t.Fatalf("stat dataDir: %v", statErr)
+	} else if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("dataDir perms = %o, want 700", perm)
+	}
+	if info, statErr := os.Stat(dbPath); statErr != nil {
+		t.Fatalf("stat dbPath: %v", statErr)
+	} else if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("dbPath perms = %o, want 600", perm)
+	}
+
+	// Prefs CRUD.
+	if _, ok, prefErr := cat1.GetPref(ctx, PrefStreamMode); prefErr != nil || ok {
+		t.Fatalf("expected missing pref, got ok=%v err=%v", ok, prefErr)
+	}
+	if setErr := cat1.SetPref(ctx, PrefStreamMode, "relay"); setErr != nil {
+		t.Fatalf("SetPref: %v", setErr)
+	}
+	if setErr := cat1.SetPref(ctx, PrefQobuzMaxQuality, "flac_24_96"); setErr != nil {
+		t.Fatalf("SetPref quality: %v", setErr)
+	}
+
+	// Provider credentials CRUD (stored separately from app_prefs).
+	type creds struct {
+		AppID     string `json:"appId"`
+		AuthToken string `json:"authToken"`
+	}
+	if credErr := cat1.SetProviderCredentials(ctx, "qobuz", creds{AppID: "123", AuthToken: "secret-tok"}); credErr != nil {
+		t.Fatalf("SetProviderCredentials: %v", credErr)
+	}
+	prefs, err := cat1.ListPrefs(ctx)
+	if err != nil {
+		t.Fatalf("ListPrefs: %v", err)
+	}
+	if len(prefs) != 2 || prefs[PrefStreamMode] != "relay" {
+		t.Fatalf("ListPrefs = %+v", prefs)
+	}
+	if closeErr := cat1.Close(); closeErr != nil {
+		t.Fatalf("Close(1): %v", closeErr)
+	}
+
+	// Reopen DB to verify everything survived restart.
+	cat2, err := NewCatalogWithDB(dbPath)
+	if err != nil {
+		t.Fatalf("NewCatalogWithDB(2): %v", err)
+	}
+	defer func() { _ = cat2.Close() }()
+
+	if val, ok, getErr := cat2.GetPref(ctx, PrefStreamMode); getErr != nil || !ok || val != "relay" {
+		t.Fatalf("reopened GetPref = (%q, %v, %v)", val, ok, getErr)
+	}
+	var gotCreds creds
+	if ok, getErr := cat2.GetProviderCredentials(ctx, "qobuz", &gotCreds); getErr != nil || !ok {
+		t.Fatalf("reopened GetProviderCredentials = (%v, %v)", ok, getErr)
+	}
+	if gotCreds.AppID != "123" || gotCreds.AuthToken != "secret-tok" {
+		t.Fatalf("gotCreds = %+v", gotCreds)
+	}
+
+	// Delete pref & credentials.
+	if delErr := cat2.DeletePref(ctx, PrefStreamMode); delErr != nil {
+		t.Fatalf("DeletePref: %v", delErr)
+	}
+	if _, ok, getErr := cat2.GetPref(ctx, PrefStreamMode); getErr != nil || ok {
+		t.Fatalf("expected deleted pref, got ok=%v err=%v", ok, getErr)
+	}
+	if delErr := cat2.DeleteProviderCredentials(ctx, "qobuz"); delErr != nil {
+		t.Fatalf("DeleteProviderCredentials: %v", delErr)
+	}
+	if ok, getErr := cat2.GetProviderCredentials(ctx, "qobuz", &gotCreds); getErr != nil || ok {
+		t.Fatalf("expected deleted creds, got ok=%v err=%v", ok, getErr)
+	}
+}

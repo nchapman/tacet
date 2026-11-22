@@ -506,9 +506,14 @@ func (s *Server) handleQobuzOAuthCallback(w http.ResponseWriter, r *http.Request
 		writeAPIError(w, http.StatusUnauthorized, "QOBUZ_AUTH_FAILED", "Qobuz sign-in failed: "+err.Error(), false)
 		return
 	}
+	if s.catalog != nil {
+		if saveErr := s.catalog.SetProviderCredentials(r.Context(), "qobuz", s.qobuz.ExportCredentials()); saveErr != nil {
+			log.Printf("warning: failed to persist Qobuz OAuth credentials: %v", saveErr)
+		}
+	}
 	s.manager.Publish("qobuz.status", st)
 	s.triggerQobuzLibrarySyncAsync()
-	http.Redirect(w, r, "/?tab=explore", http.StatusFound)
+	http.Redirect(w, r, "/?tab=qobuz", http.StatusFound)
 }
 
 func (s *Server) handleQobuzLogin(w http.ResponseWriter, r *http.Request) {
@@ -537,6 +542,11 @@ func (s *Server) handleQobuzLogin(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusUnauthorized, "QOBUZ_AUTH_FAILED", err.Error(), false)
 			return
 		}
+		if s.catalog != nil {
+			if saveErr := s.catalog.SetProviderCredentials(r.Context(), "qobuz", s.qobuz.ExportCredentials()); saveErr != nil {
+				log.Printf("warning: failed to persist Qobuz token credentials: %v", saveErr)
+			}
+		}
 		s.manager.Publish("qobuz.status", st)
 		s.triggerQobuzLibrarySyncAsync()
 		writeJSON(w, http.StatusOK, st)
@@ -547,6 +557,11 @@ func (s *Server) handleQobuzLogin(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeAPIError(w, http.StatusUnauthorized, "QOBUZ_AUTH_FAILED", err.Error(), false)
 			return
+		}
+		if s.catalog != nil {
+			if saveErr := s.catalog.SetProviderCredentials(r.Context(), "qobuz", s.qobuz.ExportCredentials()); saveErr != nil {
+				log.Printf("warning: failed to persist Qobuz login credentials: %v", saveErr)
+			}
 		}
 		s.manager.Publish("qobuz.status", st)
 		s.triggerQobuzLibrarySyncAsync()
@@ -567,7 +582,10 @@ func (s *Server) handleQobuzLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := s.qobuz.Logout()
-	_ = s.catalog.SetProviderAvailable(r.Context(), "qobuz", false)
+	if s.catalog != nil {
+		_ = s.catalog.DeleteProviderCredentials(r.Context(), "qobuz")
+		_ = s.catalog.SetProviderAvailable(r.Context(), "qobuz", false)
+	}
 	s.manager.Publish("qobuz.status", st)
 	writeJSON(w, http.StatusOK, st)
 }

@@ -947,6 +947,41 @@ func (c *Catalog) UnifiedSearch(ctx context.Context, query string, limit int) (U
 	return c.store.unifiedSearch(ctx, query, limit)
 }
 
+// GetPref retrieves a persisted non-secret preference by key.
+func (c *Catalog) GetPref(ctx context.Context, key string) (string, bool, error) {
+	return c.store.getPref(ctx, key)
+}
+
+// SetPref persists a non-secret preference key/value pair in SQLite.
+func (c *Catalog) SetPref(ctx context.Context, key, value string) error {
+	return c.store.setPref(ctx, key, value)
+}
+
+// DeletePref removes a persisted preference key from SQLite.
+func (c *Catalog) DeletePref(ctx context.Context, key string) error {
+	return c.store.deletePref(ctx, key)
+}
+
+// ListPrefs returns all persisted non-secret preferences.
+func (c *Catalog) ListPrefs(ctx context.Context) (map[string]string, error) {
+	return c.store.listPrefs(ctx)
+}
+
+// GetProviderCredentials loads JSON-encoded credentials for a streaming provider (e.g. "qobuz").
+func (c *Catalog) GetProviderCredentials(ctx context.Context, provider string, dst any) (bool, error) {
+	return c.store.getProviderCredentials(ctx, provider, dst)
+}
+
+// SetProviderCredentials persists JSON-encoded credentials for a streaming provider.
+func (c *Catalog) SetProviderCredentials(ctx context.Context, provider string, src any) error {
+	return c.store.setProviderCredentials(ctx, provider, src)
+}
+
+// DeleteProviderCredentials removes stored credentials for a streaming provider.
+func (c *Catalog) DeleteProviderCredentials(ctx context.Context, provider string) error {
+	return c.store.deleteProviderCredentials(ctx, provider)
+}
+
 const maxCoverArtBytes = 10 << 20 // 10 MiB safety cap
 
 // CoverArt loads embedded or folder artwork bytes and MIME type for a local track.
