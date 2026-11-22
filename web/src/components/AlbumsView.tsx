@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
 import type { Album, LibraryStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { queryErrorMessage, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -69,8 +70,8 @@ export const AlbumsView = memo(function AlbumsView({ libraryStatus, groupVersion
   return (
     <div className="min-h-full pb-12">
       {/* Sticky sleek filter header */}
-      <div className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/45 px-4 sm:px-8 py-4 backdrop-blur-2xl">
-        <div className="mx-auto max-w-7xl flex flex-wrap items-center justify-between gap-3">
+      <PageHeader className="py-2.5">
+        <div className="mx-auto w-full max-w-7xl flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-baseline gap-2.5">
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Albums</h1>
             <span className="text-xs font-mono text-muted-foreground">{total}</span>
@@ -109,7 +110,7 @@ export const AlbumsView = memo(function AlbumsView({ libraryStatus, groupVersion
             </select>
           </div>
         </div>
-      </div>
+      </PageHeader>
 
       <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6">
         {errMsg && (

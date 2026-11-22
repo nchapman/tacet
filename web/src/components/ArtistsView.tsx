@@ -14,6 +14,7 @@ import type {
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { QOBUZ_ARTIST_GC_TIME_MS, QOBUZ_ARTIST_STALE_TIME_MS, queryErrorMessage, queryKeys } from "@/lib/query";
 import { useScrollRestoration } from "@/lib/scroll";
 import { cn } from "@/lib/utils";
@@ -180,9 +181,9 @@ export function ArtistsView({
           mobileDetailOpen ? "hidden md:flex" : "flex w-full",
         )}
       >
-        <div className="border-b border-white/[0.06] px-4 py-4 shrink-0">
-          <div className="flex items-baseline justify-between">
-            <h1 className="text-xl font-bold tracking-tight text-white">Artists</h1>
+        <div className="flex h-16 items-center border-b border-white/[0.06] px-4 shrink-0">
+          <div className="flex w-full items-baseline justify-between">
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Artists</h1>
             <span className="text-xs font-mono text-muted-foreground">{artists.length}</span>
           </div>
         </div>
@@ -250,7 +251,7 @@ export function ArtistsView({
         {effectiveArtist ? (
           <div className="relative min-h-full pb-12">
             {/* Mobile back bar */}
-            <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-white/[0.06] bg-[#09090b]/40 px-4 py-3 backdrop-blur-2xl md:hidden">
+            <PageHeader className="min-h-0 gap-2 px-4 py-3 md:hidden">
               <Button
                 type="button"
                 variant="ghost"
@@ -264,7 +265,7 @@ export function ArtistsView({
                 <ArrowLeft className="h-4 w-4" />
                 Artists
               </Button>
-            </div>
+            </PageHeader>
 
             <div className="relative z-10 mx-auto max-w-4xl px-4 sm:px-8 pt-6 sm:pt-8">
               <div className="flex items-end gap-4 pb-6 border-b border-white/[0.07]">
@@ -433,34 +434,38 @@ function StackedAlbumCard({
 }) {
   const qLabel = fmtAlbumQuality(alb);
   const hiRes = isHiRes(alb.maxBitDepth, alb.maxSampleRate);
-  const provider = (alb.provider || alb.source || "local").toLowerCase();
+  const isDSD = alb.primaryFormat?.toUpperCase().startsWith("DSD");
+  const hiResLabel = isDSD ? "DSD" : hiRes ? "HI-RES" : "";
 
   return (
-    <div className="group flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-5 rounded-2xl border border-white/[0.07] bg-white/[0.025] p-3.5 sm:p-4 transition-all hover:border-white/[0.14] hover:bg-white/[0.045]">
-      <button
-        type="button"
-        onClick={() => onOpenAlbum(alb)}
-        className="relative h-28 w-28 sm:h-32 sm:w-32 shrink-0 overflow-hidden rounded-xl shadow-lg ring-1 ring-white/10 cursor-pointer self-start"
-      >
+    <div
+      onClick={() => onOpenAlbum(alb)}
+      className="group flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-5 rounded-2xl border border-white/[0.07] bg-white/[0.025] p-3.5 sm:p-4 transition-all hover:border-white/[0.14] hover:bg-white/[0.045] cursor-pointer"
+    >
+      <div className="relative h-28 w-28 sm:h-32 sm:w-32 shrink-0 overflow-hidden rounded-xl shadow-lg ring-1 ring-white/10 self-start">
         <AlbumArt
           artworkUrl={alb.artworkUrl}
           alt={alb.title}
           className="h-full w-full transition-transform duration-300 group-hover:scale-[1.04]"
         />
-      </button>
+        {hiResLabel && (
+          <span
+            title={qLabel}
+            className="pointer-events-none absolute bottom-2 right-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.06em] text-[#dfc07b] backdrop-blur-md border border-white/[0.12]"
+          >
+            {hiResLabel}
+          </span>
+        )}
+      </div>
 
       <div className="min-w-0 flex-1 space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          {alb.year ? <span className="font-mono text-xs text-muted-foreground">{alb.year}</span> : null}
+        <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-muted-foreground">
+          {alb.year ? <span>{alb.year}</span> : null}
           {qLabel && (
-            <Badge variant={hiRes ? "hires" : "muted"} className="text-[10.5px]">
-              {qLabel}
-            </Badge>
-          )}
-          {provider !== "local" && (
-            <Badge variant="qobuz" className="text-[10.5px] capitalize">
-              {provider}
-            </Badge>
+            <span className="inline-flex items-center gap-1.5">
+              {alb.year ? <span className="text-white/20">·</span> : null}
+              <span>{qLabel}</span>
+            </span>
           )}
           {(alb.versionCount ?? 1) > 1 && (
             <Badge variant="muted" className="text-[10.5px]">
@@ -469,7 +474,14 @@ function StackedAlbumCard({
           )}
         </div>
 
-        <button type="button" onClick={() => onOpenAlbum(alb)} className="block text-left cursor-pointer">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenAlbum(alb);
+          }}
+          className="block text-left cursor-pointer"
+        >
           <h3 className="text-lg sm:text-xl font-semibold tracking-tight text-white group-hover:underline">
             {alb.title}
           </h3>
@@ -485,7 +497,10 @@ function StackedAlbumCard({
             type="button"
             size="sm"
             className="rounded-full bg-white text-black hover:bg-white/90 h-8 px-4"
-            onClick={() => onPlay({ type: "album", albumId: alb.id }, 0)}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPlay({ type: "album", albumId: alb.id }, 0);
+            }}
           >
             <Play className="h-3.5 w-3.5 fill-current" />
             Play
@@ -495,20 +510,13 @@ function StackedAlbumCard({
             variant="secondary"
             size="sm"
             className="rounded-full h-8 px-3.5"
-            onClick={() => onAdd({ type: "album", albumId: alb.id }, "end")}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAdd({ type: "album", albumId: alb.id }, "end");
+            }}
           >
             <ListPlus className="h-3.5 w-3.5" />
             Queue
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="rounded-full h-8 px-3 text-xs"
-            onClick={() => onOpenAlbum(alb)}
-          >
-            View tracks
-            <ChevronRight className="h-3.5 w-3.5" />
           </Button>
         </div>
       </div>

@@ -8,6 +8,7 @@ import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { QOBUZ_ALBUM_GC_TIME_MS, QOBUZ_ALBUM_STALE_TIME_MS, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -146,7 +147,7 @@ export function AlbumView({
   return (
     <div className="relative min-h-full pb-12">
       {/* Sticky frosted back bar */}
-      <div className="sticky top-0 z-20 flex items-center justify-between px-4 sm:px-8 py-3 bg-[#09090b]/30 backdrop-blur-2xl border-b border-white/[0.06]">
+      <PageHeader className="justify-between py-3">
         <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 text-foreground/85">
           <ArrowLeft className="h-4 w-4" />
           <span>{backLabel}</span>
@@ -155,9 +156,9 @@ export function AlbumView({
           <Badge variant={provider === "local" ? "local" : "qobuz"}>{sourceLabel(album.provider, album.source)}</Badge>
           {qLabel && <Badge variant={hiRes ? "hires" : "muted"}>{qLabel}</Badge>}
         </div>
-      </div>
+      </PageHeader>
 
-      <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-8 pt-6 sm:pt-8">
+      <div className="relative z-10 px-4 sm:px-8 pt-6 sm:pt-8">
         {actionErr && (
           <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-2.5 text-sm text-red-200">
             {actionErr}
@@ -377,8 +378,11 @@ export function AlbumView({
                   </button>
 
                   {/* Format badge (desktop) */}
-                  <div className="hidden sm:flex items-center gap-2">
+                  <div className="hidden sm:flex items-center gap-1.5">
                     {trQual && <span className="font-mono text-[11px] text-muted-foreground/75">{trQual}</span>}
+                    {isHiRes(tr.bitDepth, tr.sampleRate) && (
+                      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/75" title="Hi-Res Audio" />
+                    )}
                   </div>
 
                   {/* Duration */}

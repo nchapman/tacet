@@ -74,7 +74,7 @@ export const DiscoverShelfView = memo(function DiscoverShelfView({
         </Link>
 
         <div className="flex items-center gap-3">
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
             {firstPage?.title ?? slug.replace(/-/g, " ")}
           </h1>
           {shelfQuery.isFetching && !shelfQuery.isFetchingNextPage && (

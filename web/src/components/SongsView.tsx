@@ -6,6 +6,7 @@ import { tacetClient } from "@/api/client";
 import { fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type { GenreSummary, QueuePosition, QueueSource, Track } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { queryErrorMessage, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -82,8 +83,8 @@ export const SongsView = memo(function SongsView({
 
   return (
     <div className="min-h-full pb-12">
-      <div className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/45 px-4 sm:px-8 py-4 backdrop-blur-2xl">
-        <div className="mx-auto max-w-6xl flex flex-wrap items-center justify-between gap-3">
+      <PageHeader className="py-2.5">
+        <div className="flex w-full flex-wrap items-center justify-between gap-3">
           <div className="flex items-baseline gap-2.5">
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Songs</h1>
             <span className="text-xs font-mono text-muted-foreground">{total}</span>
@@ -121,9 +122,9 @@ export const SongsView = memo(function SongsView({
             </select>
           </div>
         </div>
-      </div>
+      </PageHeader>
 
-      <div className="mx-auto max-w-6xl px-3 sm:px-8 pt-3">
+      <div className="px-3 sm:px-8 pt-3">
         {errMsg && (
           <div role="alert" className="my-4 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
             {errMsg}

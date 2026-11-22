@@ -5,6 +5,7 @@ import { tacetClient } from "@/api/client";
 import type { LibraryStatus, QobuzStatus, StreamMode, ZoneSnapshot } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { Switch } from "@/components/ui/switch";
 import { invalidateQobuzLogout, QOBUZ_SEARCH_GC_TIME_MS, QOBUZ_SEARCH_STALE_TIME_MS, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
@@ -93,13 +94,13 @@ export function SettingsView({
 
   return (
     <div className="min-h-full pb-12">
-      <div className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/45 px-4 sm:px-8 py-4 backdrop-blur-2xl">
-        <div className="mx-auto max-w-3xl">
+      <PageHeader>
+        <div className="w-full max-w-3xl">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Settings</h1>
         </div>
-      </div>
+      </PageHeader>
 
-      <div className="mx-auto max-w-3xl px-4 sm:px-8 pt-6 space-y-6">
+      <div className="max-w-3xl px-4 sm:px-8 pt-6 space-y-6">
         {msg && (
           <div className="flex items-center gap-2 rounded-xl border border-emerald-400/25 bg-emerald-400/10 px-4 py-2.5 text-sm text-emerald-200">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
@@ -132,7 +133,7 @@ export function SettingsView({
           </div>
 
           {(libraryStatus?.missingTracks ?? 0) > 0 && (
-            <p className="text-xs text-amber-300/90">
+            <p className="text-xs text-muted-foreground">
               {libraryStatus!.missingTracks} missing local track(s) are soft-deleted and will restore automatically if
               their drive reconnects within the retention window.
             </p>
@@ -220,13 +221,18 @@ export function SettingsView({
                 className={cn(
                   "rounded-xl border p-3.5 text-left transition-colors cursor-pointer",
                   streamMode === "direct"
-                    ? "border-emerald-400/40 bg-emerald-400/10"
+                    ? "border-white/30 bg-white/[0.08]"
                     : "border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05]",
                 )}
               >
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-medium text-white">Direct Handoff</span>
-                  {streamMode === "direct" && <Badge variant="live">Active</Badge>}
+                  {streamMode === "direct" && (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-white/90">
+                      <Check className="h-3.5 w-3.5" />
+                      Active
+                    </span>
+                  )}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
                   Renderer streams HTTPS FLAC directly from Qobuz CDN. Zero audio traffic through the NAS.
@@ -239,13 +245,18 @@ export function SettingsView({
                 className={cn(
                   "rounded-xl border p-3.5 text-left transition-colors cursor-pointer",
                   streamMode === "relay"
-                    ? "border-emerald-400/40 bg-emerald-400/10"
+                    ? "border-white/30 bg-white/[0.08]"
                     : "border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05]",
                 )}
               >
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-medium text-white">Quiet Relay</span>
-                  {streamMode === "relay" && <Badge variant="live">Active</Badge>}
+                  {streamMode === "relay" && (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-white/90">
+                      <Check className="h-3.5 w-3.5" />
+                      Active
+                    </span>
+                  )}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
                   NAS fetches HTTPS and streams raw bit-perfect bytes over plain LAN HTTP for older renderers.
@@ -260,7 +271,7 @@ export function SettingsView({
           <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/[0.07] text-foreground border border-white/10">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#d4af68]/10 text-[#dfc07b] border border-[#d4af68]/20">
                   <Compass className="h-5 w-5" />
                 </div>
                 <div>
@@ -327,7 +338,7 @@ export function SettingsView({
         <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/[0.07] text-foreground border border-white/10">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-400/10 text-violet-300 border border-violet-400/20">
                 <Speaker className="h-5 w-5" />
               </div>
               <div>
@@ -347,6 +358,41 @@ export function SettingsView({
                 Connect URL
               </Button>
             </div>
+          </div>
+
+          <div className="border-t border-white/[0.06] pt-3">
+            {zones.length === 0 ? (
+              <p className="text-xs text-muted-foreground py-1">
+                No playback devices found on the network yet. Click Scan Network or Connect URL to add one.
+              </p>
+            ) : (
+              <ul className="divide-y divide-white/[0.05]">
+                {zones.map((z) => {
+                  const isPlaying = z.state === "playing";
+                  const isPaused = z.state === "paused";
+                  const kindLabel = z.renderer.kind === "player" ? "Remote Player" : "UPnP / DLNA";
+                  const model = [z.renderer.manufacturer, z.renderer.model].filter(Boolean).join(" ");
+                  const meta = [kindLabel, model, z.renderer.host].filter(Boolean).join(" · ");
+                  return (
+                    <li key={z.zoneId} className="flex items-center justify-between gap-3 py-2.5 first:pt-1 last:pb-0">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-white">{z.renderer.name}</div>
+                        <div className="truncate text-xs text-muted-foreground">{meta}</div>
+                      </div>
+                      <span className="shrink-0 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <span
+                          className={cn(
+                            "h-1.5 w-1.5 rounded-full",
+                            isPlaying ? "bg-emerald-400" : isPaused ? "bg-white/60" : "bg-white/30",
+                          )}
+                        />
+                        {isPlaying ? "Playing" : isPaused ? "Paused" : "Ready"}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
         </section>
       </div>

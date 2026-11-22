@@ -72,11 +72,11 @@ var discoverShelfDefs = []shelfDef{
 		discoverPath: "/discover/newReleases",
 	},
 	{
-		slug:         "qobuzissims",
-		title:        "Qobuzissime",
-		subtitle:     "Standout recordings singled out by Qobuz editors",
-		indexKey:     "qobuzissims",
-		featuredType: "qobuzissims",
+		slug:         "most-streamed",
+		title:        "Most Streamed",
+		subtitle:     "Popular albums listeners are spinning right now",
+		indexKey:     "most_streamed",
+		featuredType: "most-streamed",
 	},
 	{
 		slug:         "album-of-the-week",
@@ -84,6 +84,13 @@ var discoverShelfDefs = []shelfDef{
 		subtitle:     "Weekly editorial spotlights",
 		indexKey:     "album_of_the_week",
 		discoverPath: "/discover/albumOfTheWeek",
+	},
+	{
+		slug:         "qobuzissims",
+		title:        "Qobuzissime",
+		subtitle:     "Standout recordings singled out by Qobuz editors",
+		indexKey:     "qobuzissims",
+		featuredType: "qobuzissims",
 	},
 	{
 		slug:         "press-awards",
@@ -98,13 +105,6 @@ var discoverShelfDefs = []shelfDef{
 		subtitle:     "Essential albums worth knowing inside and out",
 		indexKey:     "ideal_discography",
 		discoverPath: "/discover/idealDiscography",
-	},
-	{
-		slug:         "most-streamed",
-		title:        "Most Streamed",
-		subtitle:     "Popular albums listeners are spinning right now",
-		indexKey:     "most_streamed",
-		featuredType: "most-streamed",
 	},
 }
 

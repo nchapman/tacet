@@ -18,6 +18,7 @@ import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/PageHeader";
 import {
   QOBUZ_SEARCH_GC_TIME_MS,
   QOBUZ_SEARCH_STALE_TIME_MS,
@@ -143,10 +144,10 @@ export function SearchView({
   return (
     <div className="relative flex min-h-full flex-col">
       {/* Spotify-style large centered search bar pinned at top */}
-      <div className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/45 px-4 sm:px-8 py-4 backdrop-blur-2xl">
-        <div className="mx-auto max-w-2xl">
+      <PageHeader>
+        <div className="mx-auto w-full max-w-2xl">
           <div className="relative flex items-center">
-            <Search className="pointer-events-none absolute left-4 h-4.5 w-4.5 text-muted-foreground" />
+            <Search className="pointer-events-none absolute left-3.5 h-4 w-4 text-muted-foreground" />
             <input
               ref={inputRef}
               type="text"
@@ -160,7 +161,7 @@ export function SearchView({
               }}
               placeholder="What do you want to listen to?"
               aria-label="Global search"
-              className="h-12 w-full rounded-full border border-white/[0.12] bg-white/[0.06] pl-11 pr-12 text-[15px] text-foreground placeholder:text-muted-foreground/75 transition-colors focus:border-white/25 focus:bg-white/[0.08] focus:outline-none"
+              className="h-10 w-full rounded-full border border-white/[0.12] bg-white/[0.06] pl-10 pr-11 text-sm text-foreground placeholder:text-muted-foreground/75 transition-colors focus:border-white/25 focus:bg-white/[0.08] focus:outline-none"
             />
             {query ? (
               <button
@@ -181,7 +182,7 @@ export function SearchView({
             )}
           </div>
         </div>
-      </div>
+      </PageHeader>
 
       {/* Results body */}
       {!trimmed ? (
@@ -447,6 +448,8 @@ function TopResultCard({
     const alb = result.album;
     const qLabel = fmtAlbumQuality(alb);
     const hiRes = isHiRes(alb.maxBitDepth, alb.maxSampleRate);
+    const isDSD = alb.primaryFormat?.toUpperCase().startsWith("DSD");
+    const hiResLabel = isDSD ? "DSD" : hiRes ? "HI-RES" : "";
     return (
       <div
         role="button"
@@ -461,7 +464,17 @@ function TopResultCard({
         className="group relative flex h-[216px] flex-col justify-between rounded-2xl border border-white/[0.08] bg-white/[0.04] p-5 transition-colors hover:bg-white/[0.07] cursor-pointer"
       >
         <div className="flex items-start justify-between gap-3">
-          <AlbumArt artworkUrl={alb.artworkUrl} alt={alb.title} className="h-20 w-20 rounded-xl shadow-lg" />
+          <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl shadow-lg">
+            <AlbumArt artworkUrl={alb.artworkUrl} alt={alb.title} className="h-full w-full" />
+            {hiResLabel && (
+              <span
+                title={qLabel}
+                className="pointer-events-none absolute bottom-1.5 right-1.5 rounded-md bg-black/60 px-1.5 py-0.5 text-[8.5px] font-semibold tracking-[0.06em] text-[#dfc07b] backdrop-blur-md border border-white/[0.12]"
+              >
+                {hiResLabel}
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-1.5">
             <Button
               size="icon"
@@ -495,11 +508,7 @@ function TopResultCard({
             </Badge>
             <span className="truncate text-foreground/85">{alb.artist}</span>
             {alb.year ? <span>· {alb.year}</span> : null}
-            {qLabel && (
-              <Badge variant={hiRes ? "hires" : "muted"} className="text-[10px]">
-                {qLabel}
-              </Badge>
-            )}
+            {qLabel && <span className="font-mono text-[11px] text-muted-foreground">· {qLabel}</span>}
           </div>
         </div>
       </div>
@@ -549,9 +558,10 @@ function TopResultCard({
             </button>
             {tr.album && <span className="truncate">· {tr.album}</span>}
             {qLabel && (
-              <Badge variant={hiRes ? "hires" : "muted"} className="text-[10px]">
-                {qLabel}
-              </Badge>
+              <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+                <span>· {qLabel}</span>
+                {hiRes && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/75" title="Hi-Res Audio" />}
+              </span>
             )}
           </div>
         </div>
