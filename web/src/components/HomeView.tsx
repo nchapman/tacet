@@ -110,7 +110,6 @@ export function HomeView({ libraryStatus, onOpenAlbum, onNavigate, onPlay }: Hom
                   key={alb.id}
                   album={alb}
                   subtitle={`${alb.artist} · ${alb.recentPlays} ${alb.recentPlays === 1 ? "play" : "plays"}`}
-                  showSourceBadge
                   onOpen={onOpenAlbum}
                   onPlay={onPlay}
                 />
@@ -168,7 +167,6 @@ export function HomeView({ libraryStatus, onOpenAlbum, onNavigate, onPlay }: Hom
                 <AlbumCard
                   key={alb.id}
                   album={alb}
-                  showSourceBadge
                   onOpen={onOpenAlbum}
                   onPlay={onPlay}
                 />

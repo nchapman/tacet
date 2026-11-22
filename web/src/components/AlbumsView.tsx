@@ -146,7 +146,6 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
               <AlbumCard
                 key={alb.id}
                 album={alb}
-                showSourceBadge={hasRemote}
                 onOpen={onOpenAlbum}
                 onPlay={onPlay}
               />

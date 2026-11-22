@@ -7,7 +7,6 @@ import { cn } from "@/lib/utils";
 interface AlbumCardProps {
   album: Album;
   subtitle?: string;
-  showSourceBadge?: boolean;
   showInLibraryBadge?: boolean;
   onOpen: (album: Album) => void;
   onPlay?: (source: QueueSource, startIndex?: number) => void;
@@ -25,7 +24,6 @@ function shortHiRes(album: Album): string {
 export function AlbumCard({
   album,
   subtitle,
-  showSourceBadge = false,
   showInLibraryBadge = false,
   onOpen,
   onPlay,
@@ -33,7 +31,6 @@ export function AlbumCard({
 }: AlbumCardProps) {
   const hiRes = isHiRes(album.maxBitDepth, album.maxSampleRate);
   const hiResLabel = hiRes ? shortHiRes(album) : "";
-  const provider = (album.provider || album.source || "local").toLowerCase();
 
   return (
     <div
@@ -56,17 +53,13 @@ export function AlbumCard({
           />
         </button>
 
-        {/* Top-left subtle source / library pill */}
-        {showInLibraryBadge && album.inLibrary ? (
+        {/* Top-left library membership badge (used in Qobuz Discover) */}
+        {showInLibraryBadge && album.inLibrary && (
           <span className="pointer-events-none absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/75 px-2 py-0.5 text-[10px] font-medium text-emerald-300 backdrop-blur-md border border-emerald-400/25">
             <Check className="h-2.5 w-2.5" />
             Library
           </span>
-        ) : showSourceBadge && provider !== "local" ? (
-          <span className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/75 px-2 py-0.5 text-[10px] font-medium text-sky-300 backdrop-blur-md border border-sky-400/25 capitalize">
-            {provider}
-          </span>
-        ) : null}
+        )}
 
         {/* Bottom-left version count badge */}
         {(album.versionCount ?? 1) > 1 && (
