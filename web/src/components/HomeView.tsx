@@ -1,6 +1,6 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { ArrowRight, Award, Compass, Disc3, Flame, ListMusic, Loader2, Sparkles, Star, TrendingUp, Users } from "lucide-react";
-import { memo, useState } from "react";
+import { ArrowRight, Award, Compass, Disc3, Flame, ListMusic, Sparkles, Star, TrendingUp, Users } from "lucide-react";
+import { memo } from "react";
 import { Link } from "react-router";
 import { tacetClient } from "@/api/client";
 import type { Album, DiscoverShelf, HeavyRotationAlbum, LibraryStatus, QueueSource } from "@/api/types";
@@ -8,11 +8,11 @@ import { AlbumCard } from "@/components/AlbumCard";
 import type { AppSection } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { QOBUZ_SEARCH_GC_TIME_MS, QOBUZ_SEARCH_STALE_TIME_MS, queryErrorMessage, queryKeys } from "@/lib/query";
-import { cn } from "@/lib/utils";
 import { discoverShelfPath } from "@/routes";
 
 interface HomeViewProps {
   libraryStatus: LibraryStatus | null;
+  discoverGenreIds: number[];
   onOpenAlbum: (album: Album) => void;
   onNavigate: (section: AppSection) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
@@ -39,12 +39,11 @@ function shelfIcon(slug: string) {
 
 export const HomeView = memo(function HomeView({
   libraryStatus,
+  discoverGenreIds,
   onOpenAlbum,
   onNavigate,
   onPlay,
 }: HomeViewProps) {
-  const [selectedGenreId, setSelectedGenreId] = useState<number | null>(null);
-
   const rotationQuery = useQuery({
     queryKey: queryKeys.library.heavyRotation(30, 12),
     queryFn: ({ signal }) => tacetClient.getHeavyRotation(30, 12, { signal }),
@@ -54,9 +53,9 @@ export const HomeView = memo(function HomeView({
     queryFn: ({ signal }) => tacetClient.listLibraryAlbums({ sort: "added", groupVersions: true, limit: 12 }, { signal }),
   });
   const discoverQuery = useQuery({
-    queryKey: queryKeys.discover.feed(selectedGenreId),
+    queryKey: queryKeys.discover.feed(discoverGenreIds),
     queryFn: ({ signal }) =>
-      tacetClient.getDiscover(selectedGenreId ? [selectedGenreId] : undefined, { signal }),
+      tacetClient.getDiscover(discoverGenreIds.length > 0 ? discoverGenreIds : undefined, { signal }),
     staleTime: QOBUZ_SEARCH_STALE_TIME_MS,
     gcTime: QOBUZ_SEARCH_GC_TIME_MS,
     placeholderData: keepPreviousData,
@@ -66,7 +65,6 @@ export const HomeView = memo(function HomeView({
   const recent: Album[] = recentQuery.data?.items ?? [];
   const discover = discoverQuery.data;
   const discoverShelves: DiscoverShelf[] = discover?.shelves ?? [];
-  const discoverGenres = discover?.genres ?? [];
   const loading = rotationQuery.isPending || recentQuery.isPending;
   const errMsg = queryErrorMessage(rotationQuery.error ?? recentQuery.error);
 
@@ -207,111 +205,49 @@ export const HomeView = memo(function HomeView({
         </section>
 
         {/* Unified Editorial Discovery Shelves */}
-        {discover?.connected && (
+        {discover?.connected && discoverShelves.length > 0 && (
           <div className="space-y-10 pt-2 border-t border-white/[0.07]">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-lg font-semibold tracking-tight text-white">Discover</h2>
-                  {discoverQuery.isFetching && (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                  )}
-                </div>
-              </div>
-
-              {discoverGenres.length > 0 && (
-                <div
-                  role="tablist"
-                  aria-label="Filter discovery by genre"
-                  className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none"
-                >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={selectedGenreId === null}
-                    onClick={() => setSelectedGenreId(null)}
-                    className={cn(
-                      "shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors cursor-pointer",
-                      selectedGenreId === null
-                        ? "bg-white text-black"
-                        : "bg-white/[0.06] text-muted-foreground hover:bg-white/[0.11] hover:text-foreground",
-                    )}
-                  >
-                    All Genres
-                  </button>
-                  {discoverGenres.map((genre) => {
-                    const active = selectedGenreId === genre.id;
-                    return (
-                      <button
-                        key={genre.id}
-                        type="button"
-                        role="tab"
-                        aria-selected={active}
-                        onClick={() => setSelectedGenreId(active ? null : genre.id)}
-                        className={cn(
-                          "shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors cursor-pointer",
-                          active
-                            ? "bg-white text-black"
-                            : "bg-white/[0.06] text-muted-foreground hover:bg-white/[0.11] hover:text-foreground",
-                        )}
-                      >
-                        {genre.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {discoverQuery.error && (
-              <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/40 px-4 py-3 text-sm text-red-200">
-                {queryErrorMessage(discoverQuery.error)}
-              </div>
-            )}
-
-            <div className={cn("space-y-10 transition-opacity duration-200", discoverQuery.isPlaceholderData && "opacity-60")}>
-              {discoverShelves.map((shelf) => {
-                const maxItems = SHELF_LIMITS[shelf.slug] ?? 6;
-                const items = shelf.items.slice(0, maxItems);
-                if (items.length === 0) return null;
-                return (
-                  <section key={shelf.slug} aria-label={shelf.title} className="space-y-4">
-                    <div className="flex items-end justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          {shelfIcon(shelf.slug)}
-                          <h3 className="text-lg font-semibold tracking-tight text-white">{shelf.title}</h3>
-                        </div>
-                        {shelf.subtitle && (
-                          <p className="mt-0.5 text-xs text-muted-foreground truncate">{shelf.subtitle}</p>
-                        )}
+            {discoverShelves.map((shelf) => {
+              const maxItems = SHELF_LIMITS[shelf.slug] ?? 6;
+              const items = shelf.items.slice(0, maxItems);
+              if (items.length === 0) return null;
+              return (
+                <section key={shelf.slug} aria-label={shelf.title} className="space-y-4">
+                  <div className="flex items-end justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        {shelfIcon(shelf.slug)}
+                        <h2 className="text-lg font-semibold tracking-tight text-white">{shelf.title}</h2>
                       </div>
-                      {(shelf.hasMore || shelf.items.length > maxItems) && (
-                        <Link
-                          to={discoverShelfPath(shelf.slug, selectedGenreId)}
-                          className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                          <span>See all</span>
-                          <ArrowRight className="h-3.5 w-3.5" />
-                        </Link>
+                      {shelf.subtitle && (
+                        <p className="mt-0.5 text-xs text-muted-foreground truncate">{shelf.subtitle}</p>
                       )}
                     </div>
+                    {(shelf.hasMore || shelf.items.length > maxItems) && (
+                      <Link
+                        to={discoverShelfPath(shelf.slug)}
+                        className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <span>See all</span>
+                        <ArrowRight className="h-3.5 w-3.5" />
+                      </Link>
+                    )}
+                  </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-x-5 gap-y-7">
-                      {items.map((alb) => (
-                        <AlbumCard
-                          key={alb.id}
-                          album={alb}
-                          showInLibraryBadge
-                          onOpen={onOpenAlbum}
-                          onPlay={onPlay}
-                        />
-                      ))}
-                    </div>
-                  </section>
-                );
-              })}
-            </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-x-5 gap-y-7">
+                    {items.map((alb) => (
+                      <AlbumCard
+                        key={alb.id}
+                        album={alb}
+                        showInLibraryBadge
+                        onOpen={onOpenAlbum}
+                        onPlay={onPlay}
+                      />
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
           </div>
         )}
       </div>

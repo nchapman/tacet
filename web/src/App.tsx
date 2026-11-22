@@ -91,6 +91,28 @@ export function App() {
     }
   }, []);
 
+  const [discoverGenreIds, setDiscoverGenreIds] = useState<number[]>(() => {
+    try {
+      const raw = window.localStorage.getItem("tacet.discoverGenres");
+      if (!raw) return [];
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((v): v is number => typeof v === "number" && Number.isInteger(v) && v > 0);
+    } catch {
+      return [];
+    }
+  });
+  const handleDiscoverGenreIdsChange = useCallback((ids: number[]) => {
+    const clean = Array.from(new Set(ids.filter((id) => Number.isInteger(id) && id > 0))).sort((a, b) => a - b);
+    setDiscoverGenreIds(clean);
+    try {
+      if (clean.length === 0) window.localStorage.removeItem("tacet.discoverGenres");
+      else window.localStorage.setItem("tacet.discoverGenres", JSON.stringify(clean));
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
   const prevEtagRef = useRef<string | undefined>(undefined);
   const libraryEtag = tacet.libraryStatus?.etag;
 
@@ -340,6 +362,7 @@ export function App() {
               element={
                 <HomeRoute
                   libraryStatus={tacet.libraryStatus}
+                  discoverGenreIds={discoverGenreIds}
                   onOpenAlbum={handleOpenAlbum}
                   onNavigate={navigateSection}
                   onPlay={handlePlay}
@@ -350,6 +373,7 @@ export function App() {
               path="/discover/:slug"
               element={
                 <DiscoverShelfView
+                  discoverGenreIds={discoverGenreIds}
                   onOpenAlbum={handleOpenAlbum}
                   onPlay={handlePlay}
                 />
@@ -468,10 +492,12 @@ export function App() {
                   qobuzStatus={tacet.qobuzStatus}
                   streamMode={tacet.settings.streamMode}
                   groupVersions={groupVersions}
+                  discoverGenreIds={discoverGenreIds}
                   zones={tacet.zones}
                   discovering={tacet.discovering}
                   onStreamModeChange={handleStreamModeChange}
                   onGroupVersionsChange={handleGroupVersionsChange}
+                  onDiscoverGenreIdsChange={handleDiscoverGenreIdsChange}
                   onQobuzStatusChange={tacet.setQobuzStatus}
                   onDiscover={handleDiscover}
                   onOpenConnect={handleOpenConnect}
@@ -555,11 +581,13 @@ export function App() {
 
 function HomeRoute({
   libraryStatus,
+  discoverGenreIds,
   onOpenAlbum,
   onNavigate,
   onPlay,
 }: {
   libraryStatus: ReturnType<typeof useTacet>["libraryStatus"];
+  discoverGenreIds: number[];
   onOpenAlbum: (album: Album) => void;
   onNavigate: (section: AppSection) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
@@ -572,6 +600,7 @@ function HomeRoute({
   return (
     <HomeView
       libraryStatus={libraryStatus}
+      discoverGenreIds={discoverGenreIds}
       onOpenAlbum={onOpenAlbum}
       onNavigate={onNavigate}
       onPlay={onPlay}

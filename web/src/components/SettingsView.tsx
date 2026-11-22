@@ -1,12 +1,12 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, HardDrive, Plus, Radio, RefreshCw, Speaker } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, CheckCircle2, Compass, HardDrive, Plus, Radio, RefreshCw, Speaker } from "lucide-react";
 import { useState } from "react";
 import { tacetClient } from "@/api/client";
 import type { LibraryStatus, QobuzStatus, StreamMode, ZoneSnapshot } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { invalidateQobuzLogout } from "@/lib/query";
+import { invalidateQobuzLogout, QOBUZ_SEARCH_GC_TIME_MS, QOBUZ_SEARCH_STALE_TIME_MS, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
 interface SettingsViewProps {
@@ -14,10 +14,12 @@ interface SettingsViewProps {
   qobuzStatus: QobuzStatus | null;
   streamMode: StreamMode;
   groupVersions: boolean;
+  discoverGenreIds: number[];
   zones: ZoneSnapshot[];
   discovering: boolean;
   onStreamModeChange: (mode: StreamMode) => void;
   onGroupVersionsChange: (enabled: boolean) => void;
+  onDiscoverGenreIdsChange: (ids: number[]) => void;
   onQobuzStatusChange: (status: QobuzStatus) => void;
   onDiscover: () => void;
   onOpenConnect: () => void;
@@ -29,10 +31,12 @@ export function SettingsView({
   qobuzStatus,
   streamMode,
   groupVersions,
+  discoverGenreIds,
   zones,
   discovering,
   onStreamModeChange,
   onGroupVersionsChange,
+  onDiscoverGenreIdsChange,
   onQobuzStatusChange,
   onDiscover,
   onOpenConnect,
@@ -42,6 +46,23 @@ export function SettingsView({
   const [syncing, setSyncing] = useState(false);
   const [msg, setMsg] = useState("");
   const [errMsg, setErrMsg] = useState("");
+
+  const discoverQuery = useQuery({
+    queryKey: queryKeys.discover.feed([]),
+    queryFn: ({ signal }) => tacetClient.getDiscover(undefined, { signal }),
+    enabled: Boolean(qobuzStatus?.authenticated),
+    staleTime: QOBUZ_SEARCH_STALE_TIME_MS,
+    gcTime: QOBUZ_SEARCH_GC_TIME_MS,
+  });
+  const discoverGenres = discoverQuery.data?.genres ?? [];
+
+  const toggleDiscoverGenre = (genreId: number) => {
+    if (discoverGenreIds.includes(genreId)) {
+      onDiscoverGenreIdsChange(discoverGenreIds.filter((id) => id !== genreId));
+    } else {
+      onDiscoverGenreIdsChange([...discoverGenreIds, genreId]);
+    }
+  };
 
   const handleSync = async (provider: "all" | "local" | "qobuz") => {
     setSyncing(true);
@@ -233,6 +254,74 @@ export function SettingsView({
             </div>
           </div>
         </section>
+
+        {/* Discovery Preferences */}
+        {qobuzStatus?.authenticated && discoverGenres.length > 0 && (
+          <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/[0.07] text-foreground border border-white/10">
+                  <Compass className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-semibold text-white">Discovery Genres</h2>
+                  <p className="text-xs text-muted-foreground">
+                    {discoverGenreIds.length === 0
+                      ? "Showing editorial picks across all genres on Home"
+                      : `Filtering Home discovery shelves to ${discoverGenreIds.length} favorite ${discoverGenreIds.length === 1 ? "genre" : "genres"}`}
+                  </p>
+                </div>
+              </div>
+              {discoverGenreIds.length > 0 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onDiscoverGenreIdsChange([])}
+                >
+                  Reset to All
+                </Button>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Favorite discovery genres">
+              <button
+                type="button"
+                aria-pressed={discoverGenreIds.length === 0}
+                onClick={() => onDiscoverGenreIdsChange([])}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border",
+                  discoverGenreIds.length === 0
+                    ? "border-white bg-white text-black"
+                    : "border-white/[0.08] bg-white/[0.04] text-muted-foreground hover:bg-white/[0.08] hover:text-foreground",
+                )}
+              >
+                {discoverGenreIds.length === 0 && <Check className="h-3 w-3" />}
+                All Genres
+              </button>
+              {discoverGenres.map((genre) => {
+                const selected = discoverGenreIds.includes(genre.id);
+                return (
+                  <button
+                    key={genre.id}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => toggleDiscoverGenre(genre.id)}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border",
+                      selected
+                        ? "border-white bg-white text-black"
+                        : "border-white/[0.08] bg-white/[0.04] text-muted-foreground hover:bg-white/[0.08] hover:text-foreground",
+                    )}
+                  >
+                    {selected && <Check className="h-3 w-3" />}
+                    {genre.name}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {/* Playback Devices */}
         <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5 space-y-4">

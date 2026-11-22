@@ -1,7 +1,7 @@
-import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { memo, useMemo } from "react";
-import { Link, useParams, useSearchParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { tacetClient } from "@/api/client";
 import type { Album, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
@@ -10,6 +10,7 @@ import { QOBUZ_SEARCH_GC_TIME_MS, QOBUZ_SEARCH_STALE_TIME_MS, queryErrorMessage,
 import { cn } from "@/lib/utils";
 
 interface DiscoverShelfViewProps {
+  discoverGenreIds: number[];
   onOpenAlbum: (album: Album) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
 }
@@ -17,28 +18,19 @@ interface DiscoverShelfViewProps {
 const PAGE_SIZE = 24;
 
 export const DiscoverShelfView = memo(function DiscoverShelfView({
+  discoverGenreIds,
   onOpenAlbum,
   onPlay,
 }: DiscoverShelfViewProps) {
   const { slug = "" } = useParams();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const rawGenre = searchParams.get("genre");
-  const selectedGenreId = rawGenre && /^\d+$/.test(rawGenre) ? Number(rawGenre) : null;
-
-  const feedQuery = useQuery({
-    queryKey: queryKeys.discover.feed(null),
-    queryFn: ({ signal }) => tacetClient.getDiscover(undefined, { signal }),
-    staleTime: QOBUZ_SEARCH_STALE_TIME_MS,
-    gcTime: QOBUZ_SEARCH_GC_TIME_MS,
-  });
 
   const shelfQuery = useInfiniteQuery({
-    queryKey: queryKeys.discover.shelf(slug, selectedGenreId),
+    queryKey: queryKeys.discover.shelf(slug, discoverGenreIds),
     queryFn: ({ pageParam, signal }) =>
       tacetClient.getDiscoverShelf(
         slug,
         {
-          genreIds: selectedGenreId ? [selectedGenreId] : undefined,
+          genreIds: discoverGenreIds.length > 0 ? discoverGenreIds : undefined,
           limit: PAGE_SIZE,
           offset: pageParam,
         },
@@ -56,7 +48,6 @@ export const DiscoverShelfView = memo(function DiscoverShelfView({
   });
 
   const firstPage = shelfQuery.data?.pages[0];
-  const genres = feedQuery.data?.genres ?? [];
   const albums = useMemo(() => {
     const pages = shelfQuery.data?.pages ?? [];
     const seen = new Set<string>();
@@ -70,13 +61,6 @@ export const DiscoverShelfView = memo(function DiscoverShelfView({
     }
     return out;
   }, [shelfQuery.data?.pages]);
-
-  const setGenre = (genreId: number | null) => {
-    const next = new URLSearchParams(searchParams);
-    if (genreId) next.set("genre", String(genreId));
-    else next.delete("genre");
-    setSearchParams(next, { replace: true });
-  };
 
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-8 py-6 sm:py-8 space-y-6">
@@ -102,49 +86,6 @@ export const DiscoverShelfView = memo(function DiscoverShelfView({
         )}
       </div>
 
-      {genres.length > 0 && (
-        <div
-          role="tablist"
-          aria-label="Filter shelf by genre"
-          className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none"
-        >
-          <button
-            type="button"
-            role="tab"
-            aria-selected={selectedGenreId === null}
-            onClick={() => setGenre(null)}
-            className={cn(
-              "shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors cursor-pointer",
-              selectedGenreId === null
-                ? "bg-white text-black"
-                : "bg-white/[0.06] text-muted-foreground hover:bg-white/[0.11] hover:text-foreground",
-            )}
-          >
-            All Genres
-          </button>
-          {genres.map((genre) => {
-            const active = selectedGenreId === genre.id;
-            return (
-              <button
-                key={genre.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => setGenre(active ? null : genre.id)}
-                className={cn(
-                  "shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors cursor-pointer",
-                  active
-                    ? "bg-white text-black"
-                    : "bg-white/[0.06] text-muted-foreground hover:bg-white/[0.11] hover:text-foreground",
-                )}
-              >
-                {genre.name}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
       {shelfQuery.error && (
         <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
           {queryErrorMessage(shelfQuery.error)}
@@ -163,7 +104,7 @@ export const DiscoverShelfView = memo(function DiscoverShelfView({
         </div>
       ) : albums.length === 0 ? (
         <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-6 text-center text-sm text-muted-foreground">
-          No albums found for this genre.
+          No albums found for your selected genres.
         </p>
       ) : (
         <div

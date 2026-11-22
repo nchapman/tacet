@@ -61,8 +61,10 @@ export const queryKeys = {
   },
   discover: {
     all: ["discover"] as const,
-    feed: (genreId: number | null) => ["discover", "feed", genreId ?? "all"] as const,
-    shelf: (slug: string, genreId: number | null) => ["discover", "shelf", slug, genreId ?? "all"] as const,
+    feed: (genreIds: number[] = []) =>
+      ["discover", "feed", genreIds.length > 0 ? [...genreIds].sort((a, b) => a - b).join(",") : "all"] as const,
+    shelf: (slug: string, genreIds: number[] = []) =>
+      ["discover", "shelf", slug, genreIds.length > 0 ? [...genreIds].sort((a, b) => a - b).join(",") : "all"] as const,
     similarAlbums: (albumId: string) => ["discover", "similar-albums", albumId] as const,
     similarArtists: (artistId: number) => ["discover", "similar-artists", artistId] as const,
   },
