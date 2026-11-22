@@ -1,10 +1,11 @@
+import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Compass, Disc3, Flame, ListMusic, Sparkles, Users } from "lucide-react";
 import { tacetClient } from "@/api/client";
 import type { Album, HeavyRotationAlbum, LibraryStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import type { AppSection } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
-import { useSWR } from "@/lib/swr";
+import { queryErrorMessage, queryKeys } from "@/lib/query";
 
 interface HomeViewProps {
   libraryStatus: LibraryStatus | null;
@@ -14,23 +15,19 @@ interface HomeViewProps {
 }
 
 export function HomeView({ libraryStatus, onOpenAlbum, onNavigate, onPlay }: HomeViewProps) {
-  const etag = libraryStatus?.etag;
-
-  const rotationQuery = useSWR(
-    "library:heavy-rotation:30:12",
-    (signal) => tacetClient.getHeavyRotation(30, 12, { signal }),
-    { version: etag },
-  );
-  const recentQuery = useSWR(
-    "library:albums:added:grouped:18",
-    (signal) => tacetClient.listLibraryAlbums({ sort: "added", groupVersions: true, limit: 18 }, { signal }),
-    { version: etag },
-  );
+  const rotationQuery = useQuery({
+    queryKey: queryKeys.library.heavyRotation(30, 12),
+    queryFn: ({ signal }) => tacetClient.getHeavyRotation(30, 12, { signal }),
+  });
+  const recentQuery = useQuery({
+    queryKey: queryKeys.library.albums({ sort: "added", groupVersions: true, limit: 18 }),
+    queryFn: ({ signal }) => tacetClient.listLibraryAlbums({ sort: "added", groupVersions: true, limit: 18 }, { signal }),
+  });
 
   const rotation: HeavyRotationAlbum[] = rotationQuery.data?.items ?? [];
   const recent: Album[] = recentQuery.data?.items ?? [];
-  const loading = rotationQuery.isLoading || recentQuery.isLoading;
-  const errMsg = rotationQuery.error || recentQuery.error;
+  const loading = rotationQuery.isPending || recentQuery.isPending;
+  const errMsg = queryErrorMessage(rotationQuery.error ?? recentQuery.error);
 
   return (
     <div className="relative min-h-full pb-12">

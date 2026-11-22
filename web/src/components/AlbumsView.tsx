@@ -1,10 +1,11 @@
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
 import type { Album, LibraryStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { Switch } from "@/components/ui/switch";
-import { useSWR } from "@/lib/swr";
+import { queryErrorMessage, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
 type SourceFilter = "all" | "local" | "remote";
@@ -48,9 +49,9 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
     [searchParams, setSearchParams],
   );
 
-  const { data, error: errMsg, isLoading: loading } = useSWR(
-    `library:albums:${source}:${sort}:${groupVersions ? "grouped" : "flat"}:500`,
-    (signal) =>
+  const albumsQuery = useQuery({
+    queryKey: queryKeys.library.albums({ source, sort, groupVersions, limit: 500 }),
+    queryFn: ({ signal }) =>
       tacetClient.listLibraryAlbums(
         {
           source,
@@ -60,11 +61,13 @@ export function AlbumsView({ libraryStatus, onOpenAlbum, onPlay }: AlbumsViewPro
         },
         { signal },
       ),
-    { version: libraryStatus?.etag, keepPreviousData: true },
-  );
+    placeholderData: keepPreviousData,
+  });
 
-  const albums = data?.items ?? [];
-  const total = data?.total ?? 0;
+  const albums = albumsQuery.data?.items ?? [];
+  const total = albumsQuery.data?.total ?? 0;
+  const loading = albumsQuery.isPending;
+  const errMsg = queryErrorMessage(albumsQuery.error);
 
   const hasRemote = (libraryStatus?.remoteAlbums ?? 0) > 0;
 

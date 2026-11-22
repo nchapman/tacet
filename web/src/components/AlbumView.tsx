@@ -6,7 +6,7 @@ import type { Album, AlbumVersion, QueuePosition, QueueSource } from "@/api/type
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { invalidateSwrPrefix } from "@/lib/swr";
+import { queryClient, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
 interface AlbumViewProps {
@@ -89,8 +89,6 @@ export function AlbumView({
         const saved = await tacetClient.addRemoteAlbum(provider, externalId);
         onAlbumUpdated?.({ ...album, ...saved, inLibrary: true });
       }
-      invalidateSwrPrefix("library:");
-      invalidateSwrPrefix("search:library:");
     } catch (err) {
       setActionErr(err instanceof Error ? err.message : String(err));
     } finally {
@@ -105,7 +103,6 @@ export function AlbumView({
     try {
       const updated = await tacetClient.setPrimaryVersion(album.id);
       onAlbumUpdated?.(updated);
-      invalidateSwrPrefix("library:");
     } catch (err) {
       setActionErr(err instanceof Error ? err.message : String(err));
     } finally {
@@ -118,8 +115,7 @@ export function AlbumView({
     try {
       await tacetClient.addRemoteTrack(provider, trackExtId || trackId.replace(`${provider}:`, ""));
       setAddedTrackIds((prev) => ({ ...prev, [trackId]: true }));
-      invalidateSwrPrefix("library:");
-      invalidateSwrPrefix("search:library:");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.library.all });
     } catch (err) {
       setActionErr(err instanceof Error ? err.message : String(err));
     }

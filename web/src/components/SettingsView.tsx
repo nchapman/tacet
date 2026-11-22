@@ -4,7 +4,7 @@ import { tacetClient } from "@/api/client";
 import type { LibraryStatus, QobuzStatus, StreamMode, ZoneSnapshot } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { invalidateSwrPrefix } from "@/lib/swr";
+import { invalidateQobuzLogout } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
 interface SettingsViewProps {
@@ -56,10 +56,7 @@ export function SettingsView({
     try {
       const st = await tacetClient.qobuzLogout();
       onQobuzStatusChange(st);
-      invalidateSwrPrefix("library:");
-      invalidateSwrPrefix("qobuz:");
-      invalidateSwrPrefix("search:");
-      invalidateSwrPrefix("album:qobuz:");
+      invalidateQobuzLogout();
       setMsg("Signed out of Qobuz. Your play history is preserved.");
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : String(err));

@@ -1,3 +1,4 @@
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TacetAPIError, tacetClient } from "@/api/client";
@@ -5,7 +6,6 @@ import { fmtAlbumQuality, isHiRes } from "@/api/format";
 import type {
   Album,
   ArtistSummary,
-  LibraryStatus,
   QobuzArtistDetail,
   QobuzStatus,
   QueuePosition,
@@ -14,12 +14,11 @@ import type {
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { QOBUZ_REMOTE_STALE_TIME_MS, queryErrorMessage, queryKeys } from "@/lib/query";
 import { useScrollRestoration } from "@/lib/scroll";
-import { useSWR } from "@/lib/swr";
 import { cn } from "@/lib/utils";
 
 interface ArtistsViewProps {
-  libraryStatus: LibraryStatus | null;
   qobuzStatus: QobuzStatus | null;
   initialArtist?: string;
   initialQobuzArtistId?: number;
@@ -47,7 +46,6 @@ function normTitle(s: string): string {
  *   shows Library albums on top, then a clean divider and "More on Qobuz" remote albums below.
  */
 export function ArtistsView({
-  libraryStatus,
   qobuzStatus,
   initialArtist,
   initialQobuzArtistId,
@@ -74,7 +72,6 @@ export function ArtistsView({
   });
 
   const qobuzConnected = Boolean(qobuzStatus?.authenticated);
-  const etag = libraryStatus?.etag;
 
   useEffect(() => {
     if (initialArtist) {
@@ -87,21 +84,25 @@ export function ArtistsView({
     }
   }, [initialArtist, initialQobuzArtistId]);
 
-  // Fetch unified library artist list (cached in LRU SWR).
-  const artistsQuery = useSWR(
-    "library:artists:500",
-    (signal) => tacetClient.listLibraryArtists({ limit: 500 }, { signal }),
-    { version: etag },
-  );
+  // Fetch unified library artist list.
+  const artistsQuery = useQuery({
+    queryKey: queryKeys.library.artists(500),
+    queryFn: ({ signal }) => tacetClient.listLibraryArtists({ limit: 500 }, { signal }),
+  });
   const artists: ArtistSummary[] = useMemo(() => artistsQuery.data?.items ?? [], [artistsQuery.data]);
 
   // Default to the first artist on desktop when no artist is selected yet.
   const effectiveArtist = selectedArtist || artists[0]?.name || "";
 
   // Fetch library albums for the selected artist.
-  const albumsQuery = useSWR(
-    effectiveArtist ? `library:albums:artist:${effectiveArtist.toLowerCase()}:year:grouped:200` : null,
-    (signal) =>
+  const albumsQuery = useQuery({
+    queryKey: queryKeys.library.albums({
+      artist: effectiveArtist.toLowerCase(),
+      groupVersions: true,
+      sort: "year",
+      limit: 200,
+    }),
+    queryFn: ({ signal }) =>
       tacetClient.listLibraryAlbums(
         {
           artist: effectiveArtist,
@@ -111,21 +112,15 @@ export function ArtistsView({
         },
         { signal },
       ),
-    { version: etag, keepPreviousData: true },
-  );
+    enabled: Boolean(effectiveArtist),
+    placeholderData: keepPreviousData,
+  });
   const albums: Album[] = useMemo(() => albumsQuery.data?.items ?? [], [albumsQuery.data]);
 
   // Progressively fetch remote Qobuz discography for the selected artist (cached 5 min).
-  const remoteKey =
-    effectiveArtist && qobuzConnected
-      ? selectedQobuzId
-        ? `qobuz:artist:id:${selectedQobuzId}`
-        : `qobuz:artist:name:${effectiveArtist.toLowerCase()}`
-      : null;
-
-  const remoteQuery = useSWR<QobuzArtistDetail | null>(
-    remoteKey,
-    async (signal) => {
+  const remoteQuery = useQuery<QobuzArtistDetail | null>({
+    queryKey: queryKeys.qobuz.artist(selectedQobuzId ? { id: selectedQobuzId } : { name: effectiveArtist }),
+    queryFn: async ({ signal }) => {
       try {
         return await tacetClient.qobuzArtist(
           selectedQobuzId ? { id: selectedQobuzId, limit: 50 } : { name: effectiveArtist, limit: 50 },
@@ -137,15 +132,16 @@ export function ArtistsView({
         throw err;
       }
     },
-    { staleTimeMs: 5 * 60_000 },
-  );
+    enabled: Boolean(effectiveArtist && qobuzConnected),
+    staleTime: QOBUZ_REMOTE_STALE_TIME_MS,
+  });
 
-  const loadingArtists = artistsQuery.isLoading;
+  const loadingArtists = artistsQuery.isPending;
   const loadingAlbums = albumsQuery.isLoading;
-  const errMsg = artistsQuery.error || albumsQuery.error;
+  const errMsg = queryErrorMessage(artistsQuery.error ?? albumsQuery.error);
   const remoteDetail = remoteQuery.data ?? null;
   const loadingRemote = remoteQuery.isLoading;
-  const remoteErr = remoteQuery.error;
+  const remoteErr = queryErrorMessage(remoteQuery.error);
 
   // Deduplicate Qobuz albums already present in the library section above.
   const remoteOnlyAlbums = useMemo(() => {

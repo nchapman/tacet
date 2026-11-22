@@ -1,15 +1,15 @@
+import { useQuery } from "@tanstack/react-query";
 import { Compass, Search, Sparkles } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 import { tacetClient } from "@/api/client";
-import type { Album, LibraryStatus, QobuzStatus, QueueSource } from "@/api/types";
+import type { Album, QobuzStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useSWR } from "@/lib/swr";
+import { queryErrorMessage, queryKeys } from "@/lib/query";
 
 interface QobuzViewProps {
   status: QobuzStatus | null;
-  libraryStatus: LibraryStatus | null;
   onStatusChange: (status: QobuzStatus) => void;
   onOpenAlbum: (album: Album) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
@@ -18,7 +18,6 @@ interface QobuzViewProps {
 
 export function QobuzView({
   status,
-  libraryStatus,
   onStatusChange,
   onOpenAlbum,
   onPlay,
@@ -44,15 +43,15 @@ export function QobuzView({
     return () => ctrl.abort();
   }, [status, onStatusChange]);
 
-  const albumsQuery = useSWR(
-    status?.authenticated ? "library:albums:provider:qobuz:added:200" : null,
-    (signal) => tacetClient.listLibraryAlbums({ provider: "qobuz", sort: "added", limit: 200 }, { signal }),
-    { version: libraryStatus?.etag },
-  );
+  const albumsQuery = useQuery({
+    queryKey: queryKeys.library.albums({ provider: "qobuz", sort: "added", limit: 200 }),
+    queryFn: ({ signal }) => tacetClient.listLibraryAlbums({ provider: "qobuz", sort: "added", limit: 200 }, { signal }),
+    enabled: Boolean(status?.authenticated),
+  });
 
   const albums: Album[] = albumsQuery.data?.items ?? [];
   const loading = albumsQuery.isLoading;
-  const errMsg = loginErr || albumsQuery.error;
+  const errMsg = loginErr || queryErrorMessage(albumsQuery.error);
 
   const handleTokenLogin = async (e: FormEvent) => {
     e.preventDefault();

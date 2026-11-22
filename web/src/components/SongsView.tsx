@@ -1,11 +1,12 @@
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { ListPlus, Play, SkipForward } from "lucide-react";
 import { useCallback } from "react";
 import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
 import { fmtDuration, fmtQuality, isHiRes } from "@/api/format";
-import type { GenreSummary, LibraryStatus, QueuePosition, QueueSource, Track } from "@/api/types";
+import type { GenreSummary, QueuePosition, QueueSource, Track } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
-import { useSWR } from "@/lib/swr";
+import { queryErrorMessage, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
 type TrackSort = "artist" | "title" | "album" | "added" | "plays" | "quality";
@@ -13,7 +14,6 @@ type TrackSort = "artist" | "title" | "album" | "added" | "plays" | "quality";
 const VALID_TRACK_SORTS = new Set<TrackSort>(["artist", "title", "album", "added", "plays", "quality"]);
 
 interface SongsViewProps {
-  libraryStatus: LibraryStatus | null;
   currentTrackId?: string;
   onOpenAlbumId: (albumId: string) => void;
   onOpenArtist: (artist: string) => void;
@@ -26,7 +26,6 @@ interface SongsViewProps {
  * rather than a dense spreadsheet table.
  */
 export function SongsView({
-  libraryStatus,
   currentTrackId,
   onOpenAlbumId,
   onOpenArtist,
@@ -54,15 +53,15 @@ export function SongsView({
     [searchParams, setSearchParams],
   );
 
-  const etag = libraryStatus?.etag;
   const dir = sort === "plays" || sort === "added" || sort === "quality" ? "desc" : "asc";
 
-  const genresQuery = useSWR("library:genres", (signal) => tacetClient.listLibraryGenres({}, { signal }), {
-    version: etag,
+  const genresQuery = useQuery({
+    queryKey: queryKeys.library.genres,
+    queryFn: ({ signal }) => tacetClient.listLibraryGenres({}, { signal }),
   });
-  const tracksQuery = useSWR(
-    `library:tracks:${genre}:${sort}:${dir}:300`,
-    (signal) =>
+  const tracksQuery = useQuery({
+    queryKey: queryKeys.library.tracks({ genre: genre || undefined, sort, dir, limit: 300 }),
+    queryFn: ({ signal }) =>
       tacetClient.listLibraryTracks(
         {
           genre: genre || undefined,
@@ -72,14 +71,14 @@ export function SongsView({
         },
         { signal },
       ),
-    { version: etag, keepPreviousData: true },
-  );
+    placeholderData: keepPreviousData,
+  });
 
   const genres: GenreSummary[] = genresQuery.data?.items ?? [];
   const tracks: Track[] = tracksQuery.data?.items ?? [];
   const total = tracksQuery.data?.total ?? 0;
-  const loading = tracksQuery.isLoading;
-  const errMsg = tracksQuery.error;
+  const loading = tracksQuery.isPending;
+  const errMsg = queryErrorMessage(tracksQuery.error);
 
   return (
     <div className="min-h-full pb-12">

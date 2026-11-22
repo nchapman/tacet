@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { Disc3, ListPlus, Loader2, Play, Search, SkipForward, Sparkles, UserRound, X } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { tacetClient } from "@/api/client";
@@ -17,7 +18,7 @@ import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useSWR } from "@/lib/swr";
+import { QOBUZ_REMOTE_STALE_TIME_MS, queryErrorMessage, queryKeys, useDebouncedValue } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
 interface SearchViewProps {
@@ -61,27 +62,31 @@ export function SearchView({
     inputRef.current?.select();
   }, [focusNonce]);
 
-  // Tier 1: Fast SQLite FTS5 local+synced library search (instant on cache hit, 60ms debounce on miss).
-  const libQuery = useSWR<LibrarySearchResult>(
-    trimmed ? `search:library:${trimmed.toLowerCase()}` : null,
-    (signal) => tacetClient.searchLibrary(trimmed, 8, { signal }),
-    { debounceMs: 60 },
-  );
+  const debouncedLib = useDebouncedValue(trimmed, 60);
+  const debouncedQobuz = useDebouncedValue(trimmed, 280);
 
-  // Tier 2: Progressive Qobuz remote catalog search below library results (cached 5 min, 280ms debounce on miss).
-  const qobuzQuery = useSWR<QobuzSearchResult>(
-    trimmed && qobuzConnected ? `search:qobuz:${trimmed.toLowerCase()}` : null,
-    (signal) => tacetClient.qobuzSearch(trimmed, { limit: 12 }, { signal }),
-    { staleTimeMs: 5 * 60_000, debounceMs: 280 },
-  );
+  // Tier 1: Fast SQLite FTS5 local+synced library search (instant on cache hit, 60ms debounce while typing).
+  const libQuery = useQuery<LibrarySearchResult>({
+    queryKey: queryKeys.library.search(debouncedLib),
+    queryFn: ({ signal }) => tacetClient.searchLibrary(debouncedLib, 8, { signal }),
+    enabled: Boolean(debouncedLib),
+  });
 
-  const libRes = libQuery.data ?? null;
-  const libLoading = libQuery.isLoading;
-  const libErr = libQuery.error;
+  // Tier 2: Progressive Qobuz remote catalog search below library results (cached 5 min, 280ms debounce while typing).
+  const qobuzQuery = useQuery<QobuzSearchResult>({
+    queryKey: queryKeys.qobuz.search(debouncedQobuz),
+    queryFn: ({ signal }) => tacetClient.qobuzSearch(debouncedQobuz, { limit: 12 }, { signal }),
+    enabled: Boolean(debouncedQobuz && qobuzConnected),
+    staleTime: QOBUZ_REMOTE_STALE_TIME_MS,
+  });
 
-  const qobuzRes = qobuzQuery.data ?? null;
-  const qobuzLoading = qobuzQuery.isLoading;
-  const qobuzErr = qobuzQuery.error;
+  const libRes = trimmed ? (libQuery.data ?? null) : null;
+  const libLoading = Boolean(trimmed) && (debouncedLib !== trimmed || libQuery.isLoading);
+  const libErr = trimmed ? queryErrorMessage(libQuery.error) : "";
+
+  const qobuzRes = trimmed && qobuzConnected ? (qobuzQuery.data ?? null) : null;
+  const qobuzLoading = Boolean(trimmed && qobuzConnected) && (debouncedQobuz !== trimmed || qobuzQuery.isLoading);
+  const qobuzErr = trimmed && qobuzConnected ? queryErrorMessage(qobuzQuery.error) : "";
 
   // Deduplicate Qobuz items that already appeared in the Library section above.
   const dedupedQobuz = useMemo(() => {

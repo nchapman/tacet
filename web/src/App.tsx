@@ -1,3 +1,4 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Volume2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -27,8 +28,8 @@ import { AmbientBackdrop } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
 import { useBrowserPlayer } from "@/hooks/useBrowserPlayer";
 import { useTacet } from "@/hooks/useTacet";
+import { invalidateLibraryQueries, queryErrorMessage, queryKeys } from "@/lib/query";
 import { useScrollRestoration } from "@/lib/scroll";
-import { useSWR } from "@/lib/swr";
 import { albumPath, artistPath, decodeAlbumKey, SECTION_LABELS, SECTION_PATHS, sectionFromPathname } from "@/routes";
 
 interface AlbumLocationState {
@@ -61,6 +62,19 @@ export function App() {
         activeState === "paused"),
   );
   const activeTransport = tacet.transport;
+
+  const queryClient = useQueryClient();
+  const prevEtagRef = useRef<string | undefined>(undefined);
+  const libraryEtag = tacet.libraryStatus?.etag;
+
+  // Invalidate library & album queries whenever the server library ETag advances over SSE.
+  useEffect(() => {
+    if (!libraryEtag) return;
+    if (prevEtagRef.current !== undefined && prevEtagRef.current !== libraryEtag) {
+      invalidateLibraryQueries(queryClient);
+    }
+    prevEtagRef.current = libraryEtag;
+  }, [libraryEtag, queryClient]);
 
   const isSplitPane = location.pathname === "/artists" || location.pathname.startsWith("/artists/");
 
@@ -224,7 +238,6 @@ export function App() {
               path="/albums/:albumSlug/:albumKey"
               element={
                 <AlbumRoute
-                  libraryEtag={tacet.libraryStatus?.etag}
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
                   isPlaying={tacet.activeZone?.state === "playing"}
                   onAmbientArt={setAlbumAmbientArt}
@@ -239,7 +252,6 @@ export function App() {
               path="/albums/:albumKey"
               element={
                 <AlbumRoute
-                  libraryEtag={tacet.libraryStatus?.etag}
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
                   isPlaying={tacet.activeZone?.state === "playing"}
                   onAmbientArt={setAlbumAmbientArt}
@@ -254,7 +266,6 @@ export function App() {
               path="/artists"
               element={
                 <ArtistsRoute
-                  libraryStatus={tacet.libraryStatus}
                   qobuzStatus={tacet.qobuzStatus}
                   onSelectArtist={(name) => openArtist(name)}
                   onBackToArtists={() => void routerNavigate("/artists")}
@@ -268,7 +279,6 @@ export function App() {
               path="/artists/:artistName"
               element={
                 <ArtistsRoute
-                  libraryStatus={tacet.libraryStatus}
                   qobuzStatus={tacet.qobuzStatus}
                   onSelectArtist={(name) => openArtist(name)}
                   onBackToArtists={() => void routerNavigate("/artists")}
@@ -282,7 +292,6 @@ export function App() {
               path="/songs"
               element={
                 <SongsView
-                  libraryStatus={tacet.libraryStatus}
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
                   onOpenAlbumId={(id) => openAlbumById(id)}
                   onOpenArtist={openArtist}
@@ -296,7 +305,6 @@ export function App() {
               element={
                 <QobuzView
                   status={tacet.qobuzStatus}
-                  libraryStatus={tacet.libraryStatus}
                   onStatusChange={tacet.setQobuzStatus}
                   onOpenAlbum={(alb) => openAlbumById(alb.id, alb)}
                   onPlay={(src, startIdx) => void tacet.playSource(src, startIdx)}
@@ -464,7 +472,6 @@ function SearchRoute({
 }
 
 function ArtistsRoute({
-  libraryStatus,
   qobuzStatus,
   onSelectArtist,
   onBackToArtists,
@@ -472,7 +479,6 @@ function ArtistsRoute({
   onPlay,
   onAdd,
 }: {
-  libraryStatus: ReturnType<typeof useTacet>["libraryStatus"];
   qobuzStatus: ReturnType<typeof useTacet>["qobuzStatus"];
   onSelectArtist: (artistName: string) => void;
   onBackToArtists: () => void;
@@ -488,7 +494,6 @@ function ArtistsRoute({
 
   return (
     <ArtistsView
-      libraryStatus={libraryStatus}
       qobuzStatus={qobuzStatus}
       initialArtist={artistName}
       initialQobuzArtistId={qobuzArtistId}
@@ -502,7 +507,6 @@ function ArtistsRoute({
 }
 
 function AlbumRoute({
-  libraryEtag,
   currentTrackId,
   isPlaying,
   onAmbientArt,
@@ -511,7 +515,6 @@ function AlbumRoute({
   onPlay,
   onAdd,
 }: {
-  libraryEtag?: string;
   currentTrackId?: string;
   isPlaying: boolean;
   onAmbientArt?: (artworkUrl?: string) => void;
@@ -524,14 +527,15 @@ function AlbumRoute({
   const albumId = albumKey ? decodeAlbumKey(albumKey) : undefined;
   const location = useLocation();
   const routerNavigate = useNavigate();
+  const queryClient = useQueryClient();
   const state = (location.state as AlbumLocationState | null) ?? null;
   const hint = state?.album && state.album.id === albumId ? state.album : undefined;
 
   const isOutOfLibraryQobuz = Boolean(hint && hint.source === "qobuz" && hint.inLibrary === false);
 
-  const albumQuery = useSWR<Album>(
-    albumId ? `album:${albumId}` : null,
-    (signal) => {
+  const albumQuery = useQuery<Album>({
+    queryKey: queryKeys.album(albumId ?? ""),
+    queryFn: ({ signal }) => {
       if (!albumId) return Promise.reject(new Error("Missing album id"));
       if (isOutOfLibraryQobuz) {
         return tacetClient.qobuzAlbum(albumId, { signal });
@@ -543,15 +547,23 @@ function AlbumRoute({
         throw err;
       });
     },
-    {
-      staleTimeMs: 60_000,
-      version: albumId?.startsWith("local:") ? libraryEtag : undefined,
-      fallbackData: hint,
-    },
-  );
+    enabled: Boolean(albumId),
+    staleTime: 60_000,
+    placeholderData: hint,
+  });
 
   const album = albumQuery.data ?? null;
-  const errMsg = albumQuery.error;
+  const errMsg = queryErrorMessage(albumQuery.error);
+
+  const handleAlbumUpdated = useCallback(
+    (updated: Album) => {
+      if (albumId) {
+        queryClient.setQueryData(queryKeys.album(albumId), updated);
+      }
+      void queryClient.invalidateQueries({ queryKey: queryKeys.library.all });
+    },
+    [albumId, queryClient],
+  );
 
   useEffect(() => {
     onAmbientArt?.(album?.artworkUrl);
@@ -607,13 +619,13 @@ function AlbumRoute({
       <AlbumView
         album={album}
         backLabel={state?.backLabel ?? "Albums"}
-        loadingTracks={albumQuery.isValidating && (album.tracks?.length ?? 0) === 0}
+        loadingTracks={albumQuery.isFetching && (album.tracks?.length ?? 0) === 0}
         currentTrackId={currentTrackId}
         isPlaying={isPlaying}
         onBack={handleBack}
         onOpenAlbum={onOpenAlbum}
         onOpenArtist={onOpenArtist}
-        onAlbumUpdated={albumQuery.mutate}
+        onAlbumUpdated={handleAlbumUpdated}
         onPlay={onPlay}
         onAdd={onAdd}
       />
