@@ -7,6 +7,7 @@ import { fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type { GenreSummary, QueuePosition, QueueSource, Track } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { queryErrorMessage, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -92,34 +93,37 @@ export const SongsView = memo(function SongsView({
 
           <div className="flex flex-wrap items-center gap-2.5">
             {genres.length > 0 && (
-              <select
-                aria-label="Filter by genre"
-                value={genre}
-                onChange={(e) => updateParams({ genre: e.target.value })}
-                className="h-8.5 max-w-[180px] rounded-lg border border-white/[0.09] bg-white/[0.05] px-2.5 text-xs text-foreground focus:outline-none focus:border-white/25 cursor-pointer"
+              <Select
+                value={genre || "__all__"}
+                onValueChange={(v) => updateParams({ genre: v === "__all__" ? "" : v })}
               >
-                <option value="">All genres</option>
-                {genres.map((g) => (
-                  <option key={g.name} value={g.name}>
-                    {g.name} ({g.trackCount})
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger aria-label="Filter by genre" className="max-w-[190px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="__all__">All genres</SelectItem>
+                  {genres.map((g) => (
+                    <SelectItem key={g.name} value={g.name}>
+                      {g.name} ({g.trackCount})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
 
-            <select
-              aria-label="Sort songs"
-              value={sort}
-              onChange={(e) => updateParams({ sort: e.target.value as TrackSort })}
-              className="h-8.5 rounded-lg border border-white/[0.09] bg-white/[0.05] px-2.5 text-xs text-foreground focus:outline-none focus:border-white/25 cursor-pointer"
-            >
-              <option value="artist">Artist</option>
-              <option value="title">Title</option>
-              <option value="album">Album</option>
-              <option value="added">Recently Added</option>
-              <option value="plays">Most Played</option>
-              <option value="quality">Highest Quality</option>
-            </select>
+            <Select value={sort} onValueChange={(v) => updateParams({ sort: v as TrackSort })}>
+              <SelectTrigger aria-label="Sort songs" className="min-w-[136px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="artist">Artist</SelectItem>
+                <SelectItem value="title">Title</SelectItem>
+                <SelectItem value="album">Album</SelectItem>
+                <SelectItem value="added">Recently Added</SelectItem>
+                <SelectItem value="plays">Most Played</SelectItem>
+                <SelectItem value="quality">Highest Quality</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
       </PageHeader>

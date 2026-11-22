@@ -5,6 +5,7 @@ import { tacetClient } from "@/api/client";
 import type { Album, LibraryStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { queryErrorMessage, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -96,18 +97,18 @@ export const AlbumsView = memo(function AlbumsView({ libraryStatus, groupVersion
               </div>
             )}
 
-            <select
-              aria-label="Sort albums"
-              value={sort}
-              onChange={(e) => updateParams({ sort: e.target.value as AlbumSort })}
-              className="h-8.5 rounded-lg border border-white/[0.09] bg-white/[0.05] px-2.5 text-xs text-foreground focus:outline-none focus:border-white/25 cursor-pointer"
-            >
-              <option value="artist">Artist</option>
-              <option value="title">Title</option>
-              <option value="year">Year</option>
-              <option value="added">Recently Added</option>
-              <option value="plays">Most Played</option>
-            </select>
+            <Select value={sort} onValueChange={(v) => updateParams({ sort: v as AlbumSort })}>
+              <SelectTrigger aria-label="Sort albums" className="min-w-[132px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="artist">Artist</SelectItem>
+                <SelectItem value="title">Title</SelectItem>
+                <SelectItem value="year">Year</SelectItem>
+                <SelectItem value="added">Recently Added</SelectItem>
+                <SelectItem value="plays">Most Played</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
       </PageHeader>
