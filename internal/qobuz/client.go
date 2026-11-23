@@ -980,6 +980,48 @@ func (c *Client) cacheArtistName(name string, id int64, overwrite bool) {
 	c.putCachedArtistName(name, id, overwrite)
 }
 
+// CachedArtistPortrait returns the cached Qobuz artist portrait URL for name
+// without making any network requests. Returns "" on cache miss.
+func (c *Client) CachedArtistPortrait(name string) string {
+	if c == nil || c.kv == nil {
+		return ""
+	}
+	artistID, ok := c.getCachedArtistName(name)
+	if !ok || artistID <= 0 {
+		return ""
+	}
+	idStr := strconv.FormatInt(artistID, 10)
+	if raw, hit, err := c.kv.Get(rawCacheKey("/artist/page", url.Values{
+		"artist_id": {idStr},
+		"sort":      {"relevant"},
+	})); err == nil && hit {
+		var page struct {
+			Images struct {
+				Portrait *qArtistPortrait `json:"portrait"`
+			} `json:"images"`
+		}
+		if json.Unmarshal(raw, &page) == nil {
+			if u := page.Images.Portrait.url(); u != "" {
+				return u
+			}
+		}
+	}
+	if raw, hit, err := c.kv.Get(rawCacheKey("/artist/get", url.Values{
+		"artist_id": {idStr},
+		"extra":     {"albums"},
+		"limit":     {"50"},
+		"offset":    {"0"},
+	})); err == nil && hit {
+		var resp qArtist
+		if json.Unmarshal(raw, &resp) == nil {
+			if u := resp.Image.best(); u != "" {
+				return u
+			}
+		}
+	}
+	return ""
+}
+
 // GetAlbum fetches a Qobuz album and its track listing. Accepts bare or "qobuz:"-prefixed IDs.
 func (c *Client) GetAlbum(ctx context.Context, albumID string) (library.Album, error) {
 	if err := c.requireAuth(); err != nil {

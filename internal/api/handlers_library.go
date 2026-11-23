@@ -194,6 +194,13 @@ func (s *Server) handleLibraryArtists(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "LIBRARY_ERROR", err.Error(), true)
 		return
 	}
+	if s.qobuz != nil && s.qobuz.IsConnected() {
+		for i := range items {
+			if portrait := s.qobuz.CachedArtistPortrait(items[i].Name); portrait != "" {
+				items[i].ArtworkURL = portrait
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":  items,
 		"total":  total,

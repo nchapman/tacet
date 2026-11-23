@@ -234,7 +234,7 @@ export function ArtistsView({
                   )}
                 >
                   <AlbumArt
-                    artworkUrl={artist.artworkUrl}
+                    artworkUrl={(active ? heroArt : undefined) || artist.artworkUrl}
                     alt={artist.name}
                     className="h-10 w-10 shrink-0 rounded-full ring-1 ring-white/10"
                   />
