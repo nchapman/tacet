@@ -738,7 +738,12 @@ function AlbumRoute({
       // with live SQLite inLibrary/versions/playCount overlay) so partial 1-track SQLite albums
       // never hide the rest of the album's tracklist.
       if (isOutOfLibraryQobuz || (isQobuzAlbum && qobuzConnected)) {
-        return tacetClient.qobuzAlbum(albumId, { signal });
+        return tacetClient.qobuzAlbum(albumId, { signal }).catch((err) => {
+          if (err instanceof TacetAPIError && err.status === 404 && !isOutOfLibraryQobuz) {
+            return tacetClient.getLibraryAlbum(albumId, { signal });
+          }
+          throw err;
+        });
       }
       return tacetClient.getLibraryAlbum(albumId, { signal }).catch((err) => {
         if (err instanceof TacetAPIError && err.status === 404 && isQobuzAlbum) {

@@ -284,7 +284,7 @@ INSERT INTO albums(
 	track_count, duration_sec, artwork_url,
 	primary_format, max_bit_depth, max_sample_rate,
 	version_key, is_partial, available, missing_since, added_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
 	title = excluded.title,
 	sort_title = excluded.sort_title,
@@ -300,8 +300,8 @@ ON CONFLICT(id) DO UPDATE SET
 	max_sample_rate = excluded.max_sample_rate,
 	version_key = excluded.version_key,
 	is_partial = excluded.is_partial,
-	available = 1,
-	missing_since = 0,
+	available = excluded.available,
+	missing_since = CASE WHEN excluded.available = 1 THEN 0 WHEN albums.missing_since > 0 THEN albums.missing_since ELSE excluded.missing_since END,
 	updated_at = excluded.updated_at`)
 	if err != nil {
 		return err
@@ -320,12 +320,16 @@ ON CONFLICT(id) DO UPDATE SET
 			extID = strings.TrimPrefix(a.ID, provider+":")
 		}
 		vKey := VersionKey(a.Artist, a.Title)
+		missingSince := int64(0)
+		if !a.Available {
+			missingSince = now
+		}
 		if _, err = albStmt.ExecContext(ctx,
 			a.ID, sourceType, provider, extID,
 			a.Title, SortKey(a.Title), a.Artist, SortKey(a.Artist), a.Genre, a.Year,
 			a.TrackCount, a.DurationSec, a.ArtworkURL,
 			a.PrimaryFormat, a.MaxBit, a.MaxRate,
-			vKey, boolToInt(a.IsPartial), addedAt, now,
+			vKey, boolToInt(a.IsPartial), boolToInt(a.Available), missingSince, addedAt, now,
 		); err != nil {
 			return fmt.Errorf("upsert album %s: %w", a.ID, err)
 		}

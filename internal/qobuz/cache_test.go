@@ -471,6 +471,46 @@ func TestGetAlbum_AwardsBookletReleaseDateAndCredits(t *testing.T) {
 	}
 }
 
+func TestSyncFavorites_MarksDelistedAlbumUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/favorite/getUserFavorites":
+			if r.URL.Query().Get("type") == "albums" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"albums": map[string]any{
+						"total": 1,
+						"items": []map[string]any{
+							{"id": "delisted1", "title": "Gone Album", "artist": map[string]any{"id": 1, "name": "Band"}},
+						},
+					},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"tracks": map[string]any{"total": 0, "items": []any{}}})
+		case "/album/get":
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": "No result matching given argument"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, AppID: "app", AppSecret: "sec", AuthToken: "tok"})
+	defer func() { _ = c.Close() }()
+
+	col, err := c.SyncFavorites(context.Background())
+	if err != nil {
+		t.Fatalf("SyncFavorites: %v", err)
+	}
+	if len(col.Albums) != 1 {
+		t.Fatalf("expected 1 album, got %d", len(col.Albums))
+	}
+	if col.Albums[0].Available {
+		t.Fatalf("expected delisted album to have Available=false, got %+v", col.Albums[0])
+	}
+}
+
 func TestMatchAlbum_DiscographySearchAndNegativeCache(t *testing.T) {
 	var albumCalls atomic.Int32
 	var searchCalls atomic.Int32

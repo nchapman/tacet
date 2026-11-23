@@ -1218,7 +1218,9 @@ func normalizeRemoteAlbum(provider string, a *Album) {
 	if a.PrimaryFormat == "" {
 		a.PrimaryFormat = "FLAC"
 	}
-	a.Available = true
+	if len(a.Tracks) > 0 {
+		a.Available = true
+	}
 	a.InLibrary = true
 }
 

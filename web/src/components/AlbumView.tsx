@@ -368,6 +368,12 @@ export function AlbumView({
                 ))}
               </div>
             )}
+            {!loadingTracks && tracks.length === 0 && album.available === false && (
+              <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-5 text-sm text-muted-foreground">
+                This album is no longer available on {sourceLabel(album.provider, album.source)}.
+                {album.inLibrary && " You can remove it from your library above."}
+              </div>
+            )}
             {tracks.map((tr, idx) => {
               const active = tr.id === currentTrackId;
               const trackInLib = Boolean(tr.inLibrary || addedTrackIds[tr.id]);

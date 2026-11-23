@@ -2,6 +2,7 @@ package qobuz
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -141,7 +142,11 @@ func (c *Client) SyncFavorites(ctx context.Context) (library.RemoteCollection, e
 			full, err := c.GetAlbum(ctx, stub.ID)
 			if err != nil {
 				log.Printf("qobuz favorites sync: album %s tracklist fetch failed (%v); using summary", stub.ID, err)
-				albums[idx] = stub.toLibraryAlbum(false)
+				summary := stub.toLibraryAlbum(false)
+				if errors.Is(err, ErrNotFound) {
+					summary.Available = false
+				}
+				albums[idx] = summary
 				return
 			}
 			albums[idx] = full
