@@ -185,8 +185,6 @@ type zone struct {
 	status             upnp.TransportStatus
 	positionUpdatedAt  time.Time
 	lastPlaybackEmit   time.Time
-	awaitingAudio      bool
-	prevTrackURI       string
 	currentURI         string
 	nextURI            string
 	nextIndex          int

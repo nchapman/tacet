@@ -395,44 +395,15 @@ export function useTacet(defaultZoneId?: string | null) {
 
   const activeZoneId = activeZone?.zoneId ?? "";
 
-  const setOptimisticBuffering = useCallback(
-    (zoneId: string, resetPosition: boolean) => {
-      const target = zones.find((z) => z.zoneId === zoneId);
-      const restoreState = target && target.state !== "buffering" ? target.state : null;
-      const restorePos = target?.positionSec ?? 0;
-      setZones((prev) =>
-        prev.map((z) =>
-          z.zoneId === zoneId && z.state !== "buffering"
-            ? { ...z, state: "buffering", positionSec: resetPosition ? 0 : z.positionSec }
-            : z,
-        ),
-      );
-      return () => {
-        if (restoreState === null) return;
-        setZones((prev) =>
-          prev.map((z) =>
-            z.zoneId === zoneId && z.state === "buffering"
-              ? { ...z, state: restoreState, positionSec: restorePos }
-              : z,
-          ),
-        );
-      };
-    },
-    [zones],
-  );
-
   const playSource = useCallback(
-    async (source: QueueSource, startIndex = 0) => {
+    (source: QueueSource, startIndex = 0) => {
       if (!activeZoneId) {
         setError("No UPnP renderer selected or discovered");
-        return undefined;
+        return Promise.resolve(undefined);
       }
-      const revert = setOptimisticBuffering(activeZoneId, true);
-      const res = await runAction(() => tacetClient.zone(activeZoneId).play(source, startIndex), upsertZone);
-      if (!res) revert();
-      return res;
+      return runAction(() => tacetClient.zone(activeZoneId).play(source, startIndex), upsertZone);
     },
-    [activeZoneId, runAction, setOptimisticBuffering, upsertZone],
+    [activeZoneId, runAction, upsertZone],
   );
 
   const addSource = useCallback(
@@ -447,14 +418,11 @@ export function useTacet(defaultZoneId?: string | null) {
   );
 
   const jumpItem = useCallback(
-    async (itemId: string) => {
-      if (!activeZoneId) return undefined;
-      const revert = setOptimisticBuffering(activeZoneId, true);
-      const res = await runAction(() => tacetClient.zone(activeZoneId).jump(itemId), upsertZone);
-      if (!res) revert();
-      return res;
+    (itemId: string) => {
+      if (!activeZoneId) return Promise.resolve(undefined);
+      return runAction(() => tacetClient.zone(activeZoneId).jump(itemId), upsertZone);
     },
-    [activeZoneId, runAction, setOptimisticBuffering, upsertZone],
+    [activeZoneId, runAction, upsertZone],
   );
 
   const removeItem = useCallback(
@@ -471,16 +439,11 @@ export function useTacet(defaultZoneId?: string | null) {
   }, [activeZoneId, runAction, upsertZone]);
 
   const transport = useCallback(
-    async (action: TransportAction) => {
-      if (!activeZoneId) return undefined;
-      const isPrevSeekOnly = action === "prev" && (activeZone?.positionSec ?? 0) > 5;
-      const shouldBuffer = action === "play" || action === "next" || (action === "prev" && !isPrevSeekOnly);
-      const revert = shouldBuffer ? setOptimisticBuffering(activeZoneId, action !== "play") : null;
-      const res = await runAction(() => tacetClient.zone(activeZoneId).transport(action), upsertZone);
-      if (!res && revert) revert();
-      return res;
+    (action: TransportAction) => {
+      if (!activeZoneId) return Promise.resolve(undefined);
+      return runAction(() => tacetClient.zone(activeZoneId).transport(action), upsertZone);
     },
-    [activeZoneId, activeZone?.positionSec, runAction, setOptimisticBuffering, upsertZone],
+    [activeZoneId, runAction, upsertZone],
   );
 
   const seek = useCallback(

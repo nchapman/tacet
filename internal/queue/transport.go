@@ -428,7 +428,6 @@ func (m *Manager) RemoveItem(ctx context.Context, zoneID, itemID string) (ZoneSn
 				z.positionUpdatedAt = time.Now().UTC()
 				z.userStopped = true
 				z.wasPlaying = false
-				z.awaitingAudio = false
 				z.generation++
 				z.revision++
 				pbEv = m.playbackEventLocked(z)
@@ -455,7 +454,6 @@ func (m *Manager) RemoveItem(ctx context.Context, zoneID, itemID string) (ZoneSn
 			z.positionUpdatedAt = time.Now().UTC()
 			z.userStopped = true
 			z.wasPlaying = false
-			z.awaitingAudio = false
 			z.generation++
 			z.revision++
 			pbEv = m.playbackEventLocked(z)
@@ -560,7 +558,6 @@ func (m *Manager) ClearQueue(ctx context.Context, zoneID string) (ZoneSnapshot, 
 	z.nextQuality = ""
 	z.userStopped = true
 	z.wasPlaying = false
-	z.awaitingAudio = false
 	z.status.State = "STOPPED"
 	z.status.Position = 0
 	z.positionUpdatedAt = time.Now().UTC()
@@ -631,7 +628,6 @@ func (m *Manager) Play(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 		return ZoneSnapshot{}, wrapRendererErr("Play", err)
 	}
 	m.mu.Lock()
-	z.awaitingAudio = false
 	z.status.State = "PLAYING"
 	z.positionUpdatedAt = time.Now().UTC()
 	z.revision++
@@ -655,7 +651,6 @@ func (m *Manager) Pause(ctx context.Context, zoneID string) (ZoneSnapshot, error
 		return ZoneSnapshot{}, wrapRendererErr("Pause", err)
 	}
 	m.mu.Lock()
-	z.awaitingAudio = false
 	z.status.State = "PAUSED_PLAYBACK"
 	z.positionUpdatedAt = time.Now().UTC()
 	z.revision++
@@ -678,7 +673,6 @@ func (m *Manager) Stop(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	m.mu.Lock()
 	z.userStopped = true
 	z.wasPlaying = false
-	z.awaitingAudio = false
 	z.generation++
 	ctrl := z.ctrl
 	m.mu.Unlock()
@@ -1068,7 +1062,6 @@ func (m *Manager) playDeviceQueueIndex(ctx context.Context, zoneID string, z *zo
 	}
 	m.mu.Lock()
 	if z.generation == gen {
-		z.prevTrackURI = z.status.TrackURI
 		z.currentIndex = idx
 		z.status.State = "TRANSITIONING"
 		z.status.Position = 0
@@ -1078,7 +1071,6 @@ func (m *Manager) playDeviceQueueIndex(ctx context.Context, zoneID string, z *zo
 		z.positionUpdatedAt = time.Now().UTC()
 		z.lastPlaybackEmit = z.positionUpdatedAt
 		z.wasPlaying = false
-		z.awaitingAudio = true
 		z.loadedAt = time.Now()
 		z.revision++
 	}
@@ -1086,7 +1078,6 @@ func (m *Manager) playDeviceQueueIndex(ctx context.Context, zoneID string, z *zo
 	m.mu.Unlock()
 	m.scheduleQueuePersist()
 	m.emit("zone.playback", zoneID, pbEv)
-	m.startAwaitingAudioPoll(z, zoneID, gen)
 	return nil
 }
 

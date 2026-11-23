@@ -43,7 +43,6 @@ func (m *Manager) replaceDeviceQueueAndPlay(
 	curMedia := mediaItems[startIndex]
 	m.mu.Lock()
 	if z.generation == gen {
-		z.prevTrackURI = z.status.TrackURI
 		z.currentIndex = startIndex
 		z.currentURI = curMedia.URL
 		z.activeQuality = effQuality
@@ -54,14 +53,12 @@ func (m *Manager) replaceDeviceQueueAndPlay(
 		z.positionUpdatedAt = time.Now().UTC()
 		z.lastPlaybackEmit = z.positionUpdatedAt
 		z.wasPlaying = false
-		z.awaitingAudio = true
 		z.loadedAt = time.Now()
 		z.revision++
 	}
 	pbEv := m.playbackEventLocked(z)
 	m.mu.Unlock()
 	m.emit("zone.playback", zoneID, pbEv)
-	m.startAwaitingAudioPoll(z, zoneID, gen)
 	return nil
 }
 
@@ -134,7 +131,6 @@ func (m *Manager) playPreparedMedia(
 		if idx >= 0 && idx < len(z.queue) {
 			z.queue[idx].Track = resolvedTrack
 		}
-		z.prevTrackURI = z.status.TrackURI
 		z.currentURI = media.URL
 		z.activeQuality = effQuality
 		z.status.Duration = media.Duration
@@ -165,7 +161,6 @@ func (m *Manager) playPreparedMedia(
 		// via Status() or GENA, otherwise brief STOPPED states during buffering
 		// trigger cascading auto-advances across the queue.
 		z.wasPlaying = false
-		z.awaitingAudio = ctrl.Info().Kind != "player"
 		z.loadedAt = time.Now()
 		z.revision++
 	}
@@ -173,46 +168,7 @@ func (m *Manager) playPreparedMedia(
 	m.mu.Unlock()
 
 	m.emit("zone.playback", zoneID, pbEv)
-	if ctrl.Info().Kind != "player" {
-		m.startAwaitingAudioPoll(z, zoneID, gen)
-	}
 	return nil
-}
-
-// startAwaitingAudioPoll polls a buffering zone every 250ms (independent of the
-// sequential 1s poll loop) so the UI leaves the spinner state as soon as the
-// renderer reports advancing audio (Position > 0). Exits automatically once
-// awaitingAudio clears, the zone generation changes, or 15s elapse.
-func (m *Manager) startAwaitingAudioPoll(z *zone, zoneID string, gen uint64) {
-	m.mu.RLock()
-	runCtx := m.runCtx
-	m.mu.RUnlock()
-	if runCtx == nil {
-		return
-	}
-	go func() {
-		ticker := time.NewTicker(250 * time.Millisecond)
-		defer ticker.Stop()
-		deadline := time.Now().Add(15 * time.Second)
-		for {
-			select {
-			case <-runCtx.Done():
-				return
-			case <-m.stopCh:
-				return
-			case <-ticker.C:
-				m.mu.RLock()
-				stillWaiting := z.awaitingAudio && z.generation == gen
-				m.mu.RUnlock()
-				if !stillWaiting || time.Now().After(deadline) {
-					return
-				}
-				pctx, cancel := context.WithTimeout(runCtx, 1500*time.Millisecond)
-				m.pollOne(pctx, zoneID)
-				cancel()
-			}
-		}
-	}()
 }
 
 func (m *Manager) clearNextPreloadAsync(ctrl upnp.Controller) {
@@ -781,7 +737,6 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		}
 		z.status.State = "STOPPED"
 		z.wasPlaying = false
-		z.awaitingAudio = false
 		res := updateResult{fallbackAdvanceIdx: -1, gen: z.generation}
 		if NormalizePlaybackState(z.status.State) != prevState || z.status.Volume != prevVol || z.status.Muted != prevMute {
 			z.revision++
@@ -791,40 +746,10 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		return res
 	}
 
-	// Ignore stale track reports:
-	// 1. Virtual-queue URI belongs to neither the current nor preloaded track.
-	// 2. While awaitingAudio after loading a new track at 0:00:
-	//    - native-queue device still reporting the previous QueueIndex, OR
-	//    - renderer still flushing the previous TrackURI, OR
-	//    - impossible Position > time.Since(loadedAt)+2s (leftover RelTime from the previous track).
-	staleTrack := (!isNativeQueue && z.currentURI != "" && st.TrackURI != "" &&
+	// Ignore stale track reports (URI belongs to neither the current nor preloaded track).
+	staleTrack := !isNativeQueue && z.currentURI != "" && st.TrackURI != "" &&
 		st.TrackURI != z.currentURI &&
-		(z.nextURI == "" || st.TrackURI != z.nextURI)) ||
-		(z.awaitingAudio && ((isNativeQueue && st.HasQueueIndex && st.QueueIndex != z.currentIndex) ||
-			(z.prevTrackURI != "" && ((st.TrackURI != "" && st.TrackURI == z.prevTrackURI && st.TrackURI != z.currentURI) ||
-				(st.HasPosition && !z.loadedAt.IsZero() && st.Position > time.Since(z.loadedAt)+2*time.Second)))))
-
-	// Hold "TRANSITIONING" (buffering) after loading a track until the renderer
-	// actually reports advancing audio (Position > 0). Many UPnP/Linkplay/Cast
-	// devices flip to PLAYING at 0:00 while waiting on a spinning disk or remote
-	// CDN stream, which otherwise causes the client timer to count ahead and snap
-	// back when audio finally begins.
-	if z.awaitingAudio {
-		switch st.State {
-		case "PLAYING":
-			if !staleTrack && st.HasPosition && st.Position > 0 {
-				z.awaitingAudio = false
-			} else if !z.loadedAt.IsZero() && time.Since(z.loadedAt) > 10*time.Second {
-				// Unconditional safety fallback so quirky/live-transcoded renderers
-				// that keep Position at 0 or rewrite TrackURI never spin forever.
-				z.awaitingAudio = false
-			} else {
-				st.State = "TRANSITIONING"
-			}
-		case "PAUSED_PLAYBACK", "STOPPED", "NO_MEDIA_PRESENT":
-			z.awaitingAudio = false
-		}
-	}
+		(z.nextURI == "" || st.TrackURI != z.nextURI)
 
 	// Preserve previous valid fields when partial status calls fail.
 	z.status.State = st.State
