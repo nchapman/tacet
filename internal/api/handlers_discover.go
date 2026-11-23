@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -26,11 +27,11 @@ func parseGenreIDsParam(raw string) []int64 {
 	return out
 }
 
-func (s *Server) markAlbumsInLibrary(albums []library.Album) []library.Album {
+func (s *Server) markAlbumsInLibrary(ctx context.Context, albums []library.Album) []library.Album {
 	if s.catalog == nil || len(albums) == 0 {
 		return albums
 	}
-	return s.catalog.PreferLocalAlbums(albums)
+	return s.catalog.PreferLocalAlbums(ctx, albums)
 }
 
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +58,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 
 	shelves := make([]qobuz.DiscoverShelf, len(feed.Shelves))
 	for i, sh := range feed.Shelves {
-		sh.Items = s.markAlbumsInLibrary(sh.Items)
+		sh.Items = s.markAlbumsInLibrary(r.Context(), sh.Items)
 		shelves[i] = sh
 	}
 	genres := feed.Genres
@@ -89,7 +90,7 @@ func (s *Server) handleDiscoverShelf(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	page.Items = s.markAlbumsInLibrary(page.Items)
+	page.Items = s.markAlbumsInLibrary(r.Context(), page.Items)
 	writeJSON(w, http.StatusOK, page)
 }
 
@@ -140,7 +141,7 @@ func (s *Server) handleSimilarAlbums(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, similarResp{Items: s.markAlbumsInLibrary(items)})
+	writeJSON(w, http.StatusOK, similarResp{Items: s.markAlbumsInLibrary(r.Context(), items)})
 }
 
 func (s *Server) handleSimilarArtists(w http.ResponseWriter, r *http.Request) {

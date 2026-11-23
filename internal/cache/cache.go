@@ -22,6 +22,9 @@ import (
 // NoExpiration explicitly disables TTL for a Set call even when DefaultTTL is configured.
 const NoExpiration time.Duration = -1
 
+// ErrClosed is returned by Cache operations invoked after Close.
+var ErrClosed = errors.New("cache: closed")
+
 const (
 	defaultMaxBytes        int64 = 256 << 20 // 256 MiB
 	accessTouchGranularity       = time.Minute
@@ -254,7 +257,7 @@ func (c *Cache) Get(key string) ([]byte, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return nil, false, nil
+		return nil, false, ErrClosed
 	}
 
 	ctx := context.Background()
@@ -304,7 +307,7 @@ func (c *Cache) Set(key string, value []byte, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return nil
+		return ErrClosed
 	}
 
 	now := c.nowFn().UnixMilli()
@@ -396,7 +399,7 @@ func (c *Cache) Del(key string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return false, nil
+		return false, ErrClosed
 	}
 	res, err := c.db.ExecContext(context.Background(), `DELETE FROM kv_cache WHERE key = ?`, key)
 	if err != nil {
@@ -411,7 +414,7 @@ func (c *Cache) DelPrefix(prefix string) (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return 0, nil
+		return 0, ErrClosed
 	}
 	ctx := context.Background()
 	if prefix == "" {
@@ -444,7 +447,7 @@ func (c *Cache) Exists(key string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return false, nil
+		return false, ErrClosed
 	}
 	ctx := context.Background()
 	now := c.nowFn().UnixMilli()
@@ -469,7 +472,7 @@ func (c *Cache) Keys(pattern string) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return nil, nil
+		return nil, ErrClosed
 	}
 	ctx := context.Background()
 	now := c.nowFn().UnixMilli()
@@ -512,7 +515,7 @@ func (c *Cache) Expire(key string, ttl time.Duration) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return false, nil
+		return false, ErrClosed
 	}
 	ctx := context.Background()
 	now := c.nowFn().UnixMilli()
@@ -543,7 +546,7 @@ func (c *Cache) TTL(key string) (time.Duration, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return 0, false, nil
+		return 0, false, ErrClosed
 	}
 	ctx := context.Background()
 	now := c.nowFn().UnixMilli()
@@ -571,7 +574,7 @@ func (c *Cache) Persist(key string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return false, nil
+		return false, ErrClosed
 	}
 	now := c.nowFn().UnixMilli()
 	res, err := c.db.ExecContext(
@@ -591,7 +594,7 @@ func (c *Cache) Touch(key string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return false, nil
+		return false, ErrClosed
 	}
 	now := c.nowFn().UnixMilli()
 	res, err := c.db.ExecContext(
@@ -611,7 +614,7 @@ func (c *Cache) Clear() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return nil
+		return ErrClosed
 	}
 	if _, err := c.db.ExecContext(context.Background(), `DELETE FROM kv_cache`); err != nil {
 		return fmt.Errorf("cache clear: %w", err)
@@ -624,7 +627,7 @@ func (c *Cache) Prune() (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return 0, nil
+		return 0, ErrClosed
 	}
 	now := c.nowFn().UnixMilli()
 	res, err := c.db.ExecContext(context.Background(), `DELETE FROM kv_cache WHERE expires_at IS NOT NULL AND expires_at <= ?`, now)
@@ -640,7 +643,7 @@ func (c *Cache) Size() (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return 0, nil
+		return 0, ErrClosed
 	}
 	now := c.nowFn().UnixMilli()
 	var n int64
@@ -822,7 +825,7 @@ func GetOrSetConditional[T any](
 		return v, nil
 	}
 	fullKey := s.qualifyKey(key)
-	res, err := s.singleflight().do(fullKey, func() (any, error) {
+	res, err := s.singleflight().doCtx(ctx, fullKey, func() (any, error) {
 		if v, ok, err := GetJSON[T](s, key); err == nil && ok {
 			return v, nil
 		}
@@ -864,23 +867,26 @@ type flightGroup struct {
 }
 
 type flightCall struct {
-	wg  sync.WaitGroup
-	val any
-	err error
+	done chan struct{}
+	val  any
+	err  error
 }
 
-func (g *flightGroup) do(key string, fn func() (any, error)) (any, error) {
+func (g *flightGroup) doCtx(ctx context.Context, key string, fn func() (any, error)) (any, error) {
 	g.mu.Lock()
 	if g.calls == nil {
 		g.calls = make(map[string]*flightCall)
 	}
 	if c, ok := g.calls[key]; ok {
 		g.mu.Unlock()
-		c.wg.Wait()
-		return c.val, c.err
+		select {
+		case <-c.done:
+			return c.val, c.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	c := &flightCall{}
-	c.wg.Add(1)
+	c := &flightCall{done: make(chan struct{})}
 	g.calls[key] = c
 	g.mu.Unlock()
 
@@ -888,7 +894,7 @@ func (g *flightGroup) do(key string, fn func() (any, error)) (any, error) {
 		g.mu.Lock()
 		delete(g.calls, key)
 		g.mu.Unlock()
-		c.wg.Done()
+		close(c.done)
 	}()
 
 	c.val, c.err = fn()

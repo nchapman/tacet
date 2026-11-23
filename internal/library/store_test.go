@@ -722,7 +722,7 @@ func TestPreferLocalAlbumsAndTracks(t *testing.T) {
 	localTrackID := localTracks[0].ID
 
 	// Remote album matching local (including parenthetical edition suffix) resolves to local.
-	gotAlbs := cat.PreferLocalAlbums([]Album{
+	gotAlbs := cat.PreferLocalAlbums(context.Background(), []Album{
 		{ID: "qobuz:q19", Source: SourceQobuz, Artist: "Adele", Title: "19 (Deluxe Edition)"},
 		{ID: "qobuz:q30", Source: SourceQobuz, Artist: "Adele", Title: "30"},
 	})
@@ -737,7 +737,7 @@ func TestPreferLocalAlbumsAndTracks(t *testing.T) {
 	}
 
 	// Remote track matching local resolves to local (inheriting Qobuz art if local has none).
-	gotTracks := cat.PreferLocalTracks([]Track{
+	gotTracks := cat.PreferLocalTracks(context.Background(), []Track{
 		{ID: "qobuz:999", Source: SourceQobuz, Artist: "Adele", Title: "Chasing Pavements", Album: "19", ArtworkURL: "https://qobuz/art.jpg"},
 		{ID: "qobuz:888", Source: SourceQobuz, Artist: "Adele", Title: "Skyfall", Album: "Skyfall"},
 	})

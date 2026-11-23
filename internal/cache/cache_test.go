@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -172,6 +173,66 @@ func TestCache_GetOrSetSingleflightAndPersistence(t *testing.T) {
 	got, ok, err := GetJSON[payload](c2, "artist:adele")
 	if err != nil || !ok || got.Name != "Adele" || got.Count != 42 {
 		t.Fatalf("persisted GetJSON = (%+v, %v, %v), want Adele/42/true/nil", got, ok, err)
+	}
+}
+
+func TestCache_ClosedReturnsErrClosed(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "closed.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, _, err := c.Get("k"); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Get after Close = %v, want ErrClosed", err)
+	}
+	if err := c.Set("k", []byte("v"), time.Minute); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Set after Close = %v, want ErrClosed", err)
+	}
+	if _, err := c.Del("k"); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Del after Close = %v, want ErrClosed", err)
+	}
+	if _, err := c.Prune(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Prune after Close = %v, want ErrClosed", err)
+	}
+}
+
+func TestCache_SingleflightRespectsCallerCancel(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "sf-cancel.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	leaderDone := make(chan error, 1)
+
+	go func() {
+		_, gsErr := GetOrSet[string](context.Background(), c, "slow", time.Minute, func(context.Context) (string, error) {
+			close(started)
+			<-release
+			return "ok", nil
+		})
+		leaderDone <- gsErr
+	}()
+
+	<-started
+
+	waiterCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = GetOrSet[string](waiterCtx, c, "slow", time.Minute, func(context.Context) (string, error) {
+		t.Error("waiter should coalesce instead of invoking loader")
+		return "", nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancelled waiter err = %v, want DeadlineExceeded", err)
+	}
+
+	close(release)
+	if err := <-leaderDone; err != nil {
+		t.Fatalf("leader err = %v, want nil", err)
 	}
 }
 

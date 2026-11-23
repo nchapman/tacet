@@ -775,8 +775,8 @@ func (s *Server) handleQobuzSearch(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	res.Albums = s.catalog.PreferLocalAlbums(res.Albums)
-	res.Tracks = s.catalog.PreferLocalTracks(res.Tracks)
+	res.Albums = s.catalog.PreferLocalAlbums(r.Context(), res.Albums)
+	res.Tracks = s.catalog.PreferLocalTracks(r.Context(), res.Tracks)
 	writeJSON(w, http.StatusOK, res)
 }
 
@@ -813,8 +813,8 @@ func (s *Server) handleQobuzArtist(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	detail.Albums = s.catalog.PreferLocalAlbums(detail.Albums)
-	detail.Tracks = s.catalog.PreferLocalTracks(detail.Tracks)
+	detail.Albums = s.catalog.PreferLocalAlbums(r.Context(), detail.Albums)
+	detail.Tracks = s.catalog.PreferLocalTracks(r.Context(), detail.Tracks)
 	writeJSON(w, http.StatusOK, detail)
 }
 

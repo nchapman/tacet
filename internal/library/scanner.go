@@ -918,17 +918,26 @@ func (c *Catalog) Album(id string) (Album, bool) {
 // exists in the local library (by normalized artist + title, including base
 // title before parenthetical edition suffixes) is replaced by the local album.
 // Remaining albums have InLibrary populated from the catalog.
-func (c *Catalog) PreferLocalAlbums(albums []Album) []Album {
+func (c *Catalog) PreferLocalAlbums(ctx context.Context, albums []Album) []Album {
 	if len(albums) == 0 {
 		return albums
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
 	out := make([]Album, len(albums))
 	copy(out, albums)
 
-	localAlbs, _, err := c.store.queryAlbums(context.Background(), AlbumFilter{
+	localAlbs, _, err := c.store.queryAlbums(qctx, AlbumFilter{
 		SourceType: "local",
 		Limit:      100000,
 	})
+	if err != nil {
+		log.Printf("library: PreferLocalAlbums query failed: %v", err)
+	}
 	localByKey := make(map[string]Album, len(localAlbs))
 	if err == nil {
 		for _, la := range localAlbs {
@@ -981,17 +990,26 @@ func matchLocalAlbum(localByKey map[string]Album, artist, title string) (Album, 
 // exists in the local library (by normalized artist + title, preferring same
 // album then higher resolution) is replaced by the local track.
 // Remaining tracks have InLibrary, PlayCount, and LastPlayedAt populated.
-func (c *Catalog) PreferLocalTracks(tracks []Track) []Track {
+func (c *Catalog) PreferLocalTracks(ctx context.Context, tracks []Track) []Track {
 	if len(tracks) == 0 {
 		return tracks
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
 	out := make([]Track, len(tracks))
 	copy(out, tracks)
 
-	localTracks, _, err := c.store.queryTracks(context.Background(), TrackFilter{
+	localTracks, _, err := c.store.queryTracks(qctx, TrackFilter{
 		SourceType: "local",
 		Limit:      100000,
 	})
+	if err != nil {
+		log.Printf("library: PreferLocalTracks query failed: %v", err)
+	}
 	byArtistTitle := make(map[string][]Track, len(localTracks))
 	if err == nil {
 		for _, lt := range localTracks {

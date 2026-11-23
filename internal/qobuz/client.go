@@ -457,8 +457,10 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 	// with /artist/get so cold-cache artist loads pay one round-trip and eliminate
 	// the separate /artist/getSimilarArtists request.
 	pageCh := make(chan artistPageExtras, 1)
+	pageCtx, cancelPage := context.WithCancel(ctx)
+	defer cancelPage()
 	go func() {
-		pageCh <- c.fetchArtistPageExtras(ctx, artistID)
+		pageCh <- c.fetchArtistPageExtras(pageCtx, artistID)
 	}()
 
 	if err := c.getCachedJSONValid(ctx, "/artist/get", params, artistCacheTTL, &resp, func() bool {
