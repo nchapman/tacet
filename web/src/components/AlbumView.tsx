@@ -308,7 +308,7 @@ export function AlbumView({
 
         {/* Alternate Editions / Versions Bar (Roon style) */}
         {versions.length > 1 && (
-          <div className="mt-7 flex flex-wrap items-center gap-2 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 backdrop-blur-md">
+          <div className="mt-7 flex flex-wrap items-center gap-2 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3">
             <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground mr-1">
               <Layers className="h-3.5 w-3.5" />
               Versions ({versions.length})

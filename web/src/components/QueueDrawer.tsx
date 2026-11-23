@@ -167,7 +167,7 @@ export const DesktopQueueDrawer = memo(function DesktopQueueDrawer({ open, onOpe
   return (
     <aside
       aria-label="Playback Queue"
-      className="hidden lg:flex w-80 xl:w-[340px] shrink-0 flex-col border-l border-white/[0.07] bg-black/30 backdrop-blur-2xl"
+      className="hidden lg:flex w-80 xl:w-[340px] shrink-0 flex-col border-l border-white/[0.07] bg-black/30"
     >
       <QueueContent {...props} onClose={() => onOpenChange(false)} />
     </aside>

@@ -158,7 +158,7 @@ export function MobileBottomNav({
   return (
     <nav
       aria-label="Mobile navigation"
-      className="lg:hidden shrink-0 border-t border-white/[0.08] bg-[#09090b]/70 backdrop-blur-2xl pb-[env(safe-area-inset-bottom)]"
+      className="lg:hidden shrink-0 border-t border-white/[0.08] bg-[#09090b]/70 pb-[env(safe-area-inset-bottom)]"
     >
       <div className="grid grid-cols-5 h-15">
         {MOBILE_ITEMS.map((item) => {

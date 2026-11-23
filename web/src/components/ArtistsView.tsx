@@ -189,7 +189,7 @@ export function ArtistsView({
       {/* Left Artist Rail (full width on mobile until artist selected; fixed 288px on md+) */}
       <div
         className={cn(
-          "flex flex-col border-r border-white/[0.06] bg-black/20 backdrop-blur-xl md:w-72 lg:w-80 md:shrink-0",
+          "flex flex-col border-r border-white/[0.06] bg-black/20 md:w-72 lg:w-80 md:shrink-0",
           mobileDetailOpen ? "hidden md:flex" : "flex w-full",
         )}
       >

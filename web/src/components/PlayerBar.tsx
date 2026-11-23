@@ -193,7 +193,7 @@ export const PlayerBar = memo(function PlayerBar({
       {/* ==================== DESKTOP PLAYER BAR (>= lg) ==================== */}
       <footer
         aria-label="Player controls"
-        className="hidden lg:grid grid-cols-[minmax(220px,1fr)_minmax(340px,540px)_minmax(240px,1fr)] items-center gap-4 h-[84px] shrink-0 border-t border-white/[0.08] bg-black/25 px-4 backdrop-blur-2xl backdrop-saturate-150 relative overflow-hidden select-none"
+        className="hidden lg:grid grid-cols-[minmax(220px,1fr)_minmax(340px,540px)_minmax(240px,1fr)] items-center gap-4 h-[84px] shrink-0 border-t border-white/[0.08] bg-black/25 px-4 relative overflow-hidden select-none"
       >
         {/* Left: Track artwork, metadata & format badge */}
         <div className="relative z-10 flex min-w-0 items-center gap-3">

@@ -236,7 +236,7 @@ export function NowPlayingOverlay({
       {/* Main stage */}
       {panel === "devices" ? (
         <div className="relative z-10 flex flex-1 min-h-0 items-start lg:items-center justify-center overflow-y-auto px-5 py-6">
-          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-black/45 p-2 backdrop-blur-2xl shadow-2xl">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-black/45 p-2 shadow-2xl">
             <DeviceList
               zones={zones}
               activeZoneId={activeZone?.zoneId ?? ""}
@@ -492,7 +492,7 @@ export function NowPlayingOverlay({
 
           {/* Optional right-side frosted Up Next panel (desktop only) */}
           {showQueue && (
-            <aside className="hidden lg:flex h-[min(70vh,560px)] w-80 xl:w-96 shrink-0 flex-col rounded-2xl border border-white/[0.09] bg-black/35 backdrop-blur-2xl overflow-hidden">
+            <aside className="hidden lg:flex h-[min(70vh,560px)] w-80 xl:w-96 shrink-0 flex-col rounded-2xl border border-white/[0.09] bg-black/35 overflow-hidden">
               <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.07] shrink-0">
                 <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Up Next</span>
                 <span className="font-mono text-[11px] text-muted-foreground">{queue.length} in queue</span>
