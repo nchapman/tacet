@@ -349,3 +349,152 @@ func TestNativeQueue_GENATrackAdvanceResetsPositionImmediately(t *testing.T) {
 		t.Fatalf("PositionSec = %d after GENA TrackURI advance, want 0", snap.PositionSec)
 	}
 }
+
+func TestPollTick_MinimalIntervalsAndSkipping(t *testing.T) {
+	mgr := NewManager(4320, "http://192.168.1.10:4320", nil)
+	now := time.Now()
+
+	// 1. Browser player -> never polled.
+	browser := &fakeQueueController{
+		info:   upnp.RendererInfo{ID: "player:chrome", Kind: "player", Name: "Chrome"},
+		status: upnp.TransportStatus{State: "PLAYING"},
+	}
+	// 2. Idle Cast device -> never polled.
+	idleCast := &fakeQueueController{
+		info:   upnp.RendererInfo{ID: "cast:nest", Kind: "cast", Name: "Nest"},
+		status: upnp.TransportStatus{State: "STOPPED"},
+	}
+	// 3. Active playing UPnP renderer without push -> polled at 3s.
+	var upnpPolls int
+	var pollMu sync.Mutex
+	activeUPnP := newFakeRenderer("uuid:upnp-active", "Active UPnP")
+	mgr.RegisterRenderer(browser)
+	mgr.RegisterRenderer(idleCast)
+	mgr.RegisterRenderer(activeUPnP)
+
+	mgr.mu.Lock()
+	mgr.zones["player:chrome"].status.State = "PLAYING"
+	mgr.zones["player:chrome"].lastPoll = now.Add(-1 * time.Hour)
+	mgr.zones["cast:nest"].status.State = "STOPPED"
+	mgr.zones["cast:nest"].lastPoll = now.Add(-1 * time.Hour)
+	mgr.zones["uuid:upnp-active"].status.State = "PLAYING"
+	mgr.zones["uuid:upnp-active"].lastPoll = now.Add(-5 * time.Second)
+	mgr.mu.Unlock()
+
+	mgr.pollTick(context.Background())
+	// Allow the concurrent poll goroutine to finish.
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mu.RLock()
+		polledUPnP := mgr.zones["uuid:upnp-active"].lastPoll.After(now.Add(-1 * time.Second))
+		polledBrowser := mgr.zones["player:chrome"].lastPoll.After(now.Add(-1 * time.Second))
+		polledCast := mgr.zones["cast:nest"].lastPoll.After(now.Add(-1 * time.Second))
+		mgr.mu.RUnlock()
+		if polledUPnP {
+			pollMu.Lock()
+			upnpPolls++
+			pollMu.Unlock()
+			if polledBrowser {
+				t.Fatal("browser player should never be polled")
+			}
+			if polledCast {
+				t.Fatal("idle Cast device should never be polled")
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	pollMu.Lock()
+	got := upnpPolls
+	pollMu.Unlock()
+	if got == 0 {
+		t.Fatal("expected active UPnP zone to be polled by pollTick")
+	}
+}
+
+func TestTransport_PauseStopSeekMuteAndPlayIndexFallback(t *testing.T) {
+	mgr := NewManager(4320, "http://192.168.1.10:4320", nil)
+	zoneID := "uuid:linkplay-ops"
+	tracks := []library.Track{
+		{ID: "local:t1", Source: library.SourceLocal, Title: "Track 1", DurationSec: 200, MIME: "audio/flac"},
+		{ID: "local:t2", Source: library.SourceLocal, Title: "Track 2", DurationSec: 180, MIME: "audio/flac"},
+	}
+	ctrl := &fakeQueueController{
+		info: upnp.RendererInfo{ID: zoneID, Name: "AudioPro A15", SupportsQueue: true, SupportsSeek: true, HasVolume: true},
+		status: upnp.TransportStatus{
+			State:       "PLAYING",
+			TrackURI:    "http://192.168.1.10:4320/media/local/local:t1.flac",
+			HasPosition: true,
+			Position:    10 * time.Second,
+			Duration:    200 * time.Second,
+		},
+	}
+	mgr.RegisterRenderer(ctrl)
+
+	if _, err := mgr.ReplaceQueue(context.Background(), zoneID, tracks, 0); err != nil {
+		t.Fatalf("ReplaceQueue: %v", err)
+	}
+
+	// Simulate PLAYING at 10s updated 5s ago -> Pause should advance position to ~15s.
+	mgr.mu.Lock()
+	mgr.zones[zoneID].status.State = "PLAYING"
+	mgr.zones[zoneID].status.Position = 10 * time.Second
+	mgr.zones[zoneID].positionUpdatedAt = time.Now().UTC().Add(-5 * time.Second)
+	mgr.mu.Unlock()
+
+	snap, err := mgr.Pause(context.Background(), zoneID)
+	if err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if snap.State != StatePaused || snap.PositionSec < 14 || snap.PositionSec > 16 {
+		t.Fatalf("after Pause: state=%q pos=%d, want paused/~15", snap.State, snap.PositionSec)
+	}
+
+	// Play resumes cleanly.
+	snap, err = mgr.Play(context.Background(), zoneID)
+	if err != nil {
+		t.Fatalf("Play: %v", err)
+	}
+	if snap.State != StatePlaying {
+		t.Fatalf("after Play: state=%q, want playing", snap.State)
+	}
+
+	// Seek updates position.
+	snap, err = mgr.Seek(context.Background(), zoneID, 90)
+	if err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	if snap.PositionSec != 90 {
+		t.Fatalf("after Seek(90): pos=%d, want 90", snap.PositionSec)
+	}
+
+	// SetMute updates muted state.
+	snap, err = mgr.SetMute(context.Background(), zoneID, true)
+	if err != nil {
+		t.Fatalf("SetMute: %v", err)
+	}
+	if !snap.Muted {
+		t.Fatal("after SetMute(true): Muted=false, want true")
+	}
+
+	// Stop resets position and suppresses auto-advance.
+	snap, err = mgr.Stop(context.Background(), zoneID)
+	if err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if snap.State != StateStopped || snap.PositionSec != 0 {
+		t.Fatalf("after Stop: state=%q pos=%d, want stopped/0", snap.State, snap.PositionSec)
+	}
+
+	// Verify matchTrackURIInQueue matches both local and Qobuz handoff URLs.
+	q := []Item{
+		{ItemID: "i1", Track: library.Track{ID: "local:abc123", Source: library.SourceLocal}},
+		{ItemID: "i2", Track: library.Track{ID: "qobuz:987654", Source: library.SourceQobuz, ExternalID: "987654"}},
+	}
+	if got := matchTrackURIInQueue("http://192.168.1.10:4320/media/local/local:abc123.flac", q); got != 0 {
+		t.Fatalf("matchTrackURIInQueue local = %d, want 0", got)
+	}
+	if got := matchTrackURIInQueue("http://192.168.1.10:4320/media/qobuz/987654.flac?handoff=1", q); got != 1 {
+		t.Fatalf("matchTrackURIInQueue qobuz = %d, want 1", got)
+	}
+}

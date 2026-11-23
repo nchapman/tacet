@@ -94,4 +94,73 @@ describe("playbackClock", () => {
     });
     expect(Math.floor(clk.displayPos)).toBe(0);
   });
+
+  it("slews smoothly forward on small positive jitter and clamps at duration", () => {
+    let clk = syncPlaybackClock(null, {
+      zoneId: "z1",
+      trackKey: "item-1",
+      playing: true,
+      serverPosSec: 10,
+      positionUpdatedAtMs: 0,
+      durationSec: 20,
+      nowMs: 0,
+    });
+
+    // Server reports +2s ahead (12s) -> slews smoothly without jumping immediately.
+    clk = syncPlaybackClock(clk, {
+      zoneId: "z1",
+      trackKey: "item-1",
+      playing: true,
+      serverPosSec: 12,
+      positionUpdatedAtMs: 0,
+      durationSec: 20,
+      nowMs: 0,
+    });
+    expect(Math.floor(clk.displayPos)).toBe(10);
+
+    // Ticking past duration clamps cleanly at 20s.
+    for (let t = 1000; t <= 15_000; t += 1000) {
+      clk = tickPlaybackClock(clk, t);
+    }
+    expect(clk.displayPos).toBe(20);
+  });
+
+  it("freezes when paused and snaps on zone switch", () => {
+    let clk = syncPlaybackClock(null, {
+      zoneId: "z1",
+      trackKey: "item-1",
+      playing: true,
+      serverPosSec: 10,
+      positionUpdatedAtMs: 0,
+      durationSec: 200,
+      nowMs: 0,
+    });
+    clk = tickPlaybackClock(clk, 3000);
+    expect(Math.floor(clk.displayPos)).toBe(13);
+
+    // Pause -> freezes at 13s even as wall clock advances.
+    clk = syncPlaybackClock(clk, {
+      zoneId: "z1",
+      trackKey: "item-1",
+      playing: false,
+      serverPosSec: 13,
+      positionUpdatedAtMs: 3000,
+      durationSec: 200,
+      nowMs: 3000,
+    });
+    clk = tickPlaybackClock(clk, 10_000);
+    expect(Math.floor(clk.displayPos)).toBe(13);
+
+    // Switch zone -> snaps immediately.
+    clk = syncPlaybackClock(clk, {
+      zoneId: "z2",
+      trackKey: "item-1",
+      playing: true,
+      serverPosSec: 45,
+      positionUpdatedAtMs: 10_000,
+      durationSec: 200,
+      nowMs: 10_000,
+    });
+    expect(Math.floor(clk.displayPos)).toBe(45);
+  });
 });

@@ -196,3 +196,94 @@ func TestMonitor_PrefersUPnPButKeepsCastGroups(t *testing.T) {
 		t.Fatalf("expected pure Cast speaker cast:nest-1 to be kept")
 	}
 }
+
+func TestMatchQueueIndexLocked(t *testing.T) {
+	r := NewRenderer("nest-1", "Nest", "Nest Audio", "192.168.1.50", 8009)
+	r.queueItems = []upnp.MediaItem{
+		{ID: "t1", URL: "http://192.168.1.10:4320/media/local/t1.flac"},
+		{ID: "t2", URL: "http://192.168.1.10:4320/media/qobuz/222.flac?handoff=1"},
+		{ID: "t1-dup", URL: "http://192.168.1.10:4320/media/local/t1.flac"},
+	}
+	r.curIdx = 1
+
+	if idx := r.matchQueueIndexLocked("http://192.168.1.10:4320/media/qobuz/222.flac?handoff=1"); idx != 1 {
+		t.Fatalf("match current = %d, want 1", idx)
+	}
+	// Duplicate URL prefers neighbor curIdx+1 (2) over index 0.
+	if idx := r.matchQueueIndexLocked("http://192.168.1.10:4320/media/local/t1.flac"); idx != 2 {
+		t.Fatalf("match duplicate neighbor = %d, want 2", idx)
+	}
+	if idx := r.matchQueueIndexLocked("http://other/foo.mp3"); idx != -1 {
+		t.Fatalf("match unknown = %d, want -1", idx)
+	}
+}
+
+func TestMonitor_EvictsAfterMissThreshold(t *testing.T) {
+	var (
+		mu         sync.Mutex
+		present    = true
+		registered = map[string]upnp.RendererInfo{}
+		removedID  string
+	)
+	mon := NewMonitor(MonitorConfig{
+		SweepInterval: 30 * time.Millisecond,
+		BrowseTimeout: 50 * time.Millisecond,
+		MissThreshold: 2,
+		DiscoverFn: func(_ context.Context) ([]DiscoveredDevice, error) {
+			mu.Lock()
+			ok := present
+			mu.Unlock()
+			if !ok {
+				return nil, nil
+			}
+			return []DiscoveredDevice{
+				{UUID: "nest-evict", Name: "Kitchen Nest", Model: "Nest Audio", Host: "192.168.1.77", Port: 8009},
+			}, nil
+		},
+	}, MonitorCallbacks{
+		ListUPnPHosts: func() map[string]struct{} { return nil },
+		ListCast: func() []upnp.RendererInfo {
+			mu.Lock()
+			defer mu.Unlock()
+			out := make([]upnp.RendererInfo, 0, len(registered))
+			for _, info := range registered {
+				out = append(out, info)
+			}
+			return out
+		},
+		IsActive: func(_ string) bool { return false },
+		OnFound: func(r *Renderer) {
+			mu.Lock()
+			registered[r.Info().ID] = r.Info()
+			mu.Unlock()
+		},
+		OnRemoved: func(id, _ string) {
+			mu.Lock()
+			delete(registered, id)
+			removedID = id
+			mu.Unlock()
+		},
+	})
+
+	mon.sweep(context.Background())
+	mu.Lock()
+	present = false
+	mu.Unlock()
+
+	// Miss #1: still present.
+	mon.sweep(context.Background())
+	mu.Lock()
+	if _, ok := registered["cast:nest-evict"]; !ok {
+		mu.Unlock()
+		t.Fatal("should not evict after 1 miss when MissThreshold=2")
+	}
+	mu.Unlock()
+
+	// Miss #2: evicted!
+	mon.sweep(context.Background())
+	mu.Lock()
+	defer mu.Unlock()
+	if removedID != "cast:nest-evict" {
+		t.Fatalf("removedID = %q, want cast:nest-evict", removedID)
+	}
+}

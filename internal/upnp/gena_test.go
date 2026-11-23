@@ -249,3 +249,50 @@ func TestParseNotifyBody_DirectPropertyFallbackAndInstanceFilter(t *testing.T) {
 		t.Fatalf("expected non-zero InstanceID to be ignored, got %+v", ev2)
 	}
 }
+
+func TestGENAClient_UnwatchRenderer(t *testing.T) {
+	unsubCh := make(chan string, 1)
+	deviceSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "SUBSCRIBE":
+			w.Header().Set("SID", "uuid:sub-unwatch")
+			w.Header().Set("TIMEOUT", "Second-300")
+			w.WriteHeader(http.StatusOK)
+		case "UNSUBSCRIBE":
+			unsubCh <- r.Header.Get("SID")
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer deviceSrv.Close()
+
+	gena := NewGENAClient(func(_ DeviceEvent) {})
+	defer gena.Close(context.Background())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	gena.WatchRenderer(ctx, "uuid:r-unwatch", "http://127.0.0.1:4320", deviceSrv.URL+"/avt", "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !gena.IsSubscribed("uuid:r-unwatch") {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !gena.IsSubscribed("uuid:r-unwatch") {
+		t.Fatal("expected renderer to become subscribed")
+	}
+
+	gena.UnwatchRenderer("uuid:r-unwatch")
+	if gena.IsSubscribed("uuid:r-unwatch") {
+		t.Fatal("expected IsSubscribed=false immediately after UnwatchRenderer")
+	}
+	select {
+	case sid := <-unsubCh:
+		if sid != "uuid:sub-unwatch" {
+			t.Fatalf("UNSUBSCRIBE SID = %q, want uuid:sub-unwatch", sid)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for UNSUBSCRIBE after UnwatchRenderer")
+	}
+}

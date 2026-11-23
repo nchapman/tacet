@@ -131,3 +131,62 @@ func TestLinkplaySOAPActions(t *testing.T) {
 		t.Fatalf("expected LoopMode=0 for repeat=all in %s", bodies[6])
 	}
 }
+
+func TestLinkplayReplaceQueue_BatchesOver50Tracks(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		actions []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		actions = append(actions, r.Header.Get("SOAPACTION"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/xml")
+		_, _ = w.Write([]byte(`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:OKResponse xmlns:u="urn:schemas-wiimu-com:service:PlayQueue:1"/></s:Body></s:Envelope>`))
+	}))
+	defer srv.Close()
+
+	lp := NewRenderer(nil, srv.URL)
+	items := make([]upnp.MediaItem, 55)
+	for i := range items {
+		items[i] = upnp.MediaItem{
+			ID:    "t",
+			URL:   "http://example/t.flac",
+			Title: "Track",
+			MIME:  "audio/flac",
+		}
+	}
+	if err := lp.ReplaceQueue(context.Background(), items, 2); err != nil {
+		t.Fatalf("ReplaceQueue(55): %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{
+		`"urn:schemas-wiimu-com:service:PlayQueue:1#CreateQueue"`,
+		`"urn:schemas-wiimu-com:service:PlayQueue:1#AppendTracksInQueue"`,
+		`"urn:schemas-wiimu-com:service:PlayQueue:1#PlayQueueWithIndex"`,
+	}
+	if len(actions) != len(want) {
+		t.Fatalf("got %d actions %v, want %d", len(actions), actions, len(want))
+	}
+	for i := range want {
+		if actions[i] != want[i] {
+			t.Fatalf("action[%d] = %q, want %q", i, actions[i], want[i])
+		}
+	}
+}
+
+func TestLinkplayGetQueueIndex(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/xml")
+		_, _ = w.Write([]byte(`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetQueueIndexResponse xmlns:u="urn:schemas-wiimu-com:service:PlayQueue:1"><CurrentIndex>4</CurrentIndex></u:GetQueueIndexResponse></s:Body></s:Envelope>`))
+	}))
+	defer srv.Close()
+
+	lp := NewRenderer(nil, srv.URL)
+	idx, ok := lp.getQueueIndex(context.Background())
+	if !ok || idx != 3 {
+		t.Fatalf("getQueueIndex = (%d, %v), want (3, true)", idx, ok)
+	}
+}
