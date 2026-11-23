@@ -2,6 +2,7 @@ import {
   AlertCircle,
   Laptop,
   ListMusic,
+  Loader2,
   Maximize2,
   Pause,
   Play,
@@ -155,10 +156,11 @@ export const PlayerBar = memo(function PlayerBar({
   const shownPos = scrubPos ?? Math.min(positionSec, duration || positionSec);
   const shownVol = volDraft ?? activeZone?.volume ?? 0;
   const playing = activeZone?.state === "playing";
+  const buffering = activeZone?.state === "buffering";
   const hasZone = activeZone !== null;
   const hasPlayable =
     hasZone &&
-    Boolean(track || (activeZone?.queue?.length ?? 0) > 0 || playing || activeZone?.state === "paused");
+    Boolean(track || (activeZone?.queue?.length ?? 0) > 0 || playing || buffering || activeZone?.state === "paused");
   const isBrowserActive = Boolean(browserPlayer.enabled && activeZone?.zoneId === browserPlayer.zoneId);
   const activeDeviceName = activeZone
     ? isBrowserActive
@@ -289,11 +291,13 @@ export const PlayerBar = memo(function PlayerBar({
             <button
               type="button"
               disabled={!hasPlayable}
-              onClick={() => onTransport(playing ? "pause" : "play")}
-              aria-label={playing ? "Pause" : "Play"}
+              onClick={() => onTransport(playing || buffering ? "pause" : "play")}
+              aria-label={buffering ? "Buffering — click to pause" : playing ? "Pause" : "Play"}
               className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black shadow-md transition-transform hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 cursor-pointer"
             >
-              {playing ? (
+              {buffering ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : playing ? (
                 <Pause className="h-4 w-4 fill-current" />
               ) : (
                 <Play className="h-4 w-4 fill-current translate-x-[1px]" />
@@ -507,11 +511,17 @@ export const PlayerBar = memo(function PlayerBar({
               variant="ghost"
               size="icon-sm"
               disabled={!hasPlayable}
-              onClick={() => onTransport(playing ? "pause" : "play")}
-              aria-label={playing ? "Pause" : "Play"}
+              onClick={() => onTransport(playing || buffering ? "pause" : "play")}
+              aria-label={buffering ? "Buffering — click to pause" : playing ? "Pause" : "Play"}
               className="text-foreground"
             >
-              {playing ? <Pause className="h-5 w-5 fill-current" /> : <Play className="h-5 w-5 fill-current" />}
+              {buffering ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : playing ? (
+                <Pause className="h-5 w-5 fill-current" />
+              ) : (
+                <Play className="h-5 w-5 fill-current" />
+              )}
             </Button>
           </div>
         </div>

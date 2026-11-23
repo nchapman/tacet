@@ -2,6 +2,7 @@ import {
   ChevronDown,
   Laptop,
   ListMusic,
+  Loader2,
   Minimize2,
   Pause,
   Play,
@@ -117,10 +118,11 @@ export function NowPlayingOverlay({
 
   const track = activeZone?.currentTrack ?? null;
   const playing = activeZone?.state === "playing";
+  const buffering = activeZone?.state === "buffering";
   const hasZone = activeZone !== null;
   const hasPlayable =
     hasZone &&
-    Boolean(track || (activeZone?.queue?.length ?? 0) > 0 || playing || activeZone?.state === "paused");
+    Boolean(track || (activeZone?.queue?.length ?? 0) > 0 || playing || buffering || activeZone?.state === "paused");
   const shuffle = Boolean(activeZone?.shuffle);
   const repeat: RepeatMode = activeZone?.repeat ?? "off";
   const nextRepeatMode: RepeatMode = repeat === "off" ? "all" : repeat === "all" ? "one" : "off";
@@ -406,11 +408,13 @@ export function NowPlayingOverlay({
               <button
                 type="button"
                 disabled={!hasPlayable}
-                onClick={() => onTransport(playing ? "pause" : "play")}
-                aria-label={playing ? "Pause" : "Play"}
+                onClick={() => onTransport(playing || buffering ? "pause" : "play")}
+                aria-label={buffering ? "Buffering — click to pause" : playing ? "Pause" : "Play"}
                 className="flex h-16 w-16 lg:h-14 lg:w-14 items-center justify-center rounded-full bg-white text-black shadow-2xl hover:scale-105 active:scale-95 transition-transform disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
               >
-                {playing ? (
+                {buffering ? (
+                  <Loader2 className="h-7 w-7 lg:h-6 lg:w-6 animate-spin" />
+                ) : playing ? (
                   <Pause className="h-7 w-7 lg:h-6 lg:w-6 fill-current" />
                 ) : (
                   <Play className="h-7 w-7 lg:h-6 lg:w-6 fill-current translate-x-0.5" />

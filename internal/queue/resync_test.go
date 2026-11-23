@@ -219,3 +219,46 @@ func TestHandleDeviceEvent_VolumeOnlyDoesNotTriggerAutoPlay(t *testing.T) {
 		t.Fatalf("volume-only GENA event must not trigger playback")
 	}
 }
+
+func TestAwaitingAudio_HoldsBufferingUntilPositionAdvances(t *testing.T) {
+	mgr := NewManager(4320, "http://192.168.1.10:4320", nil)
+	zoneID := "uuid:linkplay-buf"
+	tracks := []library.Track{
+		{ID: "local:t1", Source: library.SourceLocal, Title: "Slow Disk Track", DurationSec: 200, MIME: "audio/flac"},
+	}
+	ctrl := &fakeQueueController{
+		info: upnp.RendererInfo{ID: zoneID, Name: "AudioPro A15", SupportsQueue: true, HasVolume: true},
+		status: upnp.TransportStatus{
+			State:       "PLAYING",
+			TrackURI:    "http://192.168.1.10:4320/media/local/local:t1.flac",
+			HasPosition: true,
+			Position:    0,
+			Duration:    200 * time.Second,
+		},
+	}
+	mgr.RegisterRenderer(ctrl)
+
+	if _, err := mgr.ReplaceQueue(context.Background(), zoneID, tracks, 0); err != nil {
+		t.Fatalf("ReplaceQueue: %v", err)
+	}
+
+	// Renderer reports PLAYING at 0:00 while still waiting on disk/CDN -> must stay buffering.
+	mgr.pollOne(context.Background(), zoneID)
+	snap, _ := mgr.Zone(zoneID)
+	if snap.State != "buffering" {
+		t.Fatalf("State = %q at pos=0 while awaiting audio, want buffering", snap.State)
+	}
+
+	// Once audio actually starts flowing (Position > 0) -> transitions cleanly to playing.
+	ctrl.mu.Lock()
+	ctrl.status.Position = 1 * time.Second
+	ctrl.mu.Unlock()
+	mgr.pollOne(context.Background(), zoneID)
+	snap, _ = mgr.Zone(zoneID)
+	if snap.State != "playing" {
+		t.Fatalf("State = %q once pos=1s, want playing", snap.State)
+	}
+	if snap.PositionSec != 1 {
+		t.Fatalf("PositionSec = %d, want 1", snap.PositionSec)
+	}
+}

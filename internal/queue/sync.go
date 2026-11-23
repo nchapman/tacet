@@ -53,6 +53,7 @@ func (m *Manager) replaceDeviceQueueAndPlay(
 		z.positionUpdatedAt = time.Now().UTC()
 		z.lastPlaybackEmit = z.positionUpdatedAt
 		z.wasPlaying = false
+		z.awaitingAudio = true
 		z.loadedAt = time.Now()
 		z.revision++
 	}
@@ -161,6 +162,7 @@ func (m *Manager) playPreparedMedia(
 		// via Status() or GENA, otherwise brief STOPPED states during buffering
 		// trigger cascading auto-advances across the queue.
 		z.wasPlaying = false
+		z.awaitingAudio = true
 		z.loadedAt = time.Now()
 		z.revision++
 	}
@@ -720,6 +722,24 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 	staleTrack := !isNativeQueue && z.currentURI != "" && st.TrackURI != "" &&
 		st.TrackURI != z.currentURI &&
 		(z.nextURI == "" || st.TrackURI != z.nextURI)
+
+	// Hold "TRANSITIONING" (buffering) after loading a track until the renderer
+	// actually reports advancing audio (Position > 0). Many UPnP/Linkplay/Cast
+	// devices flip to PLAYING at 0:00 while waiting on a spinning disk or remote
+	// CDN stream, which otherwise causes the client timer to count ahead and snap
+	// back when audio finally begins.
+	if z.awaitingAudio {
+		switch st.State {
+		case "PLAYING":
+			if !staleTrack && st.HasPosition && st.Position <= 0 {
+				st.State = "TRANSITIONING"
+			} else if !staleTrack {
+				z.awaitingAudio = false
+			}
+		case "PAUSED_PLAYBACK", "STOPPED", "NO_MEDIA_PRESENT":
+			z.awaitingAudio = false
+		}
+	}
 
 	// Preserve previous valid fields when partial status calls fail.
 	z.status.State = st.State

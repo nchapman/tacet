@@ -82,6 +82,9 @@ func (f *fakeRenderer) Play(_ context.Context) error {
 		return f.playErr
 	}
 	f.state = "PLAYING"
+	if f.position == 0 {
+		f.position = time.Second
+	}
 	return nil
 }
 

@@ -556,6 +556,7 @@ func (m *Manager) ClearQueue(ctx context.Context, zoneID string) (ZoneSnapshot, 
 	z.nextQuality = ""
 	z.userStopped = true
 	z.wasPlaying = false
+	z.awaitingAudio = false
 	z.status.State = "STOPPED"
 	z.status.Position = 0
 	z.positionUpdatedAt = time.Now().UTC()
@@ -649,6 +650,7 @@ func (m *Manager) Pause(ctx context.Context, zoneID string) (ZoneSnapshot, error
 		return ZoneSnapshot{}, wrapRendererErr("Pause", err)
 	}
 	m.mu.Lock()
+	z.awaitingAudio = false
 	z.status.State = "PAUSED_PLAYBACK"
 	z.positionUpdatedAt = time.Now().UTC()
 	z.revision++
@@ -1068,6 +1070,7 @@ func (m *Manager) playDeviceQueueIndex(ctx context.Context, zoneID string, z *zo
 		z.positionUpdatedAt = time.Now().UTC()
 		z.lastPlaybackEmit = z.positionUpdatedAt
 		z.wasPlaying = false
+		z.awaitingAudio = true
 		z.loadedAt = time.Now()
 		z.revision++
 	}
