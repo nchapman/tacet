@@ -305,3 +305,47 @@ func TestTransitioning_IgnoresStaleRelTime(t *testing.T) {
 		t.Fatalf("during TRANSITIONING: pos=%d, want 0", snap.PositionSec)
 	}
 }
+
+func TestNativeQueue_GENATrackAdvanceResetsPositionImmediately(t *testing.T) {
+	mgr := NewManager(4320, "http://192.168.1.10:4320", nil)
+	zoneID := "uuid:wiim-advance"
+	tracks := []library.Track{
+		{ID: "local:t1", Source: library.SourceLocal, Title: "Track 1", DurationSec: 188, MIME: "audio/flac"},
+		{ID: "local:t2", Source: library.SourceLocal, Title: "Track 2", DurationSec: 255, MIME: "audio/flac"},
+	}
+	ctrl := &fakeQueueController{
+		info: upnp.RendererInfo{ID: zoneID, Name: "Living Room Wiim", SupportsQueue: true},
+		status: upnp.TransportStatus{
+			State:         "PLAYING",
+			TrackURI:      "http://192.168.1.10:4320/media/local/local:t1.flac",
+			HasPosition:   true,
+			Position:      179 * time.Second,
+			Duration:      188 * time.Second,
+			HasQueueIndex: true,
+			QueueIndex:    0,
+		},
+	}
+	mgr.RegisterRenderer(ctrl)
+
+	if _, err := mgr.ReplaceQueue(context.Background(), zoneID, tracks, 0); err != nil {
+		t.Fatalf("ReplaceQueue: %v", err)
+	}
+	mgr.pollOne(context.Background(), zoneID)
+
+	// Speaker finishes Track 1 and pushes GENA TrackURI for Track 2 (without QueueIndex or Position).
+	mgr.HandleDeviceEvent(upnp.DeviceEvent{
+		RendererID:  zoneID,
+		Seq:         2,
+		HasTrackURI: true,
+		TrackURI:    "http://192.168.1.10:4320/media/local/local:t2.flac",
+		HasDuration: true,
+		Duration:    255 * time.Second,
+	})
+	snap, _ := mgr.Zone(zoneID)
+	if snap.CurrentIndex != 1 {
+		t.Fatalf("CurrentIndex = %d after GENA TrackURI advance, want 1", snap.CurrentIndex)
+	}
+	if snap.PositionSec != 0 {
+		t.Fatalf("PositionSec = %d after GENA TrackURI advance, want 0", snap.PositionSec)
+	}
+}

@@ -653,8 +653,16 @@ func (m *Manager) Pause(ctx context.Context, zoneID string) (ZoneSnapshot, error
 		return ZoneSnapshot{}, wrapRendererErr("Pause", err)
 	}
 	m.mu.Lock()
+	now := time.Now().UTC()
+	if z.status.State == "PLAYING" && !z.positionUpdatedAt.IsZero() {
+		pos := z.status.Position + now.Sub(z.positionUpdatedAt)
+		if z.status.Duration > 0 && pos > z.status.Duration {
+			pos = z.status.Duration
+		}
+		z.status.Position = pos
+	}
 	z.status.State = "PAUSED_PLAYBACK"
-	z.positionUpdatedAt = time.Now().UTC()
+	z.positionUpdatedAt = now
 	z.revision++
 	pbEv := m.playbackEventLocked(z)
 	snap := m.snapshotLocked(z)

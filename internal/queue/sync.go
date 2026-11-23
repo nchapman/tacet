@@ -831,6 +831,7 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 	}
 
 	// 1. Detect device-managed queue transition (Linkplay PlayQueue / Cast Media Queue),
+	// native-queue GENA TrackURI advance (GENA pushes TrackURI without QueueIndex),
 	// restored-zone live playback resync, or virtual-queue gapless transition.
 	if isNativeQueue && st.HasQueueIndex && st.QueueIndex >= 0 && st.QueueIndex < len(z.queue) {
 		if st.QueueIndex != z.currentIndex && time.Since(z.loadedAt) > 1500*time.Millisecond {
@@ -844,6 +845,18 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 			z.loadedAt = time.Now()
 			z.positionUpdatedAt = now
 		} else if z.currentURI == "" && st.TrackURI != "" {
+			z.currentURI = st.TrackURI
+		}
+	} else if isNativeQueue && st.TrackURI != "" && st.TrackURI != z.currentURI && len(z.queue) > 0 {
+		if matched := matchTrackURIInQueue(st.TrackURI, z.queue); matched >= 0 {
+			if matched != z.currentIndex {
+				z.currentIndex = matched
+				if !st.HasPosition {
+					z.status.Position = 0
+				}
+				z.loadedAt = time.Now()
+				z.positionUpdatedAt = now
+			}
 			z.currentURI = st.TrackURI
 		}
 	} else if z.currentURI == "" && st.TrackURI != "" && len(z.queue) > 0 {
