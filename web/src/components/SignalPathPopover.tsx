@@ -196,13 +196,13 @@ export function SignalPathPopover({
       stages.push({
         icon: Radio,
         title: "HTTP Audio Stream",
-        detail: isQobuz ? "Quiet Relay" : "LAN HTTP",
+        detail: isQobuz ? "Relay" : "LAN HTTP",
         accent: "neutral",
       });
     } else {
       const transportBits: string[] = [];
       if (isQobuz) {
-        transportBits.push(streamMode === "direct" && !isOpus && !isWav ? "Direct URL" : "Quiet Relay");
+        transportBits.push(streamMode === "direct" && !isOpus && !isWav ? "Handoff" : "Relay");
       } else {
         transportBits.push("LAN HTTP");
       }

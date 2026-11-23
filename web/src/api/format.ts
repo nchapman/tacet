@@ -199,5 +199,5 @@ export function truncateAtSentence(text: string, targetWords = 35): { preview: s
 }
 
 export function streamModeLabel(mode: StreamMode): string {
-  return mode === "relay" ? "Quiet Relay" : "Direct Handoff";
+  return mode === "relay" ? "Relay" : "Handoff";
 }

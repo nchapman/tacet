@@ -31,7 +31,7 @@ var relayBufPool = sync.Pool{
 	},
 }
 
-// Handler serves local NAS audio files, cover art, and Qobuz Quiet Relay
+// Handler serves local NAS audio files, cover art, and Qobuz HTTP relay
 // streams over plain HTTP with DLNA streaming headers and Range support.
 type Handler struct {
 	catalog       *library.Catalog
@@ -349,7 +349,7 @@ func safeImageMIME(raw string) string {
 }
 
 // serveQobuzRelay terminates TLS on the NAS and forwards untouched FLAC bytes
-// over plain HTTP to the renderer ("Quiet Relay" mode), preserving Range requests.
+// over plain HTTP to the renderer (Relay mode), preserving Range requests.
 func (h *Handler) serveQobuzRelay(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

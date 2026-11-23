@@ -14,7 +14,7 @@ An open-source, headless UPnP/DLNA control point server written in Go for lossle
   - Full transport (`Play`, `Pause`, `Stop`, `Next`, `Prev`, `Seek`) and `RenderingControl` (`Volume`, `Mute`).
 - **Two Qobuz Delivery Modes (up to 24-bit/192kHz FLAC):**
   - **Direct (`direct`):** Hands the signed Qobuz CDN URL directly to your renderer—zero audio traffic passes through the server.
-  - **Quiet Relay (`relay`):** Terminates TLS on the server and forwards raw, untouched FLAC bytes over plain HTTP with `Range` support.
+  - **Relay (`relay`):** Terminates TLS on the server and forwards raw, untouched FLAC bytes over plain HTTP with `Range` support.
 - **Direct Local NAS Library:**
   - Recursively scans local music directories (`.flac`, `.wav`, `.aiff`, `.m4a`/ALAC, `.dsf`, `.mp3`, `.ogg`, `.opus`), reading tags, embedded/folder cover art, and exact sample rate/bit depth/duration from audio headers.
   - Serves untouched files over plain HTTP with `Range` and DLNA streaming headers.

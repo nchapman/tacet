@@ -226,7 +226,7 @@ export function SettingsView({
                 )}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-white">Direct Handoff</span>
+                  <span className="text-sm font-medium text-white">Handoff</span>
                   {streamMode === "direct" && (
                     <span className="inline-flex items-center gap-1 text-[11px] font-medium text-white/90">
                       <Check className="h-3.5 w-3.5" />
@@ -250,7 +250,7 @@ export function SettingsView({
                 )}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-white">Quiet Relay</span>
+                  <span className="text-sm font-medium text-white">Relay</span>
                   {streamMode === "relay" && (
                     <span className="inline-flex items-center gap-1 text-[11px] font-medium text-white/90">
                       <Check className="h-3.5 w-3.5" />
@@ -259,7 +259,7 @@ export function SettingsView({
                   )}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                  NAS fetches HTTPS and streams raw bit-perfect bytes over plain LAN HTTP for older renderers.
+                  Server terminates HTTPS and streams raw bit-perfect bytes over plain LAN HTTP.
                 </p>
               </button>
             </div>

@@ -23,8 +23,8 @@ describe("format helpers", () => {
     expect(isHiRes(24, 48000)).toBe(true);
     expect(isHiRes(24, 192000)).toBe(true);
     expect(isHiRes(1, 2822400)).toBe(true);
-    expect(streamModeLabel("direct")).toBe("Direct Handoff");
-    expect(streamModeLabel("relay")).toBe("Quiet Relay");
+    expect(streamModeLabel("direct")).toBe("Handoff");
+    expect(streamModeLabel("relay")).toBe("Relay");
   });
 });
 

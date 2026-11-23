@@ -362,7 +362,7 @@ func (m *Manager) subscribeRendererGENA(ctx context.Context, gena *upnp.GENAClie
 	gena.WatchRenderer(ctx, dev.Info().ID, m.baseURLFor(ctrl), avURL, rcURL)
 }
 
-// SetStreamMode switches between Direct Qobuz handoff and Quiet Relay.
+// SetStreamMode switches between Handoff (direct Qobuz URL) and Relay mode.
 func (m *Manager) SetStreamMode(mode StreamMode) error {
 	if mode != StreamModeDirect && mode != StreamModeRelay {
 		return fmt.Errorf("%w: unsupported stream mode %q (use direct or relay)", ErrInvalidArgument, mode)
