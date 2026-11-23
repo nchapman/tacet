@@ -126,6 +126,7 @@ func (m *Manager) ReplaceQueue(ctx context.Context, zoneID string, tracks []libr
 		}
 		queueCopy := append([]Item(nil), z.queue...)
 		z.currentIndex = playIdx
+		z.status.Position = 0
 		z.nextPreloaded = false
 		z.nextPreloading = false
 		z.nextFailed = false
@@ -172,6 +173,7 @@ func (m *Manager) ReplaceQueue(ctx context.Context, zoneID string, tracks []libr
 		z.queue = items
 	}
 	z.currentIndex = playIdx
+	z.status.Position = 0
 	z.nextPreloaded = false
 	z.nextPreloading = false
 	z.nextFailed = false
