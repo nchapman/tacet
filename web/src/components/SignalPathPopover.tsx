@@ -181,8 +181,8 @@ export function SignalPathPopover({
   } else if (isWav) {
     const wavDetail =
       track.bitDepth === 1
-        ? "Uncompressed WAV · 24-bit / 88.2 kHz"
-        : `Uncompressed WAV${track.bitDepth && track.sampleRate ? ` · ${track.bitDepth > 16 ? 24 : 16}-bit / ${(track.sampleRate / 1000).toFixed(track.sampleRate % 1000 === 0 ? 0 : 1)} kHz` : ""}`;
+        ? "WAV · 24-bit / 88.2 kHz"
+        : `WAV${track.bitDepth && track.sampleRate ? ` · ${track.bitDepth > 16 ? 24 : 16}-bit / ${(track.sampleRate / 1000).toFixed(track.sampleRate % 1000 === 0 ? 0 : 1)} kHz` : ""}`;
     stages.push({
       icon: Waves,
       title: track.bitDepth === 1 ? "DSD → PCM Decode" : "PCM Decode",
