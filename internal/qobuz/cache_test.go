@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"tacet/internal/cache"
-	"tacet/internal/library"
 )
 
 func TestCatalogCache_DiskPersistenceAndHits(t *testing.T) {
@@ -211,29 +210,76 @@ func TestCatalogCache_TTLExpiryAndCorruptPayload(t *testing.T) {
 	}
 	defer func() { _ = kv.Close() }()
 
-	c := NewClient(Config{Cache: kv})
+	var albumHits, searchHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/album/get":
+			albumHits.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":     "corrupt",
+				"title":  "Healed Album",
+				"artist": map[string]any{"id": 1, "name": "Miles Davis"},
+				"tracks": map[string]any{
+					"items": []map[string]any{
+						{"id": 55501, "title": "Blue in Green", "track_number": 1, "duration": 337, "streamable": true},
+					},
+				},
+			})
+		case "/catalog/search":
+			searchHits.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"artists": map[string]any{"items": []map[string]any{{"id": 1, "name": "Miles"}}},
+				"tracks":  map[string]any{"items": []map[string]any{{"id": 55501, "title": "Blue in Green", "duration": 337, "streamable": true}}},
+				"albums":  map[string]any{"items": []any{}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, AppID: "app", AppSecret: "sec", AuthToken: "tok", Cache: kv})
 	defer func() { _ = c.Close() }()
 
-	// Corrupt JSON payload in SQLite is treated as a cache miss and self-healed.
-	_ = c.kv.Set("album:corrupt", []byte("{not valid json"), time.Hour)
-	if _, ok := c.getCachedAlbum("corrupt"); ok {
-		t.Fatal("expected corrupt JSON entry to be treated as miss")
+	// Corrupt raw JSON payload in SQLite is treated as a cache miss and self-healed on re-fetch.
+	corruptKey := rawCacheKey("/album/get", map[string][]string{"album_id": {"corrupt"}, "limit": {"500"}})
+	_ = c.kv.Set(corruptKey, []byte("{not valid json"), time.Hour)
+	alb, err := c.GetAlbum(context.Background(), "corrupt")
+	if err != nil || alb.Title != "Healed Album" || albumHits.Load() != 1 {
+		t.Fatalf("expected corrupt JSON to self-heal, got (%+v, %v, hits=%d)", alb, err, albumHits.Load())
+	}
+	// Second call hits the healed raw JSON cache without touching HTTP.
+	alb2, err := c.GetAlbum(context.Background(), "corrupt")
+	if err != nil || alb2.Title != "Healed Album" || albumHits.Load() != 1 {
+		t.Fatalf("expected second GetAlbum to hit cache, got (%+v, %v, hits=%d)", alb2, err, albumHits.Load())
 	}
 
-	c.putCachedSearch("miles", 10, 0, SearchResult{Artists: []Artist{{ID: 1, Name: "Miles"}}})
+	// Semantically empty cached JSON (e.g. "{}") must not poison the album cache.
+	_ = c.kv.Set(corruptKey, []byte("{}"), time.Hour)
+	alb3, err := c.GetAlbum(context.Background(), "corrupt")
+	if err != nil || alb3.Title != "Healed Album" || albumHits.Load() != 2 {
+		t.Fatalf("expected empty JSON album payload to re-fetch and heal, got (%+v, %v, hits=%d)", alb3, err, albumHits.Load())
+	}
+
+	// Raw search response caches for searchCacheTTL (1h) and preserves QobuzTrackID directly from raw JSON.
+	res, err := c.Search(context.Background(), "miles", 10, 0)
+	if err != nil || len(res.Tracks) != 1 || res.Tracks[0].QobuzTrackID != 55501 || searchHits.Load() != 1 {
+		t.Fatalf("first Search = (%+v, %v, hits=%d)", res, err, searchHits.Load())
+	}
+	res2, err := c.Search(context.Background(), "miles", 10, 0)
+	if err != nil || len(res2.Tracks) != 1 || res2.Tracks[0].QobuzTrackID != 55501 || searchHits.Load() != 1 {
+		t.Fatalf("cached Search = (%+v, %v, hits=%d)", res2, err, searchHits.Load())
+	}
+
 	c.putCachedArtistName("Local Only", 0, true)
-
-	if _, ok := c.getCachedSearch("miles", 10, 0); !ok {
-		t.Fatal("expected search hit before TTL")
-	}
 	if id, ok := c.getCachedArtistName("Local Only"); !ok || id != 0 {
 		t.Fatalf("expected negative artist hit before TTL, got (%d, %v)", id, ok)
 	}
 
 	// Advance past search TTL (1h) but still inside negative artist miss TTL (24h).
 	now = now.Add(2 * time.Hour)
-	if _, ok := c.getCachedSearch("miles", 10, 0); ok {
-		t.Fatal("expected search entry to expire after 2h")
+	if _, err := c.Search(context.Background(), "miles", 10, 0); err != nil || searchHits.Load() != 2 {
+		t.Fatalf("expected search entry to expire after 2h (err=%v, hits=%d)", err, searchHits.Load())
 	}
 	if id, ok := c.getCachedArtistName("Local Only"); !ok || id != 0 {
 		t.Fatalf("expected negative artist miss to still be valid at 2h, got (%d, %v)", id, ok)
@@ -256,14 +302,6 @@ func TestCatalogCache_TTLExpiryAndCorruptPayload(t *testing.T) {
 	c.putCachedArtistName("Formerly Missing", 4242, false)
 	if id, ok := c.getCachedArtistName("Formerly Missing"); !ok || id != 4242 {
 		t.Fatalf("expected cached miss to upgrade to 4242, got (%d, %v)", id, ok)
-	}
-
-	// Cached search tracks must rehydrate QobuzTrackID from ID ("qobuz:<id>").
-	c.putCachedSearch("rehydrate", 10, 0, SearchResult{
-		Tracks: []library.Track{{ID: "qobuz:55501", Title: "Blue in Green", QobuzTrackID: 55501}},
-	})
-	if res, ok := c.getCachedSearch("rehydrate", 10, 0); !ok || len(res.Tracks) != 1 || res.Tracks[0].QobuzTrackID != 55501 {
-		t.Fatalf("expected cached search track QobuzTrackID 55501, got (%+v, %v)", res, ok)
 	}
 }
 

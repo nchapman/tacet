@@ -209,16 +209,16 @@ func (c *Client) CacheStats() (albums, artists, artistNames, searches int) {
 	if c.kv == nil {
 		return 0, 0, 0, 0
 	}
-	if ks, err := c.kv.Keys("album:*"); err == nil {
+	if ks, err := c.kv.Keys("raw:/album/get?*"); err == nil {
 		albums = len(ks)
 	}
-	if ks, err := c.kv.Keys("artist:*"); err == nil {
+	if ks, err := c.kv.Keys("raw:/artist/get?*"); err == nil {
 		artists = len(ks)
 	}
 	if ks, err := c.kv.Keys("artist-name:*"); err == nil {
 		artistNames = len(ks)
 	}
-	if ks, err := c.kv.Keys("search:*"); err == nil {
+	if ks, err := c.kv.Keys("raw:/catalog/search?*"); err == nil {
 		searches = len(ks)
 	}
 	return albums, artists, artistNames, searches
@@ -375,10 +375,6 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 	if err := c.requireAuth(); err != nil {
 		return empty, err
 	}
-	if cached, ok := c.getCachedSearch(query, limit, off); ok {
-		c.cacheTracks(cached.Tracks)
-		return cached, nil
-	}
 
 	gen := c.authGen.Load()
 	params := url.Values{
@@ -398,7 +394,7 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 			Items []qAlbum `json:"items"`
 		} `json:"albums"`
 	}
-	if err := c.getJSON(ctx, "/catalog/search", params, true, &resp); err != nil {
+	if err := c.getCachedJSON(ctx, "/catalog/search", params, searchCacheTTL, &resp); err != nil {
 		return empty, err
 	}
 
@@ -428,7 +424,6 @@ func (c *Client) Search(ctx context.Context, query string, limit int, offset ...
 			c.cacheArtistName(art.Name, art.ID, false)
 		}
 		c.cacheTracks(res.Tracks)
-		c.putCachedSearch(query, limit, off, res)
 	}
 	return res, nil
 }
@@ -443,9 +438,6 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 	}
 	if limit <= 0 || limit > 200 {
 		limit = 50
-	}
-	if cached, ok := c.getCachedArtist(artistID, limit); ok {
-		return cached, nil
 	}
 	gen := c.authGen.Load()
 	params := url.Values{
@@ -469,7 +461,9 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 		pageCh <- c.fetchArtistPageExtras(ctx, artistID)
 	}()
 
-	if err := c.getJSON(ctx, "/artist/get", params, true, &resp); err != nil {
+	if err := c.getCachedJSONValid(ctx, "/artist/get", params, artistCacheTTL, &resp, func() bool {
+		return resp.ID > 0 || strings.TrimSpace(resp.Name) != ""
+	}); err != nil {
 		var ae *apiError
 		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
 			return ArtistDetail{}, fmt.Errorf("%w: artist %d", ErrNotFound, artistID)
@@ -521,9 +515,6 @@ func (c *Client) GetArtist(ctx context.Context, artistID int64, limit int) (Arti
 	if c.authGen.Load() == gen {
 		if art.Name != "" {
 			c.cacheArtistName(art.Name, art.ID, true)
-		}
-		if pageRes.ok {
-			c.putCachedArtist(artistID, limit, detail)
 		}
 	}
 	return detail, nil
@@ -607,7 +598,7 @@ func (c *Client) fetchArtistPageExtras(ctx context.Context, artistID int64) arti
 			} `json:"album"`
 		} `json:"top_tracks"`
 	}
-	if err := c.getJSON(ctx, "/artist/page", params, true, &page); err != nil {
+	if err := c.getCachedJSON(ctx, "/artist/page", params, artistCacheTTL, &page); err != nil {
 		var ae *apiError
 		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
 			return artistPageExtras{ok: true}
@@ -780,7 +771,13 @@ func (c *Client) PrewarmLibrary(ctx context.Context, artistNames []string, local
 			if cachedID == 0 {
 				continue // negative cache hit
 			}
-			if _, ok := c.getCachedArtist(cachedID, defaultLimit); ok {
+			artistParams := url.Values{
+				"artist_id": {strconv.FormatInt(cachedID, 10)},
+				"extra":     {"albums"},
+				"limit":     {strconv.Itoa(defaultLimit)},
+				"offset":    {"0"},
+			}
+			if c.hasCachedJSON("/artist/get", artistParams) {
 				continue // already warm
 			}
 		}
@@ -807,7 +804,11 @@ func (c *Client) PrewarmLibrary(ctx context.Context, artistNames []string, local
 			if cachedID == "" {
 				continue // negative cache hit
 			}
-			if _, ok := c.getCachedAlbum(cachedID); ok {
+			albumParams := url.Values{
+				"album_id": {cachedID},
+				"limit":    {"500"},
+			}
+			if c.hasCachedJSON("/album/get", albumParams) {
 				continue // already warm
 			}
 		}
@@ -944,7 +945,7 @@ func (c *Client) GetArtistByName(ctx context.Context, name string, limit int) (A
 			Items []qArtist `json:"items"`
 		} `json:"artists"`
 	}
-	if err := c.getJSON(ctx, "/artist/search", params, true, &resp); err != nil {
+	if err := c.getCachedJSON(ctx, "/artist/search", params, artistNameCacheTTL, &resp); err != nil {
 		return ArtistDetail{}, err
 	}
 
@@ -983,17 +984,15 @@ func (c *Client) GetAlbum(ctx context.Context, albumID string) (library.Album, e
 		return library.Album{}, err
 	}
 	rawID := strings.TrimPrefix(strings.TrimSpace(albumID), "qobuz:")
-	if cached, ok := c.getCachedAlbum(rawID); ok {
-		c.cacheTracks(cached.Tracks)
-		return cached, nil
-	}
 	gen := c.authGen.Load()
 	params := url.Values{
 		"album_id": {rawID},
 		"limit":    {"500"},
 	}
 	var qa qAlbum
-	if err := c.getJSON(ctx, "/album/get", params, true, &qa); err != nil {
+	if err := c.getCachedJSONValid(ctx, "/album/get", params, albumCacheTTL, &qa, func() bool {
+		return strings.TrimSpace(qa.ID) != "" && len(qa.Tracks.Items) > 0
+	}); err != nil {
 		var ae *apiError
 		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
 			return library.Album{}, fmt.Errorf("%w: album %q", ErrNotFound, albumID)
@@ -1003,7 +1002,6 @@ func (c *Client) GetAlbum(ctx context.Context, albumID string) (library.Album, e
 	alb := qa.toLibraryAlbum(true)
 	if c.authGen.Load() == gen {
 		c.cacheTracks(alb.Tracks)
-		c.putCachedAlbum(rawID, alb)
 	}
 	return alb, nil
 }
@@ -1046,7 +1044,6 @@ func (c *Client) ResolveTrack(ctx context.Context, trackID int64) (library.Track
 const maxTrackCacheEntries = 2048
 
 func (c *Client) cacheTrack(tr library.Track) {
-	rehydrateTrackQobuzID(&tr)
 	if tr.QobuzTrackID <= 0 {
 		return
 	}
@@ -1064,7 +1061,6 @@ func (c *Client) cacheTracks(tracks []library.Track) {
 	defer c.mu.Unlock()
 	for i := range tracks {
 		tr := tracks[i]
-		rehydrateTrackQobuzID(&tr)
 		if tr.QobuzTrackID <= 0 {
 			continue
 		}
@@ -1253,21 +1249,22 @@ func (c *Client) requireAuth() error {
 	return nil
 }
 
-func (c *Client) getJSON(ctx context.Context, path string, params url.Values, withAuth bool, dst any) error {
+func (c *Client) getRawJSON(ctx context.Context, path string, params url.Values, withAuth bool) ([]byte, error) {
 	c.mu.RLock()
 	appID := c.appID
 	token := c.authToken
 	base := c.baseURL
 	c.mu.RUnlock()
 
-	if params == nil {
-		params = url.Values{}
+	q := make(url.Values, len(params)+1)
+	for k, vals := range params {
+		q[k] = vals
 	}
-	params.Set("app_id", appID)
+	q.Set("app_id", appID)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path+"?"+params.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path+"?"+q.Encode(), nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("X-App-Id", appID)
 	if withAuth && token != "" {
@@ -1277,13 +1274,13 @@ func (c *Client) getJSON(ctx context.Context, path string, params url.Values, wi
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var apiErr struct {
@@ -1294,7 +1291,15 @@ func (c *Client) getJSON(ctx context.Context, path string, params url.Values, wi
 		if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
 			msg = apiErr.Message
 		}
-		return &apiError{status: resp.StatusCode, message: msg}
+		return nil, &apiError{status: resp.StatusCode, message: msg}
+	}
+	return body, nil
+}
+
+func (c *Client) getJSON(ctx context.Context, path string, params url.Values, withAuth bool, dst any) error {
+	body, err := c.getRawJSON(ctx, path, params, withAuth)
+	if err != nil {
+		return err
 	}
 	return json.Unmarshal(body, dst)
 }

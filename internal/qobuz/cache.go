@@ -1,14 +1,14 @@
 package qobuz
 
 import (
-	"fmt"
-	"strconv"
+	"context"
+	"encoding/json"
+	"net/url"
 	"strings"
 	"time"
 	"unicode"
 
 	"tacet/internal/cache"
-	"tacet/internal/library"
 )
 
 const (
@@ -29,40 +29,86 @@ type cachedAlbumMatch struct {
 	AlbumID string `json:"albumId"`
 }
 
-func albumCacheKey(rawID string) string {
-	return "album:v2:" + strings.TrimSpace(rawID)
+// rawCacheKey builds a deterministic cache key for a raw upstream Qobuz HTTP JSON
+// response. url.Values.Encode sorts keys alphabetically, and app_id is excluded so
+// keys remain stable across app credential refreshes.
+func rawCacheKey(path string, params url.Values) string {
+	if len(params) == 0 {
+		return "raw:" + path
+	}
+	clean := make(url.Values, len(params))
+	for k, vals := range params {
+		if k == "app_id" {
+			continue
+		}
+		if k == "query" {
+			norm := make([]string, len(vals))
+			for i, v := range vals {
+				norm[i] = strings.ToLower(strings.TrimSpace(v))
+			}
+			clean[k] = norm
+			continue
+		}
+		clean[k] = vals
+	}
+	if len(clean) == 0 {
+		return "raw:" + path
+	}
+	return "raw:" + path + "?" + clean.Encode()
+}
+
+// getCachedJSON returns a cached raw Qobuz JSON response unmarshaled into dst,
+// or fetches, unmarshals, and caches the raw upstream JSON on a miss.
+// Caching the raw upstream payload means parser/model additions (e.g. new fields
+// or improved filtering) take effect immediately without cache invalidation.
+func (c *Client) getCachedJSON(ctx context.Context, path string, params url.Values, ttl time.Duration, dst any) error {
+	return c.getCachedJSONValid(ctx, path, params, ttl, dst, nil)
+}
+
+// getCachedJSONValid behaves like getCachedJSON, but only persists the raw body
+// when valid returns true (protecting long-TTL caches from transient degraded
+// or empty 200 OK upstream payloads).
+func (c *Client) getCachedJSONValid(ctx context.Context, path string, params url.Values, ttl time.Duration, dst any, valid func() bool) error {
+	if c.kv == nil || ttl <= 0 {
+		return c.getJSON(ctx, path, params, true, dst)
+	}
+	key := rawCacheKey(path, params)
+	if raw, ok, err := c.kv.Get(key); err == nil && ok {
+		if err := json.Unmarshal(raw, dst); err == nil {
+			if valid == nil || valid() {
+				return nil
+			}
+		}
+		// Corrupt or semantically empty cached payload: fall through to re-fetch and heal.
+	}
+	gen := c.authGen.Load()
+	body, err := c.getRawJSON(ctx, path, params, true)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, dst); err != nil {
+		return err
+	}
+	if c.authGen.Load() == gen && (valid == nil || valid()) {
+		_ = c.kv.Set(key, body, ttl)
+	}
+	return nil
+}
+
+func (c *Client) hasCachedJSON(path string, params url.Values) bool {
+	if c.kv == nil {
+		return false
+	}
+	_, ok, err := c.kv.Get(rawCacheKey(path, params))
+	return err == nil && ok
 }
 
 func albumMatchCacheKey(artist, title string) string {
 	return "album-match:" + normMatchKey(artist) + "|" + normMatchKey(title)
 }
 
-func artistCacheKey(artistID int64, limit int) string {
-	return fmt.Sprintf("artist:v3:%d:%d", artistID, limit)
-}
-
 func artistNameCacheKey(name string) string {
 	return "artist-name:" + normMatchKey(name)
-}
-
-func searchCacheKey(query string, limit, offset int) string {
-	return fmt.Sprintf("search:%s:%d:%d", strings.ToLower(strings.TrimSpace(query)), limit, offset)
-}
-
-func (c *Client) getCachedAlbum(rawID string) (library.Album, bool) {
-	alb, ok, err := cache.GetJSON[library.Album](c.kv, albumCacheKey(rawID))
-	if err != nil || !ok {
-		return library.Album{}, false
-	}
-	rehydrateTracks(alb.Tracks)
-	return alb, true
-}
-
-func (c *Client) putCachedAlbum(rawID string, alb library.Album) {
-	if strings.TrimSpace(rawID) == "" || len(alb.Tracks) == 0 {
-		return
-	}
-	_ = cache.SetJSON(c.kv, albumCacheKey(rawID), alb, albumCacheTTL)
 }
 
 func (c *Client) getCachedAlbumMatch(artist, title string) (string, bool) {
@@ -87,25 +133,6 @@ func (c *Client) putCachedAlbumMatch(artist, title, qobuzAlbumID string) {
 		ttl = albumMatchMissCacheTTL
 	}
 	_ = cache.SetJSON(c.kv, key, cachedAlbumMatch{AlbumID: qobuzAlbumID}, ttl)
-}
-
-func (c *Client) getCachedArtist(artistID int64, limit int) (ArtistDetail, bool) {
-	detail, ok, err := cache.GetJSON[ArtistDetail](c.kv, artistCacheKey(artistID, limit))
-	if err != nil || !ok {
-		return ArtistDetail{}, false
-	}
-	rehydrateTracks(detail.Tracks)
-	for i := range detail.Albums {
-		rehydrateTracks(detail.Albums[i].Tracks)
-	}
-	return detail, true
-}
-
-func (c *Client) putCachedArtist(artistID int64, limit int, detail ArtistDetail) {
-	if artistID <= 0 {
-		return
-	}
-	_ = cache.SetJSON(c.kv, artistCacheKey(artistID, limit), detail, artistCacheTTL)
 }
 
 func (c *Client) getCachedArtistName(name string) (int64, bool) {
@@ -138,25 +165,6 @@ func (c *Client) putCachedArtistName(name string, id int64, overwrite bool) {
 	_ = cache.SetJSON(c.kv, key, cachedArtistName{ID: id}, ttl)
 }
 
-func (c *Client) getCachedSearch(query string, limit, offset int) (SearchResult, bool) {
-	res, ok, err := cache.GetJSON[SearchResult](c.kv, searchCacheKey(query, limit, offset))
-	if err != nil || !ok {
-		return SearchResult{}, false
-	}
-	rehydrateTracks(res.Tracks)
-	for i := range res.Albums {
-		rehydrateTracks(res.Albums[i].Tracks)
-	}
-	return res, true
-}
-
-func (c *Client) putCachedSearch(query string, limit, offset int, res SearchResult) {
-	if strings.TrimSpace(query) == "" {
-		return
-	}
-	_ = cache.SetJSON(c.kv, searchCacheKey(query, limit, offset), res, searchCacheTTL)
-}
-
 func normMatchKey(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -166,25 +174,4 @@ func normMatchKey(s string) string {
 		}
 	}
 	return b.String()
-}
-
-func rehydrateTracks(tracks []library.Track) {
-	for i := range tracks {
-		rehydrateTrackQobuzID(&tracks[i])
-	}
-}
-
-// rehydrateTrackQobuzID restores QobuzTrackID (which is json:"-" on library.Track)
-// from ID ("qobuz:<id>") after JSON deserialization from the cache.
-func rehydrateTrackQobuzID(t *library.Track) {
-	if t == nil || t.QobuzTrackID > 0 {
-		return
-	}
-	raw, ok := strings.CutPrefix(strings.TrimSpace(t.ID), "qobuz:")
-	if !ok {
-		return
-	}
-	if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
-		t.QobuzTrackID = id
-	}
 }

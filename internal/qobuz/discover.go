@@ -3,14 +3,12 @@ package qobuz
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"tacet/internal/cache"
 	"tacet/internal/library"
 )
 
@@ -145,10 +143,6 @@ func (c *Client) Genres(ctx context.Context) ([]DiscoverGenre, error) {
 	if err := c.requireAuth(); err != nil {
 		return nil, err
 	}
-	if cached, ok, err := cache.GetJSON[[]DiscoverGenre](c.kv, "genres"); err == nil && ok {
-		return cached, nil
-	}
-
 	var resp struct {
 		Genres struct {
 			Items []struct {
@@ -157,7 +151,7 @@ func (c *Client) Genres(ctx context.Context) ([]DiscoverGenre, error) {
 			} `json:"items"`
 		} `json:"genres"`
 	}
-	if err := c.getJSON(ctx, "/genre/list", nil, true, &resp); err != nil {
+	if err := c.getCachedJSON(ctx, "/genre/list", nil, discoverGenresTTL, &resp); err != nil {
 		return nil, err
 	}
 
@@ -169,7 +163,6 @@ func (c *Client) Genres(ctx context.Context) ([]DiscoverGenre, error) {
 		}
 		out = append(out, DiscoverGenre{ID: g.ID, Name: name})
 	}
-	_ = cache.SetJSON(c.kv, "genres", out, discoverGenresTTL)
 	return out, nil
 }
 
@@ -179,10 +172,6 @@ func (c *Client) Discover(ctx context.Context, genreIDs []int64) (DiscoverFeed, 
 		return DiscoverFeed{}, err
 	}
 	genreParam := normalizeGenreIDs(genreIDs)
-	cacheKey := "discover:" + genreParam
-	if cached, ok, err := cache.GetJSON[DiscoverFeed](c.kv, cacheKey); err == nil && ok {
-		return cached, nil
-	}
 
 	params := url.Values{}
 	if genreParam != "" {
@@ -196,7 +185,7 @@ func (c *Client) Discover(ctx context.Context, genreIDs []int64) (DiscoverFeed, 
 			} `json:"data"`
 		} `json:"containers"`
 	}
-	if err := c.getJSON(ctx, "/discover/index", params, true, &resp); err != nil {
+	if err := c.getCachedJSON(ctx, "/discover/index", params, discoverFeedTTL, &resp); err != nil {
 		return DiscoverFeed{}, err
 	}
 
@@ -229,9 +218,7 @@ func (c *Client) Discover(ctx context.Context, genreIDs []int64) (DiscoverFeed, 
 		})
 	}
 
-	feed := DiscoverFeed{Genres: genres, Shelves: shelves}
-	_ = cache.SetJSON(c.kv, cacheKey, feed, discoverFeedTTL)
-	return feed, nil
+	return DiscoverFeed{Genres: genres, Shelves: shelves}, nil
 }
 
 // DiscoverShelf fetches a paginated editorial shelf by slug (e.g. "new-releases", "qobuzissims").
@@ -254,10 +241,6 @@ func (c *Client) DiscoverShelf(ctx context.Context, slug string, genreIDs []int6
 	}
 
 	genreParam := normalizeGenreIDs(genreIDs)
-	cacheKey := fmt.Sprintf("shelf:%s:%s:%d:%d", def.slug, genreParam, limit, offset)
-	if cached, ok, err := cache.GetJSON[DiscoverShelfPage](c.kv, cacheKey); err == nil && ok {
-		return cached, nil
-	}
 
 	params := url.Values{
 		"limit":  {strconv.Itoa(limit)},
@@ -273,7 +256,7 @@ func (c *Client) DiscoverShelf(ctx context.Context, slug string, genreIDs []int6
 			HasMore bool             `json:"has_more"`
 			Items   []qDiscoverAlbum `json:"items"`
 		}
-		if err := c.getJSON(ctx, def.discoverPath, params, true, &resp); err != nil {
+		if err := c.getCachedJSON(ctx, def.discoverPath, params, discoverFeedTTL, &resp); err != nil {
 			return DiscoverShelfPage{}, err
 		}
 		rawCount := len(resp.Items)
@@ -300,7 +283,7 @@ func (c *Client) DiscoverShelf(ctx context.Context, slug string, genreIDs []int6
 				Items []qAlbum `json:"items"`
 			} `json:"albums"`
 		}
-		if err := c.getJSON(ctx, "/album/getFeatured", params, true, &resp); err != nil {
+		if err := c.getCachedJSON(ctx, "/album/getFeatured", params, discoverFeedTTL, &resp); err != nil {
 			return DiscoverShelfPage{}, err
 		}
 		items := make([]library.Album, 0, len(resp.Albums.Items))
@@ -329,7 +312,6 @@ func (c *Client) DiscoverShelf(ctx context.Context, slug string, genreIDs []int6
 		}
 	}
 
-	_ = cache.SetJSON(c.kv, cacheKey, page, discoverFeedTTL)
 	return page, nil
 }
 
@@ -349,11 +331,6 @@ func (c *Client) SimilarAlbums(ctx context.Context, albumID string, limit int) (
 		limit = 50
 	}
 
-	cacheKey := fmt.Sprintf("similar-albums:%s:%d", rawID, limit)
-	if cached, ok, err := cache.GetJSON[[]library.Album](c.kv, cacheKey); err == nil && ok {
-		return cached, nil
-	}
-
 	var resp struct {
 		Albums struct {
 			Items []qDiscoverAlbum `json:"items"`
@@ -363,7 +340,7 @@ func (c *Client) SimilarAlbums(ctx context.Context, albumID string, limit int) (
 		"album_id": {rawID},
 		"limit":    {strconv.Itoa(limit)},
 	}
-	if err := c.getJSON(ctx, "/album/suggest", params, true, &resp); err != nil {
+	if err := c.getCachedJSON(ctx, "/album/suggest", params, discoverSimilarTTL, &resp); err != nil {
 		return nil, err
 	}
 
@@ -371,7 +348,6 @@ func (c *Client) SimilarAlbums(ctx context.Context, albumID string, limit int) (
 	if len(out) > limit {
 		out = out[:limit]
 	}
-	_ = cache.SetJSON(c.kv, cacheKey, out, discoverSimilarTTL)
 	return out, nil
 }
 
@@ -390,11 +366,6 @@ func (c *Client) SimilarArtists(ctx context.Context, artistID int64, limit int) 
 		limit = 50
 	}
 
-	cacheKey := fmt.Sprintf("similar-artists:%d:%d", artistID, limit)
-	if cached, ok, err := cache.GetJSON[[]Artist](c.kv, cacheKey); err == nil && ok {
-		return cached, nil
-	}
-
 	var resp struct {
 		Artists struct {
 			Items []qArtist `json:"items"`
@@ -404,7 +375,7 @@ func (c *Client) SimilarArtists(ctx context.Context, artistID int64, limit int) 
 		"artist_id": {strconv.FormatInt(artistID, 10)},
 		"limit":     {strconv.Itoa(limit)},
 	}
-	if err := c.getJSON(ctx, "/artist/getSimilarArtists", params, true, &resp); err != nil {
+	if err := c.getCachedJSON(ctx, "/artist/getSimilarArtists", params, discoverSimilarTTL, &resp); err != nil {
 		return nil, err
 	}
 
@@ -416,7 +387,6 @@ func (c *Client) SimilarArtists(ctx context.Context, artistID int64, limit int) 
 		}
 		out = append(out, art)
 	}
-	_ = cache.SetJSON(c.kv, cacheKey, out, discoverSimilarTTL)
 	return out, nil
 }
 
