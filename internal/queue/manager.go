@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -264,6 +265,9 @@ type Manager struct {
 
 	subMu sync.Mutex
 	subs  map[*subscriber]struct{}
+
+	eventLogMu sync.Mutex
+	eventLog   io.Writer
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -1010,6 +1014,40 @@ func (m *Manager) Publish(eventType string, data any) {
 	m.emit(eventType, "", data)
 }
 
+// SetEventLog configures an optional writer for raw JSONL event tracing
+// (incoming GENA events, raw Status() polls, and outgoing SSE events).
+func (m *Manager) SetEventLog(w io.Writer) {
+	m.eventLogMu.Lock()
+	m.eventLog = w
+	m.eventLogMu.Unlock()
+}
+
+func (m *Manager) logEvent(src, zoneID string, data any) {
+	m.eventLogMu.Lock()
+	w := m.eventLog
+	if w == nil {
+		m.eventLogMu.Unlock()
+		return
+	}
+	entry := struct {
+		TS     string `json:"ts"`
+		Src    string `json:"src"`
+		ZoneID string `json:"zoneId,omitempty"`
+		Data   any    `json:"data"`
+	}{
+		TS:     time.Now().UTC().Format(time.RFC3339Nano),
+		Src:    src,
+		ZoneID: zoneID,
+		Data:   data,
+	}
+	b, err := json.Marshal(entry)
+	if err == nil {
+		b = append(b, '\n')
+		_, _ = w.Write(b)
+	}
+	m.eventLogMu.Unlock()
+}
+
 func (m *Manager) emit(eventType, zoneID string, data any) {
 	if eventType == "zone.queue" {
 		m.scheduleQueuePersist()
@@ -1020,6 +1058,7 @@ func (m *Manager) emit(eventType, zoneID string, data any) {
 		ZoneID: zoneID,
 		Data:   data,
 	}
+	m.logEvent("sse", zoneID, ev)
 	m.subMu.Lock()
 	for sub := range m.subs {
 		select {

@@ -44,6 +44,7 @@ func run() error {
 	rendererURL := flag.String("renderer-url", os.Getenv("TACET_RENDERER_URL"), "Optional UPnP description XML URL to connect directly (e.g. http://<wiim-ip>:49152/description.xml)")
 	streamMode := flag.String("stream-mode", envDefault("TACET_STREAM_MODE", "direct"), "Default Qobuz delivery mode: direct or relay")
 	corsOrigin := flag.String("cors-origin", os.Getenv("TACET_CORS_ORIGIN"), "Optional CORS Allow-Origin header for external web/hybrid clients (e.g. * or http://localhost:5173)")
+	eventLogPath := flag.String("event-log", os.Getenv("TACET_EVENT_LOG"), "Optional path (or '-' for stderr) to write raw JSONL playback/GENA/poll/SSE events")
 	flag.Parse()
 
 	// Track which flags were explicitly set on the CLI so explicit flags/env vars
@@ -130,6 +131,20 @@ func run() error {
 
 	// 3. Queue / playback manager + UPnP GENA event subscriber.
 	mgr := queue.NewManager(*port, *publicURL, qb)
+	if lp := strings.TrimSpace(*eventLogPath); lp != "" {
+		if lp == "-" {
+			mgr.SetEventLog(os.Stderr)
+			log.Printf("raw event stream logging enabled: stderr")
+		} else {
+			f, fErr := os.OpenFile(filepath.Clean(lp), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // operator-configured CLI flag path
+			if fErr != nil {
+				return fmt.Errorf("open --event-log %q: %w", lp, fErr)
+			}
+			defer func() { _ = f.Close() }()
+			mgr.SetEventLog(f)
+			log.Printf("raw event stream logging enabled: %s", lp)
+		}
+	}
 	transcoder := media.DetectTranscoder()
 	mgr.SetTranscodeAvailable(transcoder.Available())
 	if transcoder.Available() {

@@ -564,6 +564,7 @@ func (m *Manager) HandleDeviceEvent(ev upnp.DeviceEvent) {
 	if !ev.HasAnyUpdate() {
 		return
 	}
+	m.logEvent("gena", ev.RendererID, ev)
 
 	m.mu.Lock()
 	z, ok := m.zones[ev.RendererID]
@@ -637,6 +638,7 @@ func (m *Manager) pollOne(ctx context.Context, zoneID string) {
 	if err != nil {
 		return
 	}
+	m.logEvent("poll", zoneID, st)
 
 	m.mu.Lock()
 	if z.generation != gen || z.revision != startRev {
