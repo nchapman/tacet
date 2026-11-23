@@ -458,9 +458,9 @@ func (m *Manager) SetZoneQuality(zoneID string, quality AudioQuality) (ZoneSnaps
 		m.mu.Unlock()
 		return ZoneSnapshot{}, fmt.Errorf("%w: ffmpeg with libopus is required for transcoding", ErrCapabilityUnsupported)
 	}
-	if q.IsOpus() && !RendererSupportsOpus(z.ctrl.Info()) {
+	if q.IsOpus() && !RendererSupportsLossy(z.ctrl.Info()) {
 		m.mu.Unlock()
-		return ZoneSnapshot{}, fmt.Errorf("%w: %s does not advertise Opus support", ErrCapabilityUnsupported, z.ctrl.Info().Name)
+		return ZoneSnapshot{}, fmt.Errorf("%w: %s does not advertise Opus or AAC support", ErrCapabilityUnsupported, z.ctrl.Info().Name)
 	}
 	z.audioQuality = q
 	if q == AudioQualityOriginal {

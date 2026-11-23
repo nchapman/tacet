@@ -65,27 +65,54 @@ export function audioQualityIndex(quality?: AudioQuality): number {
   return idx >= 0 ? idx : 4;
 }
 
-export function audioQualityStop(quality?: AudioQuality): AudioQualityStop {
-  return AUDIO_QUALITY_STOPS[audioQualityIndex(quality)];
+export type LossyCodec = "opus" | "aac";
+
+/**
+ * Returns the lossy transcode codec negotiated for a renderer:
+ * Opus for HTTP/SSE players or UPnP renderers advertising Opus,
+ * AAC ADTS for UPnP renderers advertising AAC/MP4, or null if neither.
+ */
+export function rendererLossyCodec(renderer?: { kind?: string; sinkProtocols?: string[] } | null): LossyCodec | null {
+  if (!renderer || renderer.kind === "player" || !renderer.sinkProtocols || renderer.sinkProtocols.length === 0) {
+    return "opus";
+  }
+  const protos = renderer.sinkProtocols.map((p) => p.toLowerCase());
+  if (protos.some((p) => p.includes("opus"))) {
+    return "opus";
+  }
+  if (protos.some((p) => p.includes("audio/aac") || p.includes("audio/m4a") || p.includes("audio/mp4"))) {
+    return "aac";
+  }
+  return null;
+}
+
+export function audioQualityStop(quality?: AudioQuality, codec: LossyCodec = "opus"): AudioQualityStop {
+  const base = AUDIO_QUALITY_STOPS[audioQualityIndex(quality)];
+  if (codec === "aac" && base.value.startsWith("opus_")) {
+    return { ...base, detail: base.detail.replace("Opus", "AAC") };
+  }
+  return base;
 }
 
 /**
- * Formats the active output quality pill. When Opus transcoding is active,
- * shows only the Opus preset (e.g. "OPUS 128k") rather than the source format.
+ * Formats the active output quality pill. When lossy transcoding is active,
+ * shows the negotiated codec and bitrate (e.g. "OPUS 128k" or "AAC 128k").
  */
 export function fmtOutputQuality(
   track?: Pick<Track, "ext" | "mime" | "bitDepth" | "sampleRate"> | null,
   activeQuality?: AudioQuality,
+  codec: LossyCodec = "opus",
 ): string {
+  const tag = codec === "aac" ? "AAC" : "OPUS";
   switch (activeQuality) {
     case "opus_96":
-      return "OPUS 96k";
+      return `${tag} 96k`;
     case "opus_128":
-      return "OPUS 128k";
+      return `${tag} 128k`;
     case "opus_160":
-      return "OPUS 160k";
+      return `${tag} 160k`;
     case "opus_256":
-      return "OPUS 256k";
+      return `${tag} 256k`;
     case "wav": {
       if (!track) return "WAV";
       if (track.bitDepth === 1) {

@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { memo, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
-import { fmtDuration, fmtOutputQuality } from "@/api/format";
+import { fmtDuration, fmtOutputQuality, rendererLossyCodec } from "@/api/format";
 import type { AudioQuality, RepeatMode, StreamMode, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
 import { NowPlayingOverlay } from "@/components/NowPlayingOverlay";
@@ -165,7 +165,9 @@ export const PlayerBar = memo(function PlayerBar({
       ? "This Browser"
       : activeZone.renderer.name
     : "No Device";
-  const qualLabel = track ? fmtOutputQuality(track, activeZone?.activeQuality) : "";
+  const qualLabel = track
+    ? fmtOutputQuality(track, activeZone?.activeQuality, rendererLossyCodec(activeZone?.renderer) ?? "opus")
+    : "";
   const trackProvider = track ? track.provider || track.source : "";
   const progressPct = duration > 0 ? Math.min(100, (shownPos / duration) * 100) : 0;
 

@@ -88,23 +88,48 @@ func TestZoneAudioQuality_RejectsWhenTranscoderUnavailable(t *testing.T) {
 	}
 }
 
-func TestZoneAudioQuality_RejectsOpusForUPnPWithoutOpusProtocol(t *testing.T) {
+func TestZoneAudioQuality_NegotiatesAACForUPnPWithoutOpus(t *testing.T) {
 	mgr := NewManager(4320, "http://127.0.0.1:4320", nil)
 	mgr.SetTranscodeAvailable(true)
 	defer mgr.Close()
 
-	r := newFakeRenderer("zone-a15", "AudioPro A15")
-	r.info.SinkProtocols = []string{
+	// AudioPro A15 advertises audio/aac and audio/ogg (Vorbis only), no Opus.
+	a15 := newFakeRenderer("zone-a15", "AudioPro A15")
+	a15.info.SinkProtocols = []string{
 		"http-get:*:audio/flac:*",
 		"http-get:*:audio/ogg:*",
+		"http-get:*:audio/aac:DLNA.ORG_PN=AAC_ISO",
 		"http-get:*:audio/wav:DLNA.ORG_PN=LPCM",
 	}
-	mgr.RegisterRenderer(r)
+	mgr.RegisterRenderer(a15)
 
-	if _, err := mgr.SetZoneQuality("zone-a15", AudioQualityOpus128); !errors.Is(err, ErrCapabilityUnsupported) {
-		t.Fatalf("expected ErrCapabilityUnsupported for UPnP without opus protocol, got %v", err)
+	if _, err := mgr.SetZoneQuality("zone-a15", AudioQualityOpus128); err != nil {
+		t.Fatalf("SetZoneQuality(opus_128) on AAC-capable UPnP renderer failed: %v", err)
 	}
-	if _, err := mgr.SetZoneQuality("zone-a15", AudioQualityWAV); err != nil {
-		t.Fatalf("WAV should still succeed on UPnP renderer: %v", err)
+	tracks := []library.Track{
+		{ID: "local:t1", Source: library.SourceLocal, Title: "One", MIME: "audio/flac", Ext: ".flac", BitDepth: 16, SampleRate: 44100, DurationSec: 180},
+	}
+	if _, err := mgr.ReplaceQueue(context.Background(), "zone-a15", tracks, 0); err != nil {
+		t.Fatalf("ReplaceQueue: %v", err)
+	}
+	a15.mu.Lock()
+	uri := a15.currentURI
+	a15.mu.Unlock()
+	if !strings.Contains(uri, "/media/local/local:t1.aac?q=opus_128&container=adts") {
+		t.Fatalf("expected AAC ADTS fallback URI, got %q", uri)
+	}
+
+	// Renderer with neither Opus nor AAC should still reject lossy presets.
+	pcmOnly := newFakeRenderer("zone-pcm", "PCM Only")
+	pcmOnly.info.SinkProtocols = []string{
+		"http-get:*:audio/wav:DLNA.ORG_PN=LPCM",
+		"http-get:*:audio/flac:*",
+	}
+	mgr.RegisterRenderer(pcmOnly)
+	if _, err := mgr.SetZoneQuality("zone-pcm", AudioQualityOpus128); !errors.Is(err, ErrCapabilityUnsupported) {
+		t.Fatalf("expected ErrCapabilityUnsupported for PCM-only renderer, got %v", err)
+	}
+	if _, err := mgr.SetZoneQuality("zone-pcm", AudioQualityWAV); err != nil {
+		t.Fatalf("WAV should still succeed on PCM-only renderer: %v", err)
 	}
 }

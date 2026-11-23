@@ -235,7 +235,8 @@ func (h *Handler) serveLocal(w http.ResponseWriter, r *http.Request) {
 		if strings.EqualFold(strings.TrimSpace(qParam), "wav") {
 			totalSamples = library.ProbeAudio(track.FilePath).TotalSamples
 		}
-		if spec, transcode := parseTranscodeSpec(qParam, r.URL.Query().Get("container"), track, totalSamples, h.transcoderInfo().HasLibSoxr); transcode {
+		ti := h.transcoderInfo()
+		if spec, transcode := parseTranscodeSpec(qParam, r.URL.Query().Get("container"), track, totalSamples, ti.HasLibSoxr, ti.HasLibFDKAAC); transcode {
 			h.streamTranscode(w, r, spec, track.FilePath, "", nil, nil)
 			return
 		}
@@ -380,7 +381,8 @@ func (h *Handler) serveQobuzRelay(w http.ResponseWriter, r *http.Request) {
 		Channels:   2,
 		MIME:       stream.MIME,
 	}
-	spec, transcode := parseTranscodeSpec(r.URL.Query().Get("q"), r.URL.Query().Get("container"), qTrack, 0, h.transcoderInfo().HasLibSoxr)
+	ti := h.transcoderInfo()
+	spec, transcode := parseTranscodeSpec(r.URL.Query().Get("q"), r.URL.Query().Get("container"), qTrack, 0, ti.HasLibSoxr, ti.HasLibFDKAAC)
 	if transcode && r.Method == http.MethodHead {
 		h.streamTranscode(w, r, spec, "", "", nil, nil)
 		return

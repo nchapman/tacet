@@ -74,3 +74,17 @@ func RendererSupportsOpus(info upnp.RendererInfo) bool {
 	}
 	return false
 }
+
+// RendererSupportsAAC reports whether info can decode AAC ADTS streams.
+func RendererSupportsAAC(info upnp.RendererInfo) bool {
+	if len(info.SinkProtocols) == 0 {
+		return true
+	}
+	return sinkSupportsMIME(info.SinkProtocols, "audio/aac") || sinkSupportsMIME(info.SinkProtocols, "audio/mp4")
+}
+
+// RendererSupportsLossy reports whether info can decode at least one lossy
+// transcode format (Opus or AAC).
+func RendererSupportsLossy(info upnp.RendererInfo) bool {
+	return RendererSupportsOpus(info) || RendererSupportsAAC(info)
+}

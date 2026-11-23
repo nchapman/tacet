@@ -325,6 +325,9 @@ func transcodeOutputFor(info upnp.RendererInfo, q AudioQuality) (ext, mime, quer
 			}
 		}
 	}
+	if !RendererSupportsOpus(info) {
+		return ".aac", "audio/aac", "?q=" + string(q) + "&container=adts"
+	}
 	return ".ogg", "audio/ogg", "?q=" + string(q)
 }
 

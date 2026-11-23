@@ -91,6 +91,19 @@ func TestParseTranscodeSpec(t *testing.T) {
 		}
 	}
 
+	// AAC ADTS fallback for UPnP speakers without Opus support (auto-uses libfdk_aac if available).
+	aacSpec, ok := parseTranscodeSpec("opus_128", "adts", library.Track{SampleRate: 44100, Channels: 2}, 0, false, false)
+	if !ok || aacSpec.mime != "audio/aac" || !slices.Contains(aacSpec.codecArgs, "aac") || !slices.Contains(aacSpec.fmtArgs, "adts") {
+		t.Fatalf("unexpected aac spec: %+v ok=%v", aacSpec, ok)
+	}
+	if strings.Contains(aacSpec.filterArgs[1], "aresample=") {
+		t.Fatalf("44.1 kHz AAC should not needlessly resample: %v", aacSpec.filterArgs)
+	}
+	fdkSpec, ok := parseTranscodeSpec("opus_160", "adts", library.Track{SampleRate: 96000, Channels: 2}, 0, true, true)
+	if !ok || !slices.Contains(fdkSpec.codecArgs, "libfdk_aac") || !strings.Contains(fdkSpec.filterArgs[1], "aresample=48000:resampler=soxr") {
+		t.Fatalf("unexpected fdk hi-res aac spec: %+v ok=%v", fdkSpec, ok)
+	}
+
 	// Canonical 44-byte WAV with exact length for local 16-bit lossless.
 	wav16, ok := parseTranscodeSpec("wav", "", library.Track{BitDepth: 16, SampleRate: 44100, Channels: 2}, 44100, false)
 	if !ok || wav16.mime != "audio/wav" || !slices.Contains(wav16.codecArgs, "pcm_s16le") || len(wav16.wavHeader) != 44 {

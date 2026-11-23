@@ -1,6 +1,6 @@
 import { Laptop, Plus, RefreshCw, SlidersHorizontal, Speaker, Volume2 } from "lucide-react";
 import { useState } from "react";
-import { AUDIO_QUALITY_STOPS, audioQualityIndex, audioQualityStop } from "@/api/format";
+import { AUDIO_QUALITY_STOPS, audioQualityIndex, audioQualityStop, rendererLossyCodec } from "@/api/format";
 import type { AudioQuality, ZoneSnapshot } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -26,19 +26,13 @@ interface EndpointQualityPanelProps {
   onChange: (quality: AudioQuality) => void;
 }
 
-function rendererSupportsOpus(renderer: ZoneSnapshot["renderer"]): boolean {
-  if (renderer.kind === "player" || !renderer.sinkProtocols || renderer.sinkProtocols.length === 0) {
-    return true;
-  }
-  return renderer.sinkProtocols.some((p) => p.toLowerCase().includes("opus"));
-}
-
 function EndpointQualityPanel({ zone, transcodeAvailable, onChange }: EndpointQualityPanelProps) {
-  const supportsOpus = rendererSupportsOpus(zone.renderer);
+  const lossyCodec = rendererLossyCodec(zone.renderer);
+  const supportsLossy = lossyCodec !== null;
   const current = zone.audioQuality ?? "original";
-  const effective = !supportsOpus && current.startsWith("opus_") ? "original" : current;
+  const effective = !supportsLossy && current.startsWith("opus_") ? "original" : current;
   const idx = audioQualityIndex(effective);
-  const stop = audioQualityStop(effective);
+  const stop = audioQualityStop(effective, lossyCodec ?? "opus");
 
   return (
     <div
@@ -53,7 +47,7 @@ function EndpointQualityPanel({ zone, transcodeAvailable, onChange }: EndpointQu
         </div>
       </div>
 
-      {supportsOpus ? (
+      {supportsLossy ? (
         <>
           {/* Inset slider so Radix thumb centers (radius 7px) align dead-center over the 6 grid columns */}
           <div className="px-[calc(100%/12-7px)]">
@@ -77,6 +71,7 @@ function EndpointQualityPanel({ zone, transcodeAvailable, onChange }: EndpointQu
 
           <div className="mt-2 grid grid-cols-6 text-center">
             {AUDIO_QUALITY_STOPS.map((s) => {
+              const display = audioQualityStop(s.value, lossyCodec);
               const selected = s.value === effective;
               return (
                 <button
@@ -90,9 +85,9 @@ function EndpointQualityPanel({ zone, transcodeAvailable, onChange }: EndpointQu
                     "mx-0.5 rounded px-0.5 py-0.5 text-[10px] font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed",
                     selected ? "text-emerald-300 bg-emerald-500/15" : "text-muted-foreground hover:text-foreground",
                   )}
-                  title={`${s.label} (${s.detail})`}
+                  title={`${display.label} (${display.detail})`}
                 >
-                  {s.shortLabel}
+                  {display.shortLabel}
                 </button>
               );
             })}

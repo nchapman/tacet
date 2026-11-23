@@ -1,7 +1,7 @@
 import { Cloud, Cpu, Disc3, HardDrive, Radio, Speaker, Waves } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { fmtQuality } from "@/api/format";
+import { fmtQuality, rendererLossyCodec } from "@/api/format";
 import type { AudioQuality, StreamMode, Track, ZoneSnapshot } from "@/api/types";
 import { SignalBadge } from "@/components/ui/SignalBadge";
 import { cn } from "@/lib/utils";
@@ -168,10 +168,14 @@ export function SignalPathPopover({
   ];
 
   if (isOpus) {
+    const codec = rendererLossyCodec(zone?.renderer) ?? "opus";
     stages.push({
       icon: Cpu,
-      title: "Opus Transcode",
-      detail: `ffmpeg libopus · ${opusBitrate(activeQ)} · 48 kHz`,
+      title: codec === "aac" ? "AAC Transcode" : "Opus Transcode",
+      detail:
+        codec === "aac"
+          ? `ffmpeg aac · ${opusBitrate(activeQ)} · ADTS`
+          : `ffmpeg libopus · ${opusBitrate(activeQ)} · 48 kHz`,
       accent: "amber",
     });
   } else if (isWav) {

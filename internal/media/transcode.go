@@ -21,11 +21,12 @@ import (
 	"tacet/internal/upnp"
 )
 
-// TranscoderInfo reports detected ffmpeg, libopus, and libsoxr capabilities.
+// TranscoderInfo reports detected ffmpeg, libopus, libfdk_aac, and libsoxr capabilities.
 type TranscoderInfo struct {
-	FFmpegPath string
-	HasLibOpus bool
-	HasLibSoxr bool
+	FFmpegPath   string
+	HasLibOpus   bool
+	HasLibFDKAAC bool
+	HasLibSoxr   bool
 }
 
 // Available reports whether ffmpeg with the Xiph libopus encoder is available.
@@ -69,13 +70,18 @@ func probeTranscoder() TranscoderInfo {
 		return TranscoderInfo{FFmpegPath: path}
 	}
 	hasLibOpus := false
+	hasLibFDKAAC := false
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
 		// Encoder lines look like: " A....D libopus              libopus Opus (codec opus)"
-		if len(fields) >= 2 && strings.HasPrefix(fields[0], "A") && fields[1] == "libopus" {
-			hasLibOpus = true
-			break
+		if len(fields) >= 2 && strings.HasPrefix(fields[0], "A") {
+			switch fields[1] {
+			case "libopus":
+				hasLibOpus = true
+			case "libfdk_aac":
+				hasLibFDKAAC = true
+			}
 		}
 	}
 
@@ -86,9 +92,10 @@ func probeTranscoder() TranscoderInfo {
 	}
 
 	return TranscoderInfo{
-		FFmpegPath: path,
-		HasLibOpus: hasLibOpus,
-		HasLibSoxr: hasLibSoxr,
+		FFmpegPath:   path,
+		HasLibOpus:   hasLibOpus,
+		HasLibFDKAAC: hasLibFDKAAC,
+		HasLibSoxr:   hasLibSoxr,
 	}
 }
 
@@ -105,7 +112,7 @@ type transcodeSpec struct {
 	bitsPerSample int
 }
 
-func parseTranscodeSpec(quality, container string, track library.Track, totalSamples uint64, hasSoxr bool) (transcodeSpec, bool) {
+func parseTranscodeSpec(quality, container string, track library.Track, totalSamples uint64, hasSoxr bool, hasFDKAAC ...bool) (transcodeSpec, bool) {
 	q := strings.ToLower(strings.TrimSpace(quality))
 	if q == "" || q == "original" {
 		return transcodeSpec{}, false
@@ -115,18 +122,24 @@ func parseTranscodeSpec(quality, container string, track library.Track, totalSam
 		return buildWAVSpec(track, totalSamples, hasSoxr), true
 	}
 
-	var opusBitrate string
+	var bitrate string
 	switch q {
 	case "opus_96":
-		opusBitrate = "96k"
+		bitrate = "96k"
 	case "opus_128":
-		opusBitrate = "128k"
+		bitrate = "128k"
 	case "opus_160":
-		opusBitrate = "160k"
+		bitrate = "160k"
 	case "opus_256":
-		opusBitrate = "256k"
+		bitrate = "256k"
 	default:
 		return transcodeSpec{}, false
+	}
+
+	c := strings.ToLower(strings.TrimSpace(container))
+	if c == "adts" || c == "aac" {
+		useFDK := len(hasFDKAAC) > 0 && hasFDKAAC[0]
+		return buildAACSpec(q, bitrate, track, hasSoxr, useFDK), true
 	}
 
 	// Resample in 32-bit float (osf=flt) so hot masters never clip on 44.1->48kHz
@@ -141,7 +154,7 @@ func parseTranscodeSpec(quality, container string, track library.Track, totalSam
 	// Explicitly select Xiph libopus with highest-complexity VBR music encoding.
 	codecArgs := []string{
 		"-c:a", "libopus",
-		"-b:a", opusBitrate,
+		"-b:a", bitrate,
 		"-vbr", "on",
 		"-compression_level", "10",
 		"-application", "audio",
@@ -151,7 +164,7 @@ func parseTranscodeSpec(quality, container string, track library.Track, totalSam
 		codecArgs = append(codecArgs, "-ac", "2")
 	}
 
-	switch strings.ToLower(strings.TrimSpace(container)) {
+	switch c {
 	case "webm":
 		return transcodeSpec{
 			quality:    q,
@@ -180,6 +193,36 @@ func parseTranscodeSpec(quality, container string, track library.Track, totalSam
 			codecArgs:  codecArgs,
 			fmtArgs:    []string{"-f", "ogg", "-page_duration", "500000"},
 		}, true
+	}
+}
+
+func buildAACSpec(quality, bitrate string, track library.Track, hasSoxr, hasFDKAAC bool) transcodeSpec {
+	// AAC natively supports 44.1 kHz and 48 kHz; only downsample hi-res (>48 kHz)
+	// or 1-bit DSD sources to 48 kHz for universal UPnP/DLNA hardware compatibility.
+	af := "aformat=channel_layouts=mono|stereo"
+	if track.SampleRate > 48000 || track.BitDepth == 1 {
+		if hasSoxr {
+			af = "aresample=48000:resampler=soxr:precision=28:osf=flt:rematrix_maxval=1.0,aformat=channel_layouts=mono|stereo"
+		} else {
+			af = "aresample=48000:resampler=swr:filter_size=128:phase_shift=10:kaiser_beta=12:cutoff=0.96:tsf=fltp:osf=flt:rematrix_maxval=1.0,aformat=channel_layouts=mono|stereo"
+		}
+	}
+
+	encoder := "aac"
+	if hasFDKAAC {
+		encoder = "libfdk_aac"
+	}
+	codecArgs := []string{"-c:a", encoder, "-b:a", bitrate}
+	if track.Channels > 2 {
+		codecArgs = append(codecArgs, "-ac", "2")
+	}
+
+	return transcodeSpec{
+		quality:    quality,
+		mime:       "audio/aac",
+		filterArgs: []string{"-af", af},
+		codecArgs:  codecArgs,
+		fmtArgs:    []string{"-f", "adts"},
 	}
 }
 
