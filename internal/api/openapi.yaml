@@ -6,8 +6,9 @@ info:
     Headless multi-zone UPnP/DLNA control point, remote HTTP/SSE audio player
     endpoint protocol, and bit-perfect audio streaming server.
     All API errors return a structured ErrorEnvelope. Mutating requests from
-    browsers require Content-Type: application/json and same-origin or
-    explicitly allowed --cors-origin headers.
+    browsers require Content-Type: application/json and a same-origin or allowed
+    cross-origin request. Packaged desktop origins are allowed by default;
+    --cors-origin overrides them for a separately hosted client.
 servers:
   - url: /
 paths:

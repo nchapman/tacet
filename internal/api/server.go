@@ -165,26 +165,51 @@ func (s *Server) SetGENA(g *upnp.GENAClient) {
 	s.gena = g
 }
 
-// SetCORSOrigin enables CORS headers for the specified origin (or "*" for LAN apps).
+// SetCORSOrigin overrides the packaged desktop origins with a single configured origin.
 func (s *Server) SetCORSOrigin(origin string) {
 	s.corsOrigin = strings.TrimSpace(origin)
 }
 
-// Handler returns the root HTTP handler with optional CORS and JSON 405 handling for /api/*.
+// corsResponseOrigin preserves an explicit operator policy. By default, only the
+// exact origins used by our packaged webviews receive a cross-origin response.
+func (s *Server) corsResponseOrigin(origin string) string {
+	if s.corsOrigin != "" {
+		return s.corsOrigin
+	}
+	switch origin {
+	case "tauri://localhost", "http://tauri.localhost":
+		return origin
+	default:
+		return ""
+	}
+}
+
+func (s *Server) setCORSHeaders(h http.Header, origin string) bool {
+	allowed := s.corsResponseOrigin(origin)
+	if allowed != "*" {
+		// A cache must distinguish origins even when this response has no CORS headers.
+		h.Add("Vary", "Origin")
+	}
+	if allowed == "" {
+		return false
+	}
+	h.Set("Access-Control-Allow-Origin", allowed)
+	h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+	h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, If-None-Match, Last-Event-ID, Range")
+	h.Set("Access-Control-Expose-Headers", "ETag, Allow, Content-Length, Content-Range, Accept-Ranges")
+	if allowed != "*" {
+		h.Set("Access-Control-Allow-Credentials", "true")
+	}
+	return true
+}
+
+// Handler returns the root HTTP handler with CORS and JSON 405 handling for /api/*.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		isAPI := r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/")
 
-		if s.corsOrigin != "" && (isAPI || strings.HasPrefix(r.URL.Path, "/media/")) {
-			w.Header().Set("Access-Control-Allow-Origin", s.corsOrigin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, If-None-Match, Last-Event-ID, Range")
-			w.Header().Set("Access-Control-Expose-Headers", "ETag, Allow, Content-Length, Content-Range, Accept-Ranges")
-			if s.corsOrigin != "*" {
-				w.Header().Set("Access-Control-Allow-Credentials", "true")
-				w.Header().Add("Vary", "Origin")
-			}
-			if r.Method == http.MethodOptions {
+		if isAPI || strings.HasPrefix(r.URL.Path, "/media/") {
+			if s.setCORSHeaders(w.Header(), r.Header.Get("Origin")) && r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
@@ -513,11 +538,11 @@ func isMutatingMethod(method string) bool {
 
 // isAllowedOrigin defends LAN/localhost endpoints against drive-by browser CSRF
 // while allowing same-origin browsers, non-browser native/CLI clients (no Origin
-// / Sec-Fetch-Site headers), and explicitly configured --cors-origin origins.
+// / Sec-Fetch-Site headers), and the selected CORS policy.
 func (s *Server) isAllowedOrigin(r *http.Request) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin != "" {
-		if s.corsOrigin == "*" || (s.corsOrigin != "" && origin == s.corsOrigin) {
+		if allowed := s.corsResponseOrigin(origin); allowed == "*" || origin == allowed {
 			return true
 		}
 		u, err := url.Parse(origin)

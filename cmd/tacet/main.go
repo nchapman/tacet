@@ -43,7 +43,7 @@ func run() error {
 	publicURL := flag.String("public-url", os.Getenv("TACET_PUBLIC_URL"), "Optional base URL override for renderers (e.g. http://192.168.1.10:4320)")
 	rendererURL := flag.String("renderer-url", os.Getenv("TACET_RENDERER_URL"), "Optional UPnP description XML URL to connect directly (e.g. http://<wiim-ip>:49152/description.xml)")
 	streamMode := flag.String("stream-mode", envDefault("TACET_STREAM_MODE", "direct"), "Default Qobuz delivery mode: direct or relay")
-	corsOrigin := flag.String("cors-origin", os.Getenv("TACET_CORS_ORIGIN"), "Optional CORS Allow-Origin header for external web/hybrid clients (e.g. * or http://localhost:5173)")
+	corsOrigin := flag.String("cors-origin", os.Getenv("TACET_CORS_ORIGIN"), "Override the packaged desktop CORS origins with one external client origin (e.g. http://localhost:5173)")
 	eventLogPath := flag.String("event-log", os.Getenv("TACET_EVENT_LOG"), "Optional path (or '-' for stderr) to write raw JSONL playback/GENA/poll/SSE events")
 	flag.Parse()
 
