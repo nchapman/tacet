@@ -54,6 +54,9 @@ func NewRenderer(base *upnp.Renderer, playQueueURL string) *Renderer {
 
 // Info returns the renderer descriptor with SupportsQueue enabled.
 func (r *Renderer) Info() upnp.RendererInfo {
+	if r.Renderer == nil {
+		return upnp.RendererInfo{SupportsQueue: true}
+	}
 	info := r.Renderer.Info()
 	info.SupportsQueue = true
 	return info

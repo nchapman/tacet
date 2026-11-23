@@ -212,19 +212,20 @@ func buildCastLoadPayload(cmd *castproto.LoadMediaCommand, item upnp.MediaItem) 
 // upnp.Controller + upnp.QueueController so queue.Manager treats it identically
 // to Linkplay, UPnP, and browser zones.
 type Renderer struct {
-	mu         sync.Mutex
-	info       upnp.RendererInfo
-	host       string
-	port       int
-	localIP    string
-	app        *application.Application
-	metaConn   *metadataConn
-	connected  bool
-	lastURI    string
-	queueItems []upnp.MediaItem
-	curIdx     int
-	queueDirty bool
-	repeatMode string
+	mu             sync.Mutex
+	info           upnp.RendererInfo
+	host           string
+	port           int
+	localIP        string
+	app            *application.Application
+	metaConn       *metadataConn
+	connected      bool
+	lastURI        string
+	queueItems     []upnp.MediaItem
+	curIdx         int
+	queueDirty     bool
+	repeatMode     string
+	statusInFlight atomic.Bool
 }
 
 // NewRenderer constructs a lazy-connecting Cast Renderer from discovery metadata.
@@ -676,11 +677,13 @@ func (r *Renderer) Seek(ctx context.Context, pos time.Duration) error {
 // Status queries current playback and volume state from the Cast device.
 // When idle (no active Cast connection), returns STOPPED without opening a socket.
 func (r *Renderer) Status(ctx context.Context) (upnp.TransportStatus, error) {
+	if !r.statusInFlight.CompareAndSwap(false, true) {
+		return upnp.TransportStatus{State: "STOPPED", HasVolume: true}, fmt.Errorf("cast renderer %s status poll already in flight", r.info.Name)
+	}
 	var out upnp.TransportStatus
 	err := runWithCtx(ctx, func() error {
-		if !r.mu.TryLock() {
-			return fmt.Errorf("cast renderer %s busy", r.info.Name)
-		}
+		defer r.statusInFlight.Store(false)
+		r.mu.Lock()
 		defer r.mu.Unlock()
 
 		if !r.connected || r.app == nil {
