@@ -1068,6 +1068,7 @@ func (m *Manager) playDeviceQueueIndex(ctx context.Context, zoneID string, z *zo
 	}
 	m.mu.Lock()
 	if z.generation == gen {
+		z.prevTrackURI = z.status.TrackURI
 		z.currentIndex = idx
 		z.status.State = "TRANSITIONING"
 		z.status.Position = 0

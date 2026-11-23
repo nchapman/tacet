@@ -43,6 +43,7 @@ func (m *Manager) replaceDeviceQueueAndPlay(
 	curMedia := mediaItems[startIndex]
 	m.mu.Lock()
 	if z.generation == gen {
+		z.prevTrackURI = z.status.TrackURI
 		z.currentIndex = startIndex
 		z.currentURI = curMedia.URL
 		z.activeQuality = effQuality
@@ -133,6 +134,7 @@ func (m *Manager) playPreparedMedia(
 		if idx >= 0 && idx < len(z.queue) {
 			z.queue[idx].Track = resolvedTrack
 		}
+		z.prevTrackURI = z.status.TrackURI
 		z.currentURI = media.URL
 		z.activeQuality = effQuality
 		z.status.Duration = media.Duration
@@ -789,12 +791,18 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		return res
 	}
 
-	// Ignore stale track reports (URI belongs to neither the current nor preloaded track,
-	// or a native-queue device still reporting the previous QueueIndex while awaitingAudio).
+	// Ignore stale track reports:
+	// 1. Virtual-queue URI belongs to neither the current nor preloaded track.
+	// 2. While awaitingAudio after loading a new track at 0:00:
+	//    - native-queue device still reporting the previous QueueIndex, OR
+	//    - renderer still flushing the previous TrackURI, OR
+	//    - impossible Position > time.Since(loadedAt)+2s (leftover RelTime from the previous track).
 	staleTrack := (!isNativeQueue && z.currentURI != "" && st.TrackURI != "" &&
 		st.TrackURI != z.currentURI &&
 		(z.nextURI == "" || st.TrackURI != z.nextURI)) ||
-		(isNativeQueue && z.awaitingAudio && st.HasQueueIndex && st.QueueIndex != z.currentIndex)
+		(z.awaitingAudio && ((isNativeQueue && st.HasQueueIndex && st.QueueIndex != z.currentIndex) ||
+			(z.prevTrackURI != "" && ((st.TrackURI != "" && st.TrackURI == z.prevTrackURI && st.TrackURI != z.currentURI) ||
+				(st.HasPosition && !z.loadedAt.IsZero() && st.Position > time.Since(z.loadedAt)+2*time.Second)))))
 
 	// Hold "TRANSITIONING" (buffering) after loading a track until the renderer
 	// actually reports advancing audio (Position > 0). Many UPnP/Linkplay/Cast

@@ -384,3 +384,58 @@ func TestGaplessTransition_WithoutPositionResetsPositionAndDoesNotFalseScrobble(
 		}
 	}
 }
+
+func TestAwaitingAudio_IgnoresPreviousTrackPositionFlush(t *testing.T) {
+	mgr := NewManager(4320, "http://192.168.1.10:4320", nil)
+	zoneID := "uuid:linkplay-flush"
+	trackA := []library.Track{
+		{ID: "local:tA", Source: library.SourceLocal, Title: "Track A", DurationSec: 200, MIME: "audio/flac"},
+	}
+	trackB := []library.Track{
+		{ID: "local:tB", Source: library.SourceLocal, Title: "Track B", DurationSec: 200, MIME: "audio/flac"},
+	}
+	ctrl := &fakeQueueController{
+		info: upnp.RendererInfo{ID: zoneID, Name: "AudioPro A15", SupportsQueue: true},
+		status: upnp.TransportStatus{
+			State:         "PLAYING",
+			TrackURI:      "http://192.168.1.10:4320/media/local/local:tA.flac",
+			HasPosition:   true,
+			Position:      10 * time.Second,
+			Duration:      200 * time.Second,
+			HasQueueIndex: true,
+			QueueIndex:    0,
+		},
+	}
+	mgr.RegisterRenderer(ctrl)
+
+	if _, err := mgr.ReplaceQueue(context.Background(), zoneID, trackA, 0); err != nil {
+		t.Fatalf("ReplaceQueue A: %v", err)
+	}
+	mgr.pollOne(context.Background(), zoneID)
+
+	// Switch to Track B while speaker is still flushing Track A at 10s (QueueIndex already 0).
+	if _, err := mgr.ReplaceQueue(context.Background(), zoneID, trackB, 0); err != nil {
+		t.Fatalf("ReplaceQueue B: %v", err)
+	}
+	mgr.pollOne(context.Background(), zoneID)
+
+	snap, _ := mgr.Zone(zoneID)
+	if snap.State != "buffering" {
+		t.Fatalf("State = %q while speaker flushes Track A at 10s, want buffering", snap.State)
+	}
+	if snap.PositionSec != 0 {
+		t.Fatalf("PositionSec = %d while speaker flushes Track A at 10s, want 0", snap.PositionSec)
+	}
+
+	// Once speaker switches to Track B and advances to 1s -> cleanly enters playing at 1s.
+	ctrl.mu.Lock()
+	ctrl.status.TrackURI = "http://192.168.1.10:4320/media/local/local:tB.flac"
+	ctrl.status.Position = 1 * time.Second
+	ctrl.mu.Unlock()
+	mgr.pollOne(context.Background(), zoneID)
+
+	snap, _ = mgr.Zone(zoneID)
+	if snap.State != "playing" || snap.PositionSec != 1 {
+		t.Fatalf("State=%q PositionSec=%d once Track B starts, want playing/1", snap.State, snap.PositionSec)
+	}
+}
