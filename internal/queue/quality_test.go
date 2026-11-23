@@ -133,3 +133,49 @@ func TestZoneAudioQuality_NegotiatesAACForUPnPWithoutOpus(t *testing.T) {
 		t.Fatalf("WAV should still succeed on PCM-only renderer: %v", err)
 	}
 }
+
+func TestZoneAudioQuality_AutoDecodesDSDForNonDSDEndpoints(t *testing.T) {
+	mgr := NewManager(4320, "http://127.0.0.1:4320", nil)
+	mgr.SetTranscodeAvailable(true)
+	defer mgr.Close()
+
+	dsdTrack := []library.Track{
+		{ID: "local:dsd1", Source: library.SourceLocal, Title: "Meaning Of The Blues", MIME: "audio/x-dsf", Ext: ".dsf", BitDepth: 1, SampleRate: 2822400, Channels: 2, DurationSec: 570},
+	}
+
+	// UPnP renderer advertising audio/x-dsd receives native bit-perfect DSF.
+	wiim := newFakeRenderer("zone-wiim", "Living Room Wiim")
+	wiim.info.SinkProtocols = []string{"http-get:*:audio/flac:*", "http-get:*:audio/x-dsd:*"}
+	mgr.RegisterRenderer(wiim)
+	snap, err := mgr.ReplaceQueue(context.Background(), "zone-wiim", dsdTrack, 0)
+	if err != nil {
+		t.Fatalf("ReplaceQueue(wiim): %v", err)
+	}
+	if snap.ActiveQuality != AudioQualityOriginal {
+		t.Fatalf("wiim ActiveQuality = %q, want original", snap.ActiveQuality)
+	}
+	wiim.mu.Lock()
+	wiimURI := wiim.currentURI
+	wiim.mu.Unlock()
+	if !strings.HasSuffix(wiimURI, "/media/local/local:dsd1.dsf") {
+		t.Fatalf("wiim should get native .dsf URI, got %q", wiimURI)
+	}
+
+	// UPnP renderer without DSD (e.g. AudioPro A15) auto-promotes DSD to 24-bit/88.2kHz WAV.
+	a15 := newFakeRenderer("zone-a15", "AudioPro A15")
+	a15.info.SinkProtocols = []string{"http-get:*:audio/flac:*", "http-get:*:audio/wav:DLNA.ORG_PN=LPCM"}
+	mgr.RegisterRenderer(a15)
+	snap, err = mgr.ReplaceQueue(context.Background(), "zone-a15", dsdTrack, 0)
+	if err != nil {
+		t.Fatalf("ReplaceQueue(a15): %v", err)
+	}
+	if snap.ActiveQuality != AudioQualityWAV {
+		t.Fatalf("a15 ActiveQuality = %q, want wav", snap.ActiveQuality)
+	}
+	a15.mu.Lock()
+	a15URI := a15.currentURI
+	a15.mu.Unlock()
+	if !strings.Contains(a15URI, "/media/local/local:dsd1.wav?q=wav") {
+		t.Fatalf("a15 should get WAV transcoded URI for DSD, got %q", a15URI)
+	}
+}

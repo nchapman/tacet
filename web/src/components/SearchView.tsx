@@ -449,7 +449,10 @@ function TopResultCard({
     const alb = result.album;
     const qLabel = fmtAlbumQuality(alb);
     const hiRes = isHiRes(alb.maxBitDepth, alb.maxSampleRate);
-    const isDSD = alb.primaryFormat?.toUpperCase().startsWith("DSD");
+    const isDSD =
+      alb.primaryFormat?.toUpperCase() === "DSF" ||
+      alb.primaryFormat?.toUpperCase().startsWith("DSD") ||
+      (alb.maxBitDepth === 1 && (alb.maxSampleRate ?? 0) >= 2_000_000);
     const hiResLabel = isDSD ? "DSD" : hiRes ? "HI-RES" : "";
     return (
       <div

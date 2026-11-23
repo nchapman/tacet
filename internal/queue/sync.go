@@ -115,6 +115,11 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 	if !ok || (effQuality.NeedsTranscode() && !m.TranscodeAvailable()) {
 		effQuality = AudioQualityOriginal
 	}
+	// Automatically decode 1-bit DSD to uncompressed 24-bit/88.2kHz WAV for
+	// endpoints that do not support native DSD (browsers, non-DSD UPnP speakers).
+	if effQuality == AudioQualityOriginal && isDSDTrack(track) && !RendererSupportsDSD(info) && m.TranscodeAvailable() {
+		effQuality = AudioQualityWAV
+	}
 
 	relativeMedia := false
 	if rm, ok := ctrl.(upnp.RelativeMediaController); ok && rm.PreferRelativeMedia() {
@@ -294,6 +299,18 @@ func transcodedAudioParams(q AudioQuality, srcRate, srcDepth, srcCh int) (rate, 
 		return srcRate, depth, ch
 	}
 	return srcRate, srcDepth, ch
+}
+
+func isDSDTrack(t library.Track) bool {
+	if t.BitDepth == 1 && t.SampleRate >= 2_000_000 {
+		return true
+	}
+	ext := strings.ToLower(strings.TrimSpace(t.Ext))
+	if ext == ".dsf" || ext == ".dff" {
+		return true
+	}
+	mime := strings.ToLower(strings.TrimSpace(t.MIME))
+	return strings.Contains(mime, "dsf") || strings.Contains(mime, "dsd")
 }
 
 func transcodeOutputFor(info upnp.RendererInfo, q AudioQuality) (ext, mime, query string) {

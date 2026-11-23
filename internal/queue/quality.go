@@ -88,3 +88,22 @@ func RendererSupportsAAC(info upnp.RendererInfo) bool {
 func RendererSupportsLossy(info upnp.RendererInfo) bool {
 	return RendererSupportsOpus(info) || RendererSupportsAAC(info)
 }
+
+// RendererSupportsDSD reports whether info can decode native DSD (DSF/DFF) streams.
+// Browser/HTTP player endpoints do not decode raw DSD; UPnP renderers must
+// advertise a DSD/DSF protocol (e.g. audio/x-dsd, audio/x-dsf).
+func RendererSupportsDSD(info upnp.RendererInfo) bool {
+	if info.Kind == "player" {
+		return false
+	}
+	if len(info.SinkProtocols) == 0 {
+		return true
+	}
+	for _, proto := range info.SinkProtocols {
+		p := strings.ToLower(proto)
+		if strings.Contains(p, "dsd") || strings.Contains(p, "dsf") {
+			return true
+		}
+	}
+	return false
+}

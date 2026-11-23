@@ -179,10 +179,14 @@ export function SignalPathPopover({
       accent: "amber",
     });
   } else if (isWav) {
+    const wavDetail =
+      track.bitDepth === 1
+        ? "Uncompressed WAV · 24-bit / 88.2 kHz"
+        : `Uncompressed WAV${track.bitDepth && track.sampleRate ? ` · ${track.bitDepth > 16 ? 24 : 16}-bit / ${(track.sampleRate / 1000).toFixed(track.sampleRate % 1000 === 0 ? 0 : 1)} kHz` : ""}`;
     stages.push({
       icon: Waves,
-      title: "PCM Decode",
-      detail: `Uncompressed WAV${track.bitDepth && track.sampleRate ? ` · ${track.bitDepth}-bit / ${(track.sampleRate / 1000).toFixed(track.sampleRate % 1000 === 0 ? 0 : 1)} kHz` : ""}`,
+      title: track.bitDepth === 1 ? "DSD → PCM Decode" : "PCM Decode",
+      detail: wavDetail,
       accent: "emerald",
     });
   } else {
