@@ -722,7 +722,6 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 	prevDur := z.status.Duration
 	prevVol := z.status.Volume
 	prevMute := z.status.Muted
-	prevPosUpdated := z.positionUpdatedAt
 
 	_, isNativeQueue := z.ctrl.(upnp.QueueController)
 
@@ -896,34 +895,21 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 	newState := NormalizePlaybackState(z.status.State)
 	volChanged := z.status.Volume != prevVol || z.status.Muted != prevMute
 
-	// Emit zone.playback on any discrete state/track/duration/gapless change,
-	// significant clock drift (>2s vs interpolated client clock), or periodic 5s sync
-	// while playing. Never resend the full queue on poll ticks!
+	// Emit zone.playback whenever state, track, duration, gapless, or whole-second
+	// position changes. Never resend the full queue on poll ticks.
 	discreteChange := newState != prevState ||
 		z.currentIndex != prevIdx ||
 		z.nextPreloaded != prevGapless ||
 		z.status.Duration != prevDur
 
-	driftDetected := false
-	if st.HasPosition && newState == StatePlaying && !prevPosUpdated.IsZero() {
-		expected := prevPos + now.Sub(prevPosUpdated)
-		diff := z.status.Position - expected
-		if diff < 0 {
-			diff = -diff
-		}
-		driftDetected = diff > 2*time.Second
-	} else if st.HasPosition && newState != StatePlaying && z.status.Position != prevPos {
-		driftDetected = true
-	}
-
-	periodicSync := newState == StatePlaying && now.Sub(z.lastPlaybackEmit) >= 5*time.Second
+	posChanged := st.HasPosition && int(z.status.Position.Seconds()) != int(prevPos.Seconds())
 
 	if volChanged {
 		z.revision++
 		res.emitVolume = true
 		res.volumeEv = m.volumeEventLocked(z)
 	}
-	if discreteChange || driftDetected || periodicSync {
+	if discreteChange || posChanged {
 		z.revision++
 		z.lastPlaybackEmit = now
 		res.emitPlayback = true

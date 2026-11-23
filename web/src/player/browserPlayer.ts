@@ -116,7 +116,7 @@ export class BrowserAudioEngine {
         this.loadStandbyIfReady();
         this.emitState("playing");
       }
-    }, 3000);
+    }, 1000);
   }
 
   /**

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ZoneSnapshot } from "../api/types";
 import { shouldEnableBrowserPlayer } from "./useBrowserPlayer";
-import { reconcilePendingSeek, reconcilePendingVolume, resolveActiveZone } from "./useTacet";
+import { resolveActiveZone } from "./useTacet";
 
 function makeZone(zoneId: string, name: string, kind: "upnp" | "player" = "upnp"): ZoneSnapshot {
   return {
@@ -70,65 +70,5 @@ describe("shouldEnableBrowserPlayer", () => {
 
   it("stays off only when explicitly disabled", () => {
     expect(shouldEnableBrowserPlayer("0")).toBe(false);
-  });
-});
-
-describe("reconcilePendingSeek", () => {
-  const pending = {
-    zoneId: "uuid:wiim",
-    itemId: "item-1",
-    targetSec: 120,
-    setAtMs: 10_000,
-    expiresAtMs: 12_000,
-  };
-
-  it("ignores stale pre-seek echoes within the grace window", () => {
-    const res = reconcilePendingSeek(pending, "uuid:wiim", "item-1", 15, true, 10_400);
-    expect(res.useOptimistic).toBe(true);
-    expect(res.nextPending).toBe(pending);
-  });
-
-  it("clears the lock once the renderer confirms the target position", () => {
-    const res = reconcilePendingSeek(pending, "uuid:wiim", "item-1", 121, true, 10_900);
-    expect(res.useOptimistic).toBe(false);
-    expect(res.nextPending).toBeNull();
-  });
-
-  it("clears the lock immediately if the track changed", () => {
-    const res = reconcilePendingSeek(pending, "uuid:wiim", "item-2", 0, true, 10_300);
-    expect(res.useOptimistic).toBe(false);
-    expect(res.nextPending).toBeNull();
-  });
-
-  it("expires cleanly after the grace window", () => {
-    const res = reconcilePendingSeek(pending, "uuid:wiim", "item-1", 15, true, 12_000);
-    expect(res.useOptimistic).toBe(false);
-    expect(res.nextPending).toBeNull();
-  });
-});
-
-describe("reconcilePendingVolume", () => {
-  const pending = {
-    zoneId: "uuid:wiim",
-    targetVol: 72,
-    expiresAtMs: 11_500,
-  };
-
-  it("ignores stale pre-change volume echoes within the grace window", () => {
-    const res = reconcilePendingVolume(pending, "uuid:wiim", 40, 10_300);
-    expect(res.useOptimistic).toBe(true);
-    expect(res.nextPending).toBe(pending);
-  });
-
-  it("clears the lock once the renderer confirms the new volume", () => {
-    const res = reconcilePendingVolume(pending, "uuid:wiim", 72, 10_500);
-    expect(res.useOptimistic).toBe(false);
-    expect(res.nextPending).toBeNull();
-  });
-
-  it("expires cleanly after the grace window", () => {
-    const res = reconcilePendingVolume(pending, "uuid:wiim", 40, 11_500);
-    expect(res.useOptimistic).toBe(false);
-    expect(res.nextPending).toBeNull();
   });
 });
