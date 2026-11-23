@@ -29,6 +29,89 @@ var castSinkProtocols = []string{
 	`audio/webm; codecs="opus"`,
 }
 
+type castMusicMetadata struct {
+	MetadataType int               `json:"metadataType"`
+	Title        string            `json:"title,omitempty"`
+	Artist       string            `json:"artist,omitempty"`
+	AlbumName    string            `json:"albumName,omitempty"`
+	TrackNumber  int               `json:"trackNumber,omitempty"`
+	Images       []castproto.Image `json:"images,omitempty"`
+}
+
+type castMediaInfo struct {
+	ContentID   string            `json:"contentId"`
+	StreamType  string            `json:"streamType"`
+	ContentType string            `json:"contentType"`
+	Duration    float64           `json:"duration,omitempty"`
+	Metadata    castMusicMetadata `json:"metadata"`
+}
+
+type castLoadMediaPayload struct {
+	castproto.PayloadHeader
+	Media       castMediaInfo `json:"media"`
+	CurrentTime int           `json:"currentTime"`
+	Autoplay    bool          `json:"autoplay"`
+}
+
+// metadataConn wraps a go-chromecast Conn so outgoing LOAD commands include
+// Google Cast MusicTrackMediaMetadata (metadataType: 3) for Nest Hubs, Pixel
+// Tablets, and TVs without modifying go-chromecast or leaking Cast concerns
+// outside internal/cast.
+type metadataConn struct {
+	castproto.Conn
+	mu          sync.Mutex
+	pendingItem *upnp.MediaItem
+}
+
+func (c *metadataConn) setPendingItem(item *upnp.MediaItem) {
+	c.mu.Lock()
+	if item == nil {
+		c.pendingItem = nil
+	} else {
+		cp := *item
+		c.pendingItem = &cp
+	}
+	c.mu.Unlock()
+}
+
+func (c *metadataConn) Send(requestID int, payload castproto.Payload, sourceID, destinationID, namespace string) error {
+	if loadCmd, ok := payload.(*castproto.LoadMediaCommand); ok {
+		c.mu.Lock()
+		item := c.pendingItem
+		c.pendingItem = nil
+		c.mu.Unlock()
+		if item != nil {
+			payload = buildCastLoadPayload(loadCmd, *item)
+		}
+	}
+	return c.Conn.Send(requestID, payload, sourceID, destinationID, namespace)
+}
+
+func buildCastLoadPayload(cmd *castproto.LoadMediaCommand, item upnp.MediaItem) *castLoadMediaPayload {
+	meta := castMusicMetadata{
+		MetadataType: 3, // Google Cast MUSIC_TRACK
+		Title:        strings.TrimSpace(item.Title),
+		Artist:       strings.TrimSpace(item.Artist),
+		AlbumName:    strings.TrimSpace(item.Album),
+		TrackNumber:  item.TrackNumber,
+	}
+	if art := strings.TrimSpace(item.AlbumArtURL); art != "" {
+		meta.Images = []castproto.Image{{URL: art}}
+	}
+	return &castLoadMediaPayload{
+		PayloadHeader: cmd.PayloadHeader,
+		CurrentTime:   cmd.CurrentTime,
+		Autoplay:      cmd.Autoplay,
+		Media: castMediaInfo{
+			ContentID:   cmd.Media.ContentId,
+			StreamType:  cmd.Media.StreamType,
+			ContentType: cmd.Media.ContentType,
+			Duration:    item.Duration.Seconds(),
+			Metadata:    meta,
+		},
+	}
+}
+
 // Renderer wraps a Google Cast device (or Cast speaker group) as a standard
 // upnp.Controller so queue.Manager treats it identically to UPnP and browser zones.
 type Renderer struct {
@@ -38,6 +121,7 @@ type Renderer struct {
 	port      int
 	localIP   string
 	app       *application.Application
+	metaConn  *metadataConn
 	connected bool
 	lastURI   string
 }
@@ -101,14 +185,17 @@ func (r *Renderer) ensureConnectedLocked() (*application.Application, error) {
 	if r.connected && r.app != nil {
 		return r.app, nil
 	}
+	mc := &metadataConn{Conn: castproto.NewConnection()}
 	app := application.NewApplication(
 		application.WithCacheDisabled(true),
 		application.WithConnectionRetries(2),
 	)
+	app.SetConn(mc)
 	if err := app.Start(r.host, r.port); err != nil {
 		return nil, fmt.Errorf("connect cast %s (%s:%d): %w", r.info.Name, r.host, r.port, err)
 	}
 	r.app = app
+	r.metaConn = mc
 	r.connected = true
 	return app, nil
 }
@@ -118,6 +205,7 @@ func (r *Renderer) resetLocked() {
 		_ = r.app.Close(false)
 		r.app = nil
 	}
+	r.metaConn = nil
 	r.connected = false
 }
 
@@ -158,6 +246,7 @@ func (r *Renderer) SetURI(ctx context.Context, item upnp.MediaItem) error {
 			mime = "audio/flac"
 		}
 		// detach=true, forceDetach=true returns immediately once LOAD is accepted.
+		r.metaConn.setPendingItem(&item)
 		if err := app.Load(item.URL, 0, mime, false, true, true); err != nil {
 			// Retry once on a fresh Cast TLS session in case the previous socket went stale.
 			r.resetLocked()
@@ -165,7 +254,9 @@ func (r *Renderer) SetURI(ctx context.Context, item upnp.MediaItem) error {
 			if connErr != nil {
 				return fmt.Errorf("cast load %s: %w", r.info.Name, err)
 			}
+			r.metaConn.setPendingItem(&item)
 			if retryErr := app.Load(item.URL, 0, mime, false, true, true); retryErr != nil {
+				r.metaConn.setPendingItem(nil)
 				return fmt.Errorf("cast load %s: %w", r.info.Name, retryErr)
 			}
 		}

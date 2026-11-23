@@ -2,6 +2,7 @@ package cast
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +11,63 @@ import (
 
 	"tacet/internal/upnp"
 )
+
+func TestBuildCastLoadPayload(t *testing.T) {
+	cmd := &castproto.LoadMediaCommand{
+		PayloadHeader: castproto.LoadHeader,
+		CurrentTime:   0,
+		Autoplay:      true,
+		Media: castproto.MediaItem{
+			ContentId:   "http://192.168.1.10:4320/media/local/local:1.flac",
+			StreamType:  "BUFFERED",
+			ContentType: "audio/flac",
+		},
+	}
+	payload := buildCastLoadPayload(cmd, upnp.MediaItem{
+		Title:       "All Blues",
+		Artist:      "Miles Davis",
+		Album:       "Kind of Blue",
+		AlbumArtURL: "http://192.168.1.10:4320/media/art/album1",
+		TrackNumber: 4,
+		Duration:    693 * time.Second,
+	})
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var got struct {
+		Type     string `json:"type"`
+		Autoplay bool   `json:"autoplay"`
+		Media    struct {
+			ContentID   string  `json:"contentId"`
+			ContentType string  `json:"contentType"`
+			Duration    float64 `json:"duration"`
+			Metadata    struct {
+				MetadataType int    `json:"metadataType"`
+				Title        string `json:"title"`
+				Artist       string `json:"artist"`
+				AlbumName    string `json:"albumName"`
+				TrackNumber  int    `json:"trackNumber"`
+				Images       []struct {
+					URL string `json:"url"`
+				} `json:"images"`
+			} `json:"metadata"`
+		} `json:"media"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if got.Type != "LOAD" || !got.Autoplay || got.Media.Duration != 693 {
+		t.Fatalf("unexpected load envelope: %+v", got)
+	}
+	m := got.Media.Metadata
+	if m.MetadataType != 3 || m.Title != "All Blues" || m.Artist != "Miles Davis" || m.AlbumName != "Kind of Blue" || m.TrackNumber != 4 {
+		t.Fatalf("unexpected music metadata: %+v", m)
+	}
+	if len(m.Images) != 1 || m.Images[0].URL != "http://192.168.1.10:4320/media/art/album1" {
+		t.Fatalf("unexpected metadata images: %+v", m.Images)
+	}
+}
 
 func TestMapCastStatus(t *testing.T) {
 	st := mapCastStatus(
