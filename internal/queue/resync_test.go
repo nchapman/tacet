@@ -184,3 +184,38 @@ func TestClearQueue_DoesNotResurrectAfterUnregister(t *testing.T) {
 		t.Fatalf("cleared queue resurrected with %d items", len(snap.Queue))
 	}
 }
+
+func TestHandleDeviceEvent_VolumeOnlyDoesNotTriggerAutoPlay(t *testing.T) {
+	mgr := NewManager(4320, "http://192.168.1.10:4320", nil)
+	mgr.runCtx = context.Background()
+	zoneID := "uuid:linkplay-vol"
+	tracks := []library.Track{
+		{ID: "local:t1", Source: library.SourceLocal, Title: "Track 1", DurationSec: 200, MIME: "audio/flac"},
+	}
+	mgr.LoadZoneQueues(map[string]SavedZoneQueue{
+		zoneID: {Tracks: tracks, CurrentIndex: 0},
+	})
+	playCalled := false
+	ctrl := &fakeQueueController{
+		info: upnp.RendererInfo{ID: zoneID, Name: "AudioPro A15", SupportsQueue: true, HasVolume: true},
+	}
+	mgr.RegisterRenderer(ctrl)
+
+	// Simulate an initial RenderingControl GENA volume-only event on startup.
+	mgr.HandleDeviceEvent(upnp.DeviceEvent{
+		RendererID: zoneID,
+		HasVolume:  true,
+		Volume:     35,
+	})
+
+	snap, _ := mgr.Zone(zoneID)
+	if snap.State != "stopped" {
+		t.Fatalf("State = %q, want stopped after volume-only GENA event", snap.State)
+	}
+	if snap.Volume != 35 {
+		t.Fatalf("Volume = %d, want 35", snap.Volume)
+	}
+	if playCalled || ctrl.replaceCalls != 0 || ctrl.playIdxCalls != 0 {
+		t.Fatalf("volume-only GENA event must not trigger playback")
+	}
+}

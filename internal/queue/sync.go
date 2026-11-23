@@ -583,7 +583,7 @@ func (m *Manager) HandleDeviceEvent(ev upnp.DeviceEvent) {
 		volChanged = true
 	}
 
-	var res updateResult
+	res := updateResult{fallbackAdvanceIdx: -1}
 	if ev.HasState || ev.HasPosition || ev.HasTrackURI || ev.HasDuration {
 		st := upnp.TransportStatus{
 			State:       z.status.State,
