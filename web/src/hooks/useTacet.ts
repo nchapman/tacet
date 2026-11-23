@@ -71,7 +71,17 @@ export function useTacet(defaultZoneId?: string | null) {
   const [discovering, setDiscovering] = useState(false);
 
   const activeZoneIdRef = useRef(selectedZoneId);
+  const clockOffsetMsRef = useRef(0);
+  const getClockOffsetMs = useCallback(() => clockOffsetMsRef.current, []);
   const clearError = useCallback(() => setError(""), []);
+
+  const syncClockOffset = useCallback((serverTime?: string) => {
+    if (!serverTime) return;
+    const serverMs = Date.parse(serverTime);
+    if (Number.isFinite(serverMs)) {
+      clockOffsetMsRef.current = Date.now() - serverMs;
+    }
+  }, []);
 
   // Apply full snapshot only if its revision is >= our current zone revision.
   const upsertZone = useCallback((incoming: ZoneSnapshot) => {
@@ -132,6 +142,7 @@ export function useTacet(defaultZoneId?: string | null) {
       onError: () => setConnection("reconnecting"),
       onResync: resyncAll,
       onSnapshot: (snap) => {
+        syncClockOffset(snap.serverTime);
         replaceZones(snap.zones ?? [], true);
         if (snap.settings) setSettings(snap.settings);
         if (snap.qobuz) setQobuzStatus(snap.qobuz);
@@ -141,6 +152,7 @@ export function useTacet(defaultZoneId?: string | null) {
         replaceZones(ev.zones ?? []);
       },
       onPlayback: (ev) => {
+        syncClockOffset(ev.serverTime);
         setZones((prev) => {
           const idx = prev.findIndex((z) => z.zoneId === ev.zoneId);
           if (idx === -1 || ev.revision < prev[idx].revision) return prev;
@@ -152,6 +164,7 @@ export function useTacet(defaultZoneId?: string | null) {
             state: ev.state,
             positionSec: ev.positionSec,
             positionUpdatedAt: ev.positionUpdatedAt,
+            clockAnchored: ev.clockAnchored,
             durationSec: ev.durationSec,
             currentIndex: ev.currentIndex,
             currentItemId: ev.currentItemId,
@@ -209,7 +222,7 @@ export function useTacet(defaultZoneId?: string | null) {
     });
 
     return unsubscribe;
-  }, [replaceZones]);
+  }, [replaceZones, syncClockOffset]);
 
   const activeZone = useMemo<ZoneSnapshot | null>(
     () => resolveActiveZone(zones, selectedZoneId, defaultZoneId),
@@ -375,6 +388,7 @@ export function useTacet(defaultZoneId?: string | null) {
   return {
     zones,
     activeZone,
+    getClockOffsetMs,
     settings,
     qobuzStatus,
     setQobuzStatus,

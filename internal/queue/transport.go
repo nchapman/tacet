@@ -127,6 +127,7 @@ func (m *Manager) ReplaceQueue(ctx context.Context, zoneID string, tracks []libr
 		queueCopy := append([]Item(nil), z.queue...)
 		z.currentIndex = playIdx
 		z.status.Position = 0
+		z.clockAnchored = false
 		z.nextPreloaded = false
 		z.nextPreloading = false
 		z.nextFailed = false
@@ -174,6 +175,7 @@ func (m *Manager) ReplaceQueue(ctx context.Context, zoneID string, tracks []libr
 	}
 	z.currentIndex = playIdx
 	z.status.Position = 0
+	z.clockAnchored = false
 	z.nextPreloaded = false
 	z.nextPreloading = false
 	z.nextFailed = false
@@ -632,6 +634,8 @@ func (m *Manager) Play(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	m.mu.Lock()
 	z.status.State = "PLAYING"
 	z.positionUpdatedAt = time.Now().UTC()
+	kind := z.ctrl.Info().Kind
+	z.clockAnchored = z.status.Position > 0 || kind == "player" || kind == "cast"
 	z.revision++
 	pbEv := m.playbackEventLocked(z)
 	snap := m.snapshotLocked(z)
@@ -654,6 +658,7 @@ func (m *Manager) Pause(ctx context.Context, zoneID string) (ZoneSnapshot, error
 	}
 	m.mu.Lock()
 	z.status.State = "PAUSED_PLAYBACK"
+	z.clockAnchored = false
 	z.positionUpdatedAt = time.Now().UTC()
 	z.revision++
 	pbEv := m.playbackEventLocked(z)
@@ -685,6 +690,7 @@ func (m *Manager) Stop(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	m.mu.Lock()
 	z.status.State = "STOPPED"
 	z.status.Position = 0
+	z.clockAnchored = false
 	z.positionUpdatedAt = time.Now().UTC()
 	z.revision++
 	pbEv := m.playbackEventLocked(z)
@@ -838,6 +844,7 @@ func (m *Manager) seekLockedOp(ctx context.Context, zoneID string, z *zone, posi
 	m.mu.Lock()
 	z.status.Position = d
 	z.positionUpdatedAt = time.Now().UTC()
+	z.clockAnchored = z.status.State == "PLAYING"
 	z.revision++
 	pbEv := m.playbackEventLocked(z)
 	snap := m.snapshotLocked(z)
@@ -1071,6 +1078,7 @@ func (m *Manager) playDeviceQueueIndex(ctx context.Context, zoneID string, z *zo
 			z.status.Duration = time.Duration(z.queue[idx].Track.DurationSec) * time.Second
 		}
 		z.positionUpdatedAt = time.Now().UTC()
+		z.clockAnchored = false
 		z.lastPlaybackEmit = z.positionUpdatedAt
 		z.wasPlaying = false
 		z.loadedAt = time.Now()

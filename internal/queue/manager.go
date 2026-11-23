@@ -93,6 +93,7 @@ type ZoneSnapshot struct {
 	State             PlaybackState     `json:"state"`
 	PositionSec       int               `json:"positionSec"`
 	PositionUpdatedAt time.Time         `json:"positionUpdatedAt"`
+	ClockAnchored     bool              `json:"clockAnchored"`
 	DurationSec       int               `json:"durationSec"`
 	Volume            int               `json:"volume"`
 	Muted             bool              `json:"muted"`
@@ -115,6 +116,7 @@ type PlaybackEvent struct {
 	State             PlaybackState  `json:"state"`
 	PositionSec       int            `json:"positionSec"`
 	PositionUpdatedAt time.Time      `json:"positionUpdatedAt"`
+	ClockAnchored     bool           `json:"clockAnchored"`
 	ServerTime        time.Time      `json:"serverTime"`
 	DurationSec       int            `json:"durationSec"`
 	CurrentIndex      int            `json:"currentIndex"`
@@ -185,6 +187,7 @@ type zone struct {
 	revision           uint64
 	status             upnp.TransportStatus
 	positionUpdatedAt  time.Time
+	clockAnchored      bool
 	lastPlaybackEmit   time.Time
 	currentURI         string
 	nextURI            string
@@ -909,13 +912,15 @@ func (m *Manager) snapshotLocked(z *zone) ZoneSnapshot {
 	if repeat == "" {
 		repeat = RepeatOff
 	}
+	state := NormalizePlaybackState(z.status.State)
 	return ZoneSnapshot{
 		ZoneID:            info.ID,
 		Renderer:          info,
 		Revision:          z.revision,
-		State:             NormalizePlaybackState(z.status.State),
+		State:             state,
 		PositionSec:       int(z.status.Position.Seconds()),
 		PositionUpdatedAt: updatedAt,
+		ClockAnchored:     z.clockAnchored && state == StatePlaying,
 		DurationSec:       durSec,
 		Volume:            z.status.Volume,
 		Muted:             z.status.Muted,
@@ -940,6 +945,7 @@ func (m *Manager) playbackEventLocked(z *zone) PlaybackEvent {
 		State:             snap.State,
 		PositionSec:       snap.PositionSec,
 		PositionUpdatedAt: snap.PositionUpdatedAt,
+		ClockAnchored:     snap.ClockAnchored,
 		ServerTime:        time.Now().UTC(),
 		DurationSec:       snap.DurationSec,
 		CurrentIndex:      snap.CurrentIndex,
@@ -1024,9 +1030,9 @@ func (m *Manager) SetEventLog(w io.Writer) {
 
 func (m *Manager) logEvent(src, zoneID string, data any) {
 	m.eventLogMu.Lock()
-	w := m.eventLog
-	if w == nil {
-		m.eventLogMu.Unlock()
+	enabled := m.eventLog != nil
+	m.eventLogMu.Unlock()
+	if !enabled {
 		return
 	}
 	entry := struct {
@@ -1041,9 +1047,13 @@ func (m *Manager) logEvent(src, zoneID string, data any) {
 		Data:   data,
 	}
 	b, err := json.Marshal(entry)
-	if err == nil {
-		b = append(b, '\n')
-		_, _ = w.Write(b)
+	if err != nil {
+		return
+	}
+	b = append(b, '\n')
+	m.eventLogMu.Lock()
+	if m.eventLog != nil {
+		_, _ = m.eventLog.Write(b)
 	}
 	m.eventLogMu.Unlock()
 }

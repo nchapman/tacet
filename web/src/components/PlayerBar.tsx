@@ -16,7 +16,7 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
 import { fmtDuration, fmtOutputQuality, rendererLossyCodec } from "@/api/format";
 import type { AudioQuality, RepeatMode, StreamMode, TransportAction, ZoneSnapshot } from "@/api/types";
@@ -33,6 +33,7 @@ import { cn } from "@/lib/utils";
 interface PlayerBarProps {
   zones: ZoneSnapshot[];
   activeZone: ZoneSnapshot | null;
+  getClockOffsetMs: () => number;
   error: string;
   discovering: boolean;
   transcodeAvailable: boolean;
@@ -56,9 +57,21 @@ interface PlayerBarProps {
   onOpenArtist?: (artist: string) => void;
 }
 
+function computeAnchoredPosition(zone: ZoneSnapshot | null, clockOffsetMs: number, nowMs: number): number {
+  if (!zone) return 0;
+  const base = zone.positionSec ?? 0;
+  if (zone.state !== "playing" || !zone.clockAnchored) return base;
+  const updatedMs = Date.parse(zone.positionUpdatedAt);
+  if (!Number.isFinite(updatedMs)) return base;
+  const elapsed = Math.max(0, Math.floor((nowMs - clockOffsetMs - updatedMs) / 1000));
+  const maxDur = zone.durationSec || zone.currentTrack?.durationSec || 0;
+  return maxDur > 0 ? Math.min(maxDur, base + elapsed) : base + elapsed;
+}
+
 export const PlayerBar = memo(function PlayerBar({
   zones,
   activeZone,
+  getClockOffsetMs,
   error,
   discovering,
   transcodeAvailable,
@@ -112,7 +125,20 @@ export const PlayerBar = memo(function PlayerBar({
     });
   }, [setSearchParams]);
 
-  const positionSec = activeZone?.positionSec ?? 0;
+  const [positionSec, setPositionSec] = useState<number>(() =>
+    computeAnchoredPosition(activeZone, getClockOffsetMs(), Date.now()),
+  );
+  useEffect(() => {
+    const sync = () => {
+      const next = computeAnchoredPosition(activeZone, getClockOffsetMs(), Date.now());
+      setPositionSec((prev) => (prev === next ? prev : next));
+    };
+    sync();
+    if (activeZone?.state !== "playing" || !activeZone.clockAnchored) return;
+    const id = window.setInterval(sync, 500);
+    return () => window.clearInterval(id);
+  }, [activeZone, getClockOffsetMs]);
+
   const track = activeZone?.currentTrack;
   const shuffle = Boolean(activeZone?.shuffle);
   const repeat: RepeatMode = activeZone?.repeat ?? "off";

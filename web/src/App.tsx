@@ -557,6 +557,7 @@ export function App() {
         <PlayerBar
           zones={tacet.zones}
           activeZone={tacet.activeZone}
+          getClockOffsetMs={tacet.getClockOffsetMs}
           error={tacet.error}
           discovering={tacet.discovering}
           transcodeAvailable={Boolean(tacet.settings.transcodeAvailable)}
