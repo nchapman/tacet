@@ -48,6 +48,7 @@ var (
 type libraryStore struct {
 	mu               sync.RWMutex
 	db               *sql.DB
+	closed           bool
 	dbPath           string
 	bootID           string
 	gen              uint64
@@ -125,12 +126,13 @@ func openStore(dbPath string) (*libraryStore, error) {
 func (s *libraryStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.db == nil {
+	if s.closed || s.db == nil {
 		return nil
 	}
-	err := s.db.Close()
-	s.db = nil
-	return err
+	s.closed = true
+	// Keep s.db non-nil so any concurrent background goroutine still in flight
+	// receives sql.ErrConnDone cleanly instead of a nil-pointer panic.
+	return s.db.Close()
 }
 
 func (s *libraryStore) now() time.Time {
