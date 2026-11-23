@@ -1,6 +1,7 @@
 # tacet
 
 [![CI](https://github.com/nchapman/tacet/actions/workflows/ci.yml/badge.svg)](https://github.com/nchapman/tacet/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 A headless, self-hosted music server and control point for lossless hi-res playback from your local library and Qobuz to network renderers (UPnP/DLNA, WiiM/Linkplay, Google Cast) and web browsers.
 
@@ -162,3 +163,7 @@ The OpenAPI 3.1 specification is stored at [`internal/api/openapi.yaml`](interna
 
 - **Trusted LAN deployment:** `tacet` is designed for home networks and does not include user accounts or authentication (mutating browser requests are protected by same-origin CSRF checks). Avoid exposing port `4320` directly to the public internet without a reverse proxy and auth layer.
 - **Discovery across subnets:** Automatic UPnP SSDP and Google Cast mDNS discovery require multicast on the same LAN segment. Across VLANs or in bridged containers, add UPnP renderers via `TACET_RENDERER_URL` or the web UI's manual connect dialog.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
