@@ -17,8 +17,9 @@ import {
 } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import { fmtDuration, fmtOutputQuality } from "@/api/format";
-import type { AudioQuality, RepeatMode, TransportAction, ZoneSnapshot } from "@/api/types";
+import type { AudioQuality, RepeatMode, StreamMode, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
+import { SignalPathPopover } from "@/components/SignalPathPopover";
 import { AlbumArt, AmbientBackdrop } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
 import { SignalBadge } from "@/components/ui/SignalBadge";
@@ -35,6 +36,7 @@ interface PlayerBarProps {
   error: string;
   discovering: boolean;
   transcodeAvailable: boolean;
+  streamMode?: StreamMode;
   queueOpen: boolean;
   browserPlayer: BrowserPlayerController;
   onDismissError: () => void;
@@ -72,6 +74,7 @@ export const PlayerBar = memo(function PlayerBar({
   error,
   discovering,
   transcodeAvailable,
+  streamMode,
   queueOpen,
   browserPlayer,
   onDismissError,
@@ -197,7 +200,13 @@ export const PlayerBar = memo(function PlayerBar({
                     {track.artist}
                   </button>
                   {(trackProvider || qualLabel) && (
-                    <SignalBadge provider={trackProvider} format={qualLabel} size="sm" />
+                    <SignalPathPopover
+                      track={track}
+                      zone={activeZone}
+                      qualLabel={qualLabel}
+                      isBrowserActive={isBrowserActive}
+                      streamMode={streamMode}
+                    />
                   )}
                 </div>
               </>

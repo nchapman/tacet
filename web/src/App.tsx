@@ -545,6 +545,7 @@ export function App() {
           error={tacet.error}
           discovering={tacet.discovering}
           transcodeAvailable={Boolean(tacet.settings.transcodeAvailable)}
+          streamMode={tacet.settings.streamMode}
           queueOpen={queueOpen}
           browserPlayer={browserPlayer}
           onDismissError={tacet.clearError}

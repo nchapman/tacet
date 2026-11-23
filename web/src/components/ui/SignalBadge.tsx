@@ -4,6 +4,7 @@ interface SignalBadgeProps {
   provider?: string;
   format?: string;
   size?: "sm" | "md";
+  showTitle?: boolean;
   className?: string;
 }
 
@@ -27,7 +28,7 @@ function compactFormat(label: string): string {
     .replace(/\s*kbps$/i, "k");
 }
 
-export function SignalBadge({ provider, format, size = "md", className }: SignalBadgeProps) {
+export function SignalBadge({ provider, format, size = "md", showTitle = true, className }: SignalBadgeProps) {
   const { label: srcLabel, isLocal, isQobuz } = normalizeProvider(provider);
   const displayFormat = format ? (size === "sm" ? compactFormat(format) : format) : "";
 
@@ -42,7 +43,7 @@ export function SignalBadge({ provider, format, size = "md", className }: Signal
 
   return (
     <span
-      title={title}
+      title={showTitle ? title : undefined}
       className={cn(
         "inline-flex shrink-0 items-center rounded-full border border-white/[0.08] bg-white/[0.05] whitespace-nowrap",
         size === "sm" ? "gap-1.5 px-2 py-0.5 text-[10px] leading-none" : "gap-2 px-2.5 py-1 text-[11px] leading-none",
