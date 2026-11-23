@@ -235,7 +235,13 @@ export function NowPlayingOverlay({
 
       {/* Main stage */}
       {panel === "devices" ? (
-        <div className="relative z-10 flex flex-1 min-h-0 items-start lg:items-center justify-center overflow-y-auto px-5 py-6">
+        <div
+          key="devices"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) onPanelChange("player");
+          }}
+          className="relative z-10 flex flex-1 min-h-0 items-start lg:items-center justify-center overflow-y-auto px-5 py-6"
+        >
           <div className="w-full max-w-md rounded-2xl border border-white/10 bg-black/45 p-2 shadow-2xl">
             <DeviceList
               zones={zones}
@@ -255,11 +261,14 @@ export function NowPlayingOverlay({
           </div>
         </div>
       ) : (
-        <div className="relative z-10 flex flex-1 min-h-0 items-center justify-center px-6 pb-8 lg:px-10 lg:pb-10 gap-14">
+        <div
+          key="player"
+          className="relative z-10 flex flex-1 min-h-0 items-center justify-center px-6 pb-8 lg:px-10 lg:pb-10 gap-14"
+        >
           {/* Player column */}
           <div
             className={cn(
-              "flex flex-col justify-between lg:justify-center items-center w-full h-full lg:h-auto max-w-[420px] transition-all duration-300 gap-5 lg:gap-0",
+              "flex flex-col justify-between lg:justify-center items-center w-full h-full lg:h-auto max-w-[420px] transition-[max-width] duration-300 gap-5 lg:gap-0",
               showQueue ? "lg:max-w-[460px]" : "lg:max-w-[520px]",
             )}
           >
