@@ -185,7 +185,7 @@ export function SignalPathPopover({
     stages.push({
       icon: Waves,
       title: "Bit-Perfect Pass-Through",
-      detail: "Original stream · no resampling or DSP",
+      detail: "No resampling or DSP",
       accent: losslessSource ? "emerald" : "neutral",
     });
   }
