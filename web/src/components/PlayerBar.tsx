@@ -3,6 +3,7 @@ import {
   ChevronDown,
   Laptop,
   ListMusic,
+  Maximize2,
   Pause,
   Play,
   Repeat,
@@ -19,6 +20,7 @@ import { memo, useEffect, useState } from "react";
 import { fmtDuration, fmtOutputQuality } from "@/api/format";
 import type { AudioQuality, RepeatMode, StreamMode, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
+import { NowPlayingOverlay } from "@/components/NowPlayingOverlay";
 import { SignalPathPopover } from "@/components/SignalPathPopover";
 import { AlbumArt, AmbientBackdrop } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
@@ -51,6 +53,7 @@ interface PlayerBarProps {
   onDiscover: () => void;
   onOpenConnect: () => void;
   onToggleQueue: () => void;
+  onJumpItem?: (itemId: string) => void;
   onOpenAlbum?: (albumId: string) => void;
   onOpenArtist?: (artist: string) => void;
 }
@@ -89,6 +92,7 @@ export const PlayerBar = memo(function PlayerBar({
   onDiscover,
   onOpenConnect,
   onToggleQueue,
+  onJumpItem,
   onOpenAlbum,
   onOpenArtist,
 }: PlayerBarProps) {
@@ -96,6 +100,7 @@ export const PlayerBar = memo(function PlayerBar({
   const [volDraft, setVolDraft] = useState<number | null>(null);
   const [devicePopoverOpen, setDevicePopoverOpen] = useState(false);
   const [mobileExpanded, setMobileExpanded] = useState(false);
+  const [desktopExpanded, setDesktopExpanded] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<"player" | "devices">("player");
 
   // Local 1s playback clock tick scoped strictly to PlayerBar so the rest of
@@ -172,12 +177,18 @@ export const PlayerBar = memo(function PlayerBar({
         <div className="relative z-10 flex min-w-0 items-center gap-3">
           <button
             type="button"
-            disabled={!track?.albumId}
-            onClick={() => track?.albumId && onOpenAlbum?.(track.albumId)}
+            disabled={!track}
+            onClick={() => setDesktopExpanded(true)}
+            aria-label="Open full screen player"
             className="group relative h-13 w-13 shrink-0 rounded-lg overflow-hidden shadow-lg ring-1 ring-white/10 cursor-pointer disabled:cursor-default"
-            title={track?.album ? `Open ${track.album}` : undefined}
+            title={track ? "Open full screen player" : undefined}
           >
             <AlbumArt artworkUrl={track?.artworkUrl} alt={track?.album || track?.title || "No track"} className="h-full w-full" />
+            {track && (
+              <span className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
+                <Maximize2 className="h-4 w-4 text-white" />
+              </span>
+            )}
           </button>
           <div className="min-w-0 flex-1">
             {track ? (
@@ -406,8 +417,45 @@ export const PlayerBar = memo(function PlayerBar({
               className="w-24"
             />
           </div>
+
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            disabled={!track}
+            onClick={() => setDesktopExpanded(true)}
+            aria-label="Open full screen player"
+            title="Full screen player"
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+          </Button>
         </div>
       </footer>
+
+      <NowPlayingOverlay
+        open={desktopExpanded}
+        onClose={() => setDesktopExpanded(false)}
+        activeZone={activeZone}
+        activeDeviceName={activeDeviceName}
+        isBrowserActive={isBrowserActive}
+        streamMode={streamMode}
+        qualLabel={qualLabel}
+        shownPos={shownPos}
+        duration={duration}
+        shownVol={shownVol}
+        onScrub={setScrubPos}
+        onSeek={onSeek}
+        onVolDraft={setVolDraft}
+        onVolume={onVolume}
+        onMute={onMute}
+        onTransport={onTransport}
+        onShuffle={onShuffle}
+        onRepeat={onRepeat}
+        onJumpItem={onJumpItem}
+        onOpenAlbum={onOpenAlbum}
+        onOpenArtist={onOpenArtist}
+      />
 
       {/* ==================== MOBILE MINI-PLAYER (< lg) ==================== */}
       <div className="lg:hidden shrink-0 px-2 pb-1.5 bg-transparent">

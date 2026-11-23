@@ -560,6 +560,7 @@ export function App() {
           onDiscover={handleDiscover}
           onOpenConnect={handleOpenConnect}
           onToggleQueue={handleToggleQueue}
+          onJumpItem={handleJumpItem}
           onOpenAlbum={handleOpenAlbumId}
           onOpenArtist={openArtist}
         />
