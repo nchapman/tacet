@@ -121,6 +121,21 @@ func (s *Server) handleLibraryAlbum(w http.ResponseWriter, r *http.Request) {
 			if alb.QobuzAlbumID == "" {
 				alb.QobuzAlbumID = strings.TrimPrefix(strings.TrimSpace(qAlb.ID), "qobuz:")
 			}
+			if len(alb.Tracks) > 0 && len(qAlb.Tracks) > 0 {
+				explicitByTitle := make(map[string]bool, len(qAlb.Tracks))
+				for _, qt := range qAlb.Tracks {
+					if qt.Explicit {
+						explicitByTitle[strings.ToLower(strings.TrimSpace(qt.Title))] = true
+					}
+				}
+				if len(explicitByTitle) > 0 {
+					for i := range alb.Tracks {
+						if !alb.Tracks[i].Explicit && explicitByTitle[strings.ToLower(strings.TrimSpace(alb.Tracks[i].Title))] {
+							alb.Tracks[i].Explicit = true
+						}
+					}
+				}
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, alb)

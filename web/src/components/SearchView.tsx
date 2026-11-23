@@ -17,6 +17,7 @@ import type {
 import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
+import { ExplicitBadge } from "@/components/ui/ExplicitBadge";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/PageHeader";
 import {
@@ -645,11 +646,12 @@ function TrackResultRow({
           type="button"
           onClick={onPlay}
           className={cn(
-            "block w-full truncate text-left text-sm font-medium cursor-pointer",
+            "flex w-full items-center gap-1.5 text-left text-sm font-medium cursor-pointer min-w-0",
             active ? "text-emerald-400" : "text-foreground",
           )}
         >
-          {track.title}
+          <span className="truncate">{track.title}</span>
+          {track.explicit && <ExplicitBadge />}
         </button>
         <div className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
           <button

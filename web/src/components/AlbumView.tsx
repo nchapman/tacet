@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { EditorialNote } from "@/components/ui/EditorialNote";
+import { ExplicitBadge } from "@/components/ui/ExplicitBadge";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { QOBUZ_ALBUM_GC_TIME_MS, QOBUZ_ALBUM_STALE_TIME_MS, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
@@ -404,13 +405,16 @@ export function AlbumView({
                     onClick={() => onPlay({ type: "album", albumId: album.id }, idx)}
                     className="min-w-0 text-left cursor-pointer"
                   >
-                    <div
-                      className={cn(
-                        "truncate text-[14px] font-medium leading-snug",
-                        active ? "text-emerald-400" : "text-foreground",
-                      )}
-                    >
-                      {tr.title}
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span
+                        className={cn(
+                          "truncate text-[14px] font-medium leading-snug",
+                          active ? "text-emerald-400" : "text-foreground",
+                        )}
+                      >
+                        {tr.title}
+                      </span>
+                      {tr.explicit && <ExplicitBadge />}
                     </div>
                     {tr.artist && tr.artist !== album.artist && (
                       <div className="truncate text-xs text-muted-foreground mt-0.5">{tr.artist}</div>

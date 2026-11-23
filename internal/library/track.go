@@ -56,6 +56,7 @@ type Track struct {
 	Loved        bool       `json:"loved,omitempty"`
 	Available    bool       `json:"available"`
 	InLibrary    bool       `json:"inLibrary"`
+	Explicit     bool       `json:"explicit,omitempty"`
 
 	// Internal fields (not exposed over JSON).
 	FilePath     string `json:"-"`

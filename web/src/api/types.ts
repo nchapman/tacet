@@ -87,6 +87,7 @@ export interface Track {
   loved?: boolean;
   available?: boolean;
   inLibrary?: boolean;
+  explicit?: boolean;
 }
 
 export interface AlbumVersion {

@@ -15,6 +15,7 @@ import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EditorialNote } from "@/components/ui/EditorialNote";
+import { ExplicitBadge } from "@/components/ui/ExplicitBadge";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { QOBUZ_ARTIST_GC_TIME_MS, QOBUZ_ARTIST_STALE_TIME_MS, queryErrorMessage, queryKeys } from "@/lib/query";
 import { useScrollRestoration } from "@/lib/scroll";
@@ -366,7 +367,10 @@ export function ArtistsView({
                               className="h-10 w-10 rounded-lg ring-1 ring-white/10"
                             />
                             <div className="min-w-0">
-                              <div className="truncate text-sm font-medium text-foreground">{tr.title}</div>
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="truncate text-sm font-medium text-foreground">{tr.title}</span>
+                                {tr.explicit && <ExplicitBadge />}
+                              </div>
                               {tr.album && (
                                 <div className="truncate text-xs text-muted-foreground">{tr.album}</div>
                               )}

@@ -583,11 +583,12 @@ func (c *Client) fetchArtistPageExtras(ctx context.Context, artistID int64) arti
 			} `json:"items"`
 		} `json:"similar_artists"`
 		TopTracks []struct {
-			ID        int64  `json:"id"`
-			Title     string `json:"title"`
-			Version   string `json:"version"`
-			Duration  int    `json:"duration"`
-			AudioInfo struct {
+			ID              int64  `json:"id"`
+			Title           string `json:"title"`
+			Version         string `json:"version"`
+			Duration        int    `json:"duration"`
+			ParentalWarning bool   `json:"parental_warning"`
+			AudioInfo       struct {
 				MaximumBitDepth     int     `json:"maximum_bit_depth"`
 				MaximumSamplingRate float64 `json:"maximum_sampling_rate"`
 			} `json:"audio_info"`
@@ -650,6 +651,7 @@ func (c *Client) fetchArtistPageExtras(ctx context.Context, artistID int64) arti
 			Ext:          ".flac",
 			BitDepth:     pt.AudioInfo.MaximumBitDepth,
 			SampleRate:   normalizeSampleRateHz(pt.AudioInfo.MaximumSamplingRate),
+			Explicit:     pt.ParentalWarning,
 			Available:    true,
 		})
 	}
@@ -1490,6 +1492,7 @@ type qTrack struct {
 	MaximumBitDepth     int     `json:"maximum_bit_depth"`
 	MaximumSamplingRate float64 `json:"maximum_sampling_rate"`
 	Streamable          *bool   `json:"streamable"`
+	ParentalWarning     bool    `json:"parental_warning"`
 	Performer           qArtist `json:"performer"`
 	Performers          string  `json:"performers"`
 	Album               *qAlbum `json:"album"`
@@ -1754,6 +1757,7 @@ func (qt qTrack) toLibraryTrack(parentAlbum *qAlbum) library.Track {
 		Ext:          ".flac",
 		ArtworkURL:   artURL,
 		Available:    true,
+		Explicit:     qt.ParentalWarning,
 		QobuzTrackID: qt.ID,
 	}
 }
