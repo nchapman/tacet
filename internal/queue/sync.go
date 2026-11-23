@@ -731,10 +731,13 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 	if z.awaitingAudio {
 		switch st.State {
 		case "PLAYING":
-			if !staleTrack && st.HasPosition && st.Position <= 0 {
-				st.State = "TRANSITIONING"
-			} else if !staleTrack {
+			if !staleTrack && st.HasPosition && st.Position > 0 {
 				z.awaitingAudio = false
+			} else if !staleTrack && !st.HasPosition && !z.loadedAt.IsZero() && time.Since(z.loadedAt) > 10*time.Second {
+				// Safety fallback for broken renderers that never report RelTime.
+				z.awaitingAudio = false
+			} else {
+				st.State = "TRANSITIONING"
 			}
 		case "PAUSED_PLAYBACK", "STOPPED", "NO_MEDIA_PRESENT":
 			z.awaitingAudio = false

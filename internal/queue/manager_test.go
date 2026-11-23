@@ -239,11 +239,13 @@ func TestManager_GENAEventUpdatesStateAndGaplessImmediately(t *testing.T) {
 	}
 
 	mgr.HandleDeviceEvent(upnp.DeviceEvent{
-		RendererID: "uuid:wiim-gena",
-		Service:    upnp.ServiceAVTransport,
-		Seq:        1,
-		HasState:   true,
-		State:      "PLAYING",
+		RendererID:  "uuid:wiim-gena",
+		Service:     upnp.ServiceAVTransport,
+		Seq:         1,
+		HasState:    true,
+		State:       "PLAYING",
+		HasPosition: true,
+		Position:    time.Second,
 	})
 
 	snap, _ := mgr.Zone("uuid:wiim-gena")

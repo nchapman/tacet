@@ -242,9 +242,21 @@ func TestAwaitingAudio_HoldsBufferingUntilPositionAdvances(t *testing.T) {
 		t.Fatalf("ReplaceQueue: %v", err)
 	}
 
+	// GENA push PLAYING without position while still awaiting audio must NOT flicker out of buffering.
+	mgr.HandleDeviceEvent(upnp.DeviceEvent{
+		RendererID: zoneID,
+		Seq:        1,
+		HasState:   true,
+		State:      "PLAYING",
+	})
+	snap, _ := mgr.Zone(zoneID)
+	if snap.State != "buffering" {
+		t.Fatalf("State = %q after positionless GENA PLAYING while awaiting audio, want buffering", snap.State)
+	}
+
 	// Renderer reports PLAYING at 0:00 while still waiting on disk/CDN -> must stay buffering.
 	mgr.pollOne(context.Background(), zoneID)
-	snap, _ := mgr.Zone(zoneID)
+	snap, _ = mgr.Zone(zoneID)
 	if snap.State != "buffering" {
 		t.Fatalf("State = %q at pos=0 while awaiting audio, want buffering", snap.State)
 	}
