@@ -180,7 +180,9 @@ func (r *Renderer) SetNextURI(_ context.Context, _ upnp.MediaItem) error {
 	return fmt.Errorf("SetNextURI unsupported on Google Cast renderer")
 }
 
-// Play resumes paused playback (or is a no-op if LOAD already started playing).
+// Play resumes paused playback. Because Cast's LOAD command starts playback
+// automatically, Play is a no-op when media is still initializing (media == nil),
+// buffering, or already playing; it only sends Unpause when explicitly PAUSED.
 func (r *Renderer) Play(ctx context.Context) error {
 	return runWithCtx(ctx, func() error {
 		r.mu.Lock()
@@ -189,13 +191,13 @@ func (r *Renderer) Play(ctx context.Context) error {
 			return nil
 		}
 		_, media, _ := r.app.Status()
-		if media != nil {
-			st := strings.ToUpper(media.PlayerState)
-			if st == "PLAYING" || st == "BUFFERING" {
-				return nil
-			}
+		if media == nil {
+			return nil
 		}
-		return r.app.Unpause()
+		if strings.EqualFold(strings.TrimSpace(media.PlayerState), "PAUSED") {
+			return r.app.Unpause()
+		}
+		return nil
 	})
 }
 
