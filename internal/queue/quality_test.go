@@ -15,6 +15,7 @@ func TestZoneAudioQuality_AppliesOnNextTrackAndPersists(t *testing.T) {
 	defer mgr.Close()
 
 	r := newFakeRenderer("zone-q", "Living Room")
+	r.info.SinkProtocols = append(r.info.SinkProtocols, "http-get:*:audio/ogg;codecs=opus:*")
 	mgr.RegisterRenderer(r)
 
 	tracks := []library.Track{
@@ -84,5 +85,26 @@ func TestZoneAudioQuality_RejectsWhenTranscoderUnavailable(t *testing.T) {
 	}
 	if _, err := mgr.SetZoneQuality("zone-no-ff", AudioQualityOriginal); err != nil {
 		t.Fatalf("original should always succeed: %v", err)
+	}
+}
+
+func TestZoneAudioQuality_RejectsOpusForUPnPWithoutOpusProtocol(t *testing.T) {
+	mgr := NewManager(4320, "http://127.0.0.1:4320", nil)
+	mgr.SetTranscodeAvailable(true)
+	defer mgr.Close()
+
+	r := newFakeRenderer("zone-a15", "AudioPro A15")
+	r.info.SinkProtocols = []string{
+		"http-get:*:audio/flac:*",
+		"http-get:*:audio/ogg:*",
+		"http-get:*:audio/wav:DLNA.ORG_PN=LPCM",
+	}
+	mgr.RegisterRenderer(r)
+
+	if _, err := mgr.SetZoneQuality("zone-a15", AudioQualityOpus128); !errors.Is(err, ErrCapabilityUnsupported) {
+		t.Fatalf("expected ErrCapabilityUnsupported for UPnP without opus protocol, got %v", err)
+	}
+	if _, err := mgr.SetZoneQuality("zone-a15", AudioQualityWAV); err != nil {
+		t.Fatalf("WAV should still succeed on UPnP renderer: %v", err)
 	}
 }

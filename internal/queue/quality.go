@@ -1,6 +1,10 @@
 package queue
 
-import "strings"
+import (
+	"strings"
+
+	"tacet/internal/upnp"
+)
 
 // AudioQuality controls the audio format delivered to a specific playback endpoint.
 type AudioQuality string
@@ -53,4 +57,20 @@ func (q AudioQuality) IsOpus() bool {
 // NeedsTranscode reports whether q requires server-side ffmpeg transcoding.
 func (q AudioQuality) NeedsTranscode() bool {
 	return q.IsOpus() || q == AudioQualityWAV
+}
+
+// RendererSupportsOpus reports whether info can decode Opus streams.
+// HTTP/SSE player endpoints negotiate Ogg/WebM/MP4 Opus directly. UPnP/DLNA
+// renderers that advertise SinkProtocols (e.g. Linkplay/Audio Pro/WiiM) only
+// support Ogg Vorbis for audio/ogg unless they explicitly advertise Opus.
+func RendererSupportsOpus(info upnp.RendererInfo) bool {
+	if info.Kind == "player" || len(info.SinkProtocols) == 0 {
+		return true
+	}
+	for _, proto := range info.SinkProtocols {
+		if strings.Contains(strings.ToLower(proto), "opus") {
+			return true
+		}
+	}
+	return false
 }

@@ -26,12 +26,19 @@ interface EndpointQualityPanelProps {
   onChange: (quality: AudioQuality) => void;
 }
 
+function rendererSupportsOpus(renderer: ZoneSnapshot["renderer"]): boolean {
+  if (renderer.kind === "player" || !renderer.sinkProtocols || renderer.sinkProtocols.length === 0) {
+    return true;
+  }
+  return renderer.sinkProtocols.some((p) => p.toLowerCase().includes("opus"));
+}
+
 function EndpointQualityPanel({ zone, transcodeAvailable, onChange }: EndpointQualityPanelProps) {
+  const supportsOpus = rendererSupportsOpus(zone.renderer);
   const current = zone.audioQuality ?? "original";
-  const idx = audioQualityIndex(current);
-  const stop = audioQualityStop(current);
-  const isOpus = current.startsWith("opus_");
-  const isUPnP = zone.renderer.kind !== "player";
+  const effective = !supportsOpus && current.startsWith("opus_") ? "original" : current;
+  const idx = audioQualityIndex(effective);
+  const stop = audioQualityStop(effective);
 
   return (
     <div
@@ -46,57 +53,84 @@ function EndpointQualityPanel({ zone, transcodeAvailable, onChange }: EndpointQu
         </div>
       </div>
 
-      {/* Inset slider so Radix thumb centers (radius 7px) align dead-center over the 6 grid columns */}
-      <div className="px-[calc(100%/12-7px)]">
-        <Slider
-          aria-label={`Audio quality for ${zone.renderer.name}`}
-          min={0}
-          max={AUDIO_QUALITY_STOPS.length - 1}
-          step={1}
-          alwaysShowThumb
-          disabled={!transcodeAvailable}
-          value={[idx]}
-          onValueChange={([v]) => {
-            const next = AUDIO_QUALITY_STOPS[v];
-            if (next && next.value !== current) {
-              onChange(next.value);
-            }
-          }}
-          className="my-1"
-        />
-      </div>
-
-      <div className="mt-2 grid grid-cols-6 text-center">
-        {AUDIO_QUALITY_STOPS.map((s) => {
-          const selected = s.value === current;
-          return (
-            <button
-              key={s.value}
-              type="button"
-              disabled={!transcodeAvailable && s.value !== "original"}
-              onClick={() => {
-                if (s.value !== current) onChange(s.value);
+      {supportsOpus ? (
+        <>
+          {/* Inset slider so Radix thumb centers (radius 7px) align dead-center over the 6 grid columns */}
+          <div className="px-[calc(100%/12-7px)]">
+            <Slider
+              aria-label={`Audio quality for ${zone.renderer.name}`}
+              min={0}
+              max={AUDIO_QUALITY_STOPS.length - 1}
+              step={1}
+              alwaysShowThumb
+              disabled={!transcodeAvailable}
+              value={[idx]}
+              onValueChange={([v]) => {
+                const next = AUDIO_QUALITY_STOPS[v];
+                if (next && next.value !== current) {
+                  onChange(next.value);
+                }
               }}
-              className={cn(
-                "mx-0.5 rounded px-0.5 py-0.5 text-[10px] font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed",
-                selected ? "text-emerald-300 bg-emerald-500/15" : "text-muted-foreground hover:text-foreground",
-              )}
-              title={`${s.label} (${s.detail})`}
-            >
-              {s.shortLabel}
-            </button>
-          );
-        })}
-      </div>
+              className="my-1"
+            />
+          </div>
+
+          <div className="mt-2 grid grid-cols-6 text-center">
+            {AUDIO_QUALITY_STOPS.map((s) => {
+              const selected = s.value === effective;
+              return (
+                <button
+                  key={s.value}
+                  type="button"
+                  disabled={!transcodeAvailable && s.value !== "original"}
+                  onClick={() => {
+                    if (s.value !== current) onChange(s.value);
+                  }}
+                  className={cn(
+                    "mx-0.5 rounded px-0.5 py-0.5 text-[10px] font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed",
+                    selected ? "text-emerald-300 bg-emerald-500/15" : "text-muted-foreground hover:text-foreground",
+                  )}
+                  title={`${s.label} (${s.detail})`}
+                >
+                  {s.shortLabel}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <div className="grid grid-cols-2 gap-1.5">
+          {(["original", "wav"] as const).map((q) => {
+            const s = audioQualityStop(q);
+            const selected = effective === q;
+            return (
+              <button
+                key={q}
+                type="button"
+                disabled={!transcodeAvailable && q !== "original"}
+                onClick={() => {
+                  if (q !== current) onChange(q);
+                }}
+                className={cn(
+                  "rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed border",
+                  selected
+                    ? "border-emerald-500/35 bg-emerald-500/15 text-emerald-300"
+                    : "border-white/[0.07] bg-white/[0.03] text-muted-foreground hover:text-foreground hover:bg-white/[0.06]",
+                )}
+              >
+                {s.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {!transcodeAvailable ? (
         <p className="mt-2 text-[11px] leading-4 text-amber-300/80">
           Install ffmpeg with libopus on the server to enable transcoding.
         </p>
       ) : (
-        <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
-          {isOpus && isUPnP ? "Applies on next track · Opus requires speaker support." : "Applies on next track."}
-        </p>
+        <p className="mt-2 text-[11px] leading-4 text-muted-foreground">Applies on next track.</p>
       )}
     </div>
   );
