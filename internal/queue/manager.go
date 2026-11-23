@@ -253,8 +253,10 @@ type Manager struct {
 	onTrackPlayed      func(library.Track)
 	onQueuePersist     func(map[string]SavedZoneQueue)
 	persistMu          sync.Mutex
+	persistWriteMu     sync.Mutex
 	persistTimer       *time.Timer
 	persistDirty       bool
+	persistClosed      bool
 	runCtx             context.Context
 
 	itemSeq  atomic.Uint64
@@ -370,15 +372,15 @@ func (m *Manager) Close() {
 }
 
 func (m *Manager) subscribeRendererGENA(ctx context.Context, gena *upnp.GENAClient, ctrl upnp.Controller) {
-	dev, ok := ctrl.(*upnp.Renderer)
+	evSrc, ok := ctrl.(upnp.EventSource)
 	if !ok {
 		return
 	}
-	avURL, rcURL := dev.EventURLs()
+	avURL, rcURL := evSrc.EventURLs()
 	if avURL == "" && rcURL == "" {
 		return
 	}
-	gena.WatchRenderer(ctx, dev.Info().ID, m.baseURLFor(ctrl), avURL, rcURL)
+	gena.WatchRenderer(ctx, ctrl.Info().ID, m.baseURLFor(ctrl), avURL, rcURL)
 }
 
 // SetStreamMode switches between Handoff (direct Qobuz URL) and Relay mode.
@@ -500,37 +502,45 @@ func (m *Manager) SavedZoneQueues() map[string]SavedZoneQueue {
 		}
 	}
 	for id, z := range m.zones {
+		// Ephemeral browser players are not persisted across restarts.
 		if z.ctrl.Info().Kind == "player" {
-			// Ephemeral browser players get a new ID per session unless reused; still skip empty.
-			if len(z.queue) == 0 {
-				delete(out, id)
-				continue
-			}
-		}
-		if len(z.queue) == 0 {
 			delete(out, id)
 			continue
 		}
-		n := len(z.queue)
-		if n > maxPersistedZoneTracks {
-			n = maxPersistedZoneTracks
-		}
-		tracks := make([]library.Track, n)
-		for i := 0; i < n; i++ {
-			tracks[i] = z.queue[i].Track
-		}
-		idx := z.currentIndex
-		if idx >= n {
-			idx = n - 1
-		}
-		out[id] = SavedZoneQueue{
-			Tracks:       tracks,
-			CurrentIndex: idx,
-			Repeat:       z.repeat,
-			Shuffle:      z.shuffle,
+		if sq, ok := snapshotSavedQueueLocked(z); ok {
+			out[id] = sq
+		} else {
+			delete(out, id)
 		}
 	}
 	return out
+}
+
+func snapshotSavedQueueLocked(z *zone) (SavedZoneQueue, bool) {
+	if len(z.queue) == 0 {
+		return SavedZoneQueue{}, false
+	}
+	n := len(z.queue)
+	if n > maxPersistedZoneTracks {
+		n = maxPersistedZoneTracks
+	}
+	tracks := make([]library.Track, n)
+	for i := 0; i < n; i++ {
+		tracks[i] = z.queue[i].Track
+	}
+	idx := z.currentIndex
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= n {
+		idx = n - 1
+	}
+	return SavedZoneQueue{
+		Tracks:       tracks,
+		CurrentIndex: idx,
+		Repeat:       z.repeat,
+		Shuffle:      z.shuffle,
+	}, true
 }
 
 // SetQueuePersistFunc registers a callback invoked (debounced) whenever a zone's
@@ -549,16 +559,34 @@ func (m *Manager) scheduleQueuePersist() {
 		return
 	}
 	m.persistMu.Lock()
+	if m.persistClosed {
+		m.persistMu.Unlock()
+		return
+	}
 	m.persistDirty = true
 	if m.persistTimer == nil {
-		m.persistTimer = time.AfterFunc(500*time.Millisecond, m.FlushQueuePersist)
+		m.persistTimer = time.AfterFunc(500*time.Millisecond, func() {
+			m.flushQueuePersist(false)
+		})
 	}
 	m.persistMu.Unlock()
 }
 
-// FlushQueuePersist immediately persists any pending zone queue changes.
+// FlushQueuePersist immediately persists any pending zone queue changes and
+// waits for any in-flight persistence write to finish. Safe to call on shutdown
+// before closing SQLite.
 func (m *Manager) FlushQueuePersist() {
+	m.flushQueuePersist(true)
+}
+
+func (m *Manager) flushQueuePersist(closing bool) {
+	m.persistWriteMu.Lock()
+	defer m.persistWriteMu.Unlock()
+
 	m.persistMu.Lock()
+	if closing {
+		m.persistClosed = true
+	}
 	if m.persistTimer != nil {
 		m.persistTimer.Stop()
 		m.persistTimer = nil
@@ -661,9 +689,6 @@ func (m *Manager) RegisterRenderer(ctrl upnp.Controller) {
 			existing.ctrl = ctrl
 			existing.setNextUnsupported = !info.SupportsSetNext
 			existing.revision++
-		} else if info.Kind != "cast" {
-			// Refresh stateless UPnP controller, but preserve stateful Cast TLS sessions.
-			existing.ctrl = ctrl
 		}
 	} else {
 		savedQ := m.savedQualities[info.ID]
@@ -771,6 +796,13 @@ func (m *Manager) UnregisterRenderer(zoneID string) bool {
 	if !ok {
 		m.mu.Unlock()
 		return false
+	}
+	if removed.ctrl.Info().Kind != "player" {
+		if sq, ok := snapshotSavedQueueLocked(removed); ok {
+			m.savedQueues[zoneID] = sq
+		} else {
+			delete(m.savedQueues, zoneID)
+		}
 	}
 	delete(m.zones, zoneID)
 	order := make([]string, 0, len(m.zoneOrder))

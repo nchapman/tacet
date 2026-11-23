@@ -106,7 +106,7 @@ type metadataConn struct {
 }
 
 func (c *metadataConn) nextReqID() int {
-	return int(c.reqSeq.Add(1) + 1000)
+	return int(c.reqSeq.Add(1) + (1 << 28))
 }
 
 func (c *metadataConn) setPendingItem(item *upnp.MediaItem) {
@@ -224,6 +224,7 @@ type Renderer struct {
 	queueItems []upnp.MediaItem
 	curIdx     int
 	queueDirty bool
+	repeatMode string
 }
 
 // NewRenderer constructs a lazy-connecting Cast Renderer from discovery metadata.
@@ -399,6 +400,9 @@ func (r *Renderer) replaceQueueLocked(items []upnp.MediaItem, startIndex int) er
 		mime = "audio/flac"
 	}
 	payload := buildCastQueueLoadPayload(items, startIndex)
+	if r.repeatMode != "" {
+		payload.QueueData.RepeatMode = r.repeatMode
+	}
 	r.metaConn.setPendingQueue(payload)
 	if err := app.Load(startItem.URL, 0, mime, false, true, true); err != nil {
 		r.resetLocked()
@@ -586,6 +590,7 @@ func (r *Renderer) SetLoopMode(ctx context.Context, repeat string, _ bool) error
 	return runWithCtx(ctx, func() error {
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		r.repeatMode = mode
 		if !r.connected || r.app == nil || r.metaConn == nil {
 			return nil
 		}
@@ -673,7 +678,9 @@ func (r *Renderer) Seek(ctx context.Context, pos time.Duration) error {
 func (r *Renderer) Status(ctx context.Context) (upnp.TransportStatus, error) {
 	var out upnp.TransportStatus
 	err := runWithCtx(ctx, func() error {
-		r.mu.Lock()
+		if !r.mu.TryLock() {
+			return fmt.Errorf("cast renderer %s busy", r.info.Name)
+		}
 		defer r.mu.Unlock()
 
 		if !r.connected || r.app == nil {
@@ -693,22 +700,49 @@ func (r *Renderer) Status(ctx context.Context) (upnp.TransportStatus, error) {
 			return err
 		}
 
-		_, media, vol := r.app.Status()
+		castApp, media, vol := r.app.Status()
+		// Ignore media from external Cast apps (Spotify, YouTube, etc.) so they
+		// never hijack tacet's playback state or record false plays.
+		if castApp == nil || castApp.AppId != "CC1AD845" {
+			out = mapCastStatus(nil, vol, "")
+			return nil
+		}
 		out = mapCastStatus(media, vol, r.lastURI)
 		if media != nil && media.Media.ContentId != "" && len(r.queueItems) > 0 {
-			for i, it := range r.queueItems {
-				if it.URL == media.Media.ContentId {
-					out.QueueIndex = i
-					out.HasQueueIndex = true
-					r.curIdx = i
-					r.lastURI = it.URL
-					break
-				}
+			if idx := r.matchQueueIndexLocked(media.Media.ContentId); idx >= 0 {
+				out.QueueIndex = idx
+				out.HasQueueIndex = true
+				r.curIdx = idx
+				r.lastURI = r.queueItems[idx].URL
 			}
 		}
 		return nil
 	})
 	return out, err
+}
+
+// matchQueueIndexLocked matches contentID against r.queueItems preferring the
+// current index and immediate neighbors so duplicate tracks don't snap backwards.
+func (r *Renderer) matchQueueIndexLocked(contentID string) int {
+	n := len(r.queueItems)
+	if n == 0 {
+		return -1
+	}
+	candidates := []int{r.curIdx, r.curIdx + 1, r.curIdx - 1}
+	if r.curIdx == n-1 && n > 1 {
+		candidates = append(candidates, 0)
+	}
+	for _, c := range candidates {
+		if c >= 0 && c < n && r.queueItems[c].URL == contentID {
+			return c
+		}
+	}
+	for i, it := range r.queueItems {
+		if it.URL == contentID {
+			return i
+		}
+	}
+	return -1
 }
 
 // SetVolume sets the Cast device's volume (0..100).

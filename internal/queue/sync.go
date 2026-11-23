@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tacet/internal/library"
+	"tacet/internal/qobuz"
 	"tacet/internal/upnp"
 )
 
@@ -25,7 +26,7 @@ func (m *Manager) replaceDeviceQueueAndPlay(
 	repeat RepeatMode,
 ) error {
 	zoneID := ctrl.Info().ID
-	mediaItems, effQuality, err := m.buildQueueMediaItems(ctrl, items, quality)
+	mediaItems, effQuality, err := m.buildQueueMediaItems(ctrl, items, startIndex, quality)
 	if err != nil {
 		m.emitZoneError(zoneID, err)
 		return err
@@ -61,7 +62,7 @@ func (m *Manager) replaceDeviceQueueAndPlay(
 	return nil
 }
 
-func (m *Manager) buildQueueMediaItems(ctrl upnp.Controller, items []Item, quality AudioQuality) ([]upnp.MediaItem, AudioQuality, error) {
+func (m *Manager) buildQueueMediaItems(ctrl upnp.Controller, items []Item, startIndex int, quality AudioQuality) ([]upnp.MediaItem, AudioQuality, error) {
 	out := make([]upnp.MediaItem, 0, len(items))
 	effQuality := quality
 	for i, it := range items {
@@ -69,7 +70,7 @@ func (m *Manager) buildQueueMediaItems(ctrl upnp.Controller, items []Item, quali
 		if err != nil {
 			return nil, quality, err
 		}
-		if i == 0 {
+		if i == startIndex {
 			effQuality = q
 		}
 		out = append(out, mi)
@@ -270,8 +271,15 @@ func (m *Manager) buildMediaItemInternal(ctx context.Context, ctrl upnp.Controll
 				track.QobuzTrackID = parsed
 			}
 		}
+		if qID <= 0 {
+			return upnp.MediaItem{}, track, effQuality, fmt.Errorf("%w: invalid qobuz track id %q", ErrInvalidArgument, track.ID)
+		}
 		var streamURL string
-		if !lazyQobuz {
+		if lazyQobuz {
+			if !m.qobuz.IsConnected() {
+				return upnp.MediaItem{}, track, effQuality, fmt.Errorf("qobuz stream URL: %w", qobuz.ErrUnauthenticated)
+			}
+		} else {
 			stream, err := m.qobuz.StreamURL(ctx, qID)
 			if err != nil {
 				return upnp.MediaItem{}, track, effQuality, fmt.Errorf("qobuz stream URL: %w", err)
@@ -686,6 +694,28 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 
 	_, isNativeQueue := z.ctrl.(upnp.QueueController)
 
+	// Detect external playback (e.g. Spotify Connect, AirPlay, WiiM app) so an
+	// unrelated source never hijacks tacet's queue index or records false plays.
+	if st.TrackURI != "" && (st.State == "PLAYING" || st.State == "PAUSED_PLAYBACK" || st.State == "TRANSITIONING") &&
+		!trackURIBelongsToTacetLocked(z, st.TrackURI) {
+		z.status.HasVolume = st.HasVolume
+		if st.HasVolValue {
+			z.status.Volume = st.Volume
+		}
+		if st.HasMuteVal {
+			z.status.Muted = st.Muted
+		}
+		z.status.State = "STOPPED"
+		z.wasPlaying = false
+		res := updateResult{fallbackAdvanceIdx: -1, gen: z.generation}
+		if NormalizePlaybackState(z.status.State) != prevState || z.status.Volume != prevVol || z.status.Muted != prevMute {
+			z.revision++
+			res.emitPlayback = true
+			res.playbackEv = m.playbackEventLocked(z)
+		}
+		return res
+	}
+
 	// Ignore stale track reports (URI belongs to neither the current nor preloaded track).
 	staleTrack := !isNativeQueue && z.currentURI != "" && st.TrackURI != "" &&
 		st.TrackURI != z.currentURI &&
@@ -866,6 +896,32 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		res.emitQueue = true
 	}
 	return res
+}
+
+// trackURIBelongsToTacetLocked reports whether a renderer's reported TrackURI
+// originates from tacet's queue rather than an external source (Spotify, AirPlay, etc.).
+func trackURIBelongsToTacetLocked(z *zone, uri string) bool {
+	if uri == "" {
+		return false
+	}
+	if z.currentURI != "" && uri == z.currentURI {
+		return true
+	}
+	if z.nextURI != "" && uri == z.nextURI {
+		return true
+	}
+	if strings.Contains(uri, "/media/local/") || strings.Contains(uri, "/media/qobuz/") {
+		return true
+	}
+	// Linkplay and UPnP renderers may report the post-302 redirected Qobuz CDN URL.
+	if strings.Contains(strings.ToLower(uri), "qobuz") {
+		for _, it := range z.queue {
+			if it.Track.Source == library.SourceQobuz {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // matchTrackURIInQueue matches a renderer's reported TrackURI (e.g.

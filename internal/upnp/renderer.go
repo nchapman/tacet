@@ -159,9 +159,12 @@ type Renderer struct {
 	cm     *av1.ConnectionManager1
 }
 
-func newSOAPHTTPClient() http.Client {
+// NewSOAPHTTPClient constructs an HTTP client configured for UPnP SOAP
+// requests: keep-alives disabled (embedded libupnp drops pooled sockets) and
+// redirects disallowed.
+func NewSOAPHTTPClient(timeout time.Duration) http.Client {
 	return http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return errors.New("UPnP HTTP redirects are disallowed")
 		},
@@ -177,6 +180,10 @@ func newSOAPHTTPClient() http.Client {
 	}
 }
 
+func newSOAPHTTPClient() http.Client {
+	return NewSOAPHTTPClient(5 * time.Second)
+}
+
 func isTransientConnErr(err error) bool {
 	if err == nil {
 		return false
@@ -186,6 +193,14 @@ func isTransientConnErr(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "EOF") || strings.Contains(msg, "connection reset by peer")
+}
+
+// DoSOAP executes fn serialized under this renderer's SOAP mutex with a single
+// automatic retry on transient EOF / connection-reset errors. Wrappers such as
+// internal/linkplay use this so PlayQueue:1 SOAP calls never collide with
+// AVTransport/RenderingControl calls on embedded libupnp servers.
+func (r *Renderer) DoSOAP(ctx context.Context, fn func() error) error {
+	return r.withSOAP(ctx, fn)
 }
 
 func (r *Renderer) withSOAP(ctx context.Context, fn func() error) error {

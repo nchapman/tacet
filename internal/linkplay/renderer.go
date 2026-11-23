@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	playQueueNS   = "urn:schemas-wiimu-com:service:PlayQueue:1"
-	tacetListName = "tacet"
-	currentQueue  = "CurrentQueue"
+	playQueueNS       = "urn:schemas-wiimu-com:service:PlayQueue:1"
+	tacetListName     = "tacet"
+	currentQueue      = "CurrentQueue"
+	linkplayBatchSize = 50
 )
 
 // Renderer wraps a Linkplay UPnP Renderer (WiiM, AudioPro, Arylic, etc.) and
@@ -29,7 +30,7 @@ type Renderer struct {
 	*upnp.Renderer
 	playQueueURL string
 	httpClient   *http.Client
-	soapMu       sync.Mutex
+	fallbackMu   sync.Mutex
 }
 
 // Wrap promotes r to a Linkplay *Renderer when the UPnP device advertises
@@ -43,12 +44,11 @@ func Wrap(r *upnp.Renderer) upnp.Controller {
 
 // NewRenderer constructs a Linkplay Renderer for an explicit PlayQueue control URL.
 func NewRenderer(base *upnp.Renderer, playQueueURL string) *Renderer {
+	client := upnp.NewSOAPHTTPClient(8 * time.Second)
 	return &Renderer{
 		Renderer:     base,
 		playQueueURL: playQueueURL,
-		httpClient: &http.Client{
-			Timeout: 8 * time.Second,
-		},
+		httpClient:   &client,
 	}
 }
 
@@ -68,10 +68,23 @@ func (r *Renderer) ReplaceQueue(ctx context.Context, items []upnp.MediaItem, sta
 	if startIndex < 0 || startIndex >= len(items) {
 		startIndex = 0
 	}
-	qctx := buildQueueContextXML(tacetListName, items, r.sinkProtocols())
+	firstEnd := len(items)
+	if firstEnd > linkplayBatchSize {
+		firstEnd = linkplayBatchSize
+	}
+	qctx := buildQueueContextXML(tacetListName, items[:firstEnd], r.sinkProtocols())
 	body := fmt.Sprintf("<QueueContext>%s</QueueContext>", xmlEscape(qctx))
 	if _, err := r.soapCall(ctx, "CreateQueue", body); err != nil {
 		return fmt.Errorf("linkplay CreateQueue: %w", err)
+	}
+	for start := firstEnd; start < len(items); start += linkplayBatchSize {
+		end := start + linkplayBatchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		if err := r.AppendQueue(ctx, items[start:end]); err != nil {
+			return err
+		}
 	}
 	// Linkplay PlayQueue indices are 1-based.
 	playBody := fmt.Sprintf("<QueueName>%s</QueueName><Index>%d</Index>", xmlEscape(tacetListName), startIndex+1)
@@ -178,34 +191,47 @@ func (r *Renderer) getQueueIndex(ctx context.Context) (int, bool) {
 }
 
 func (r *Renderer) soapCall(ctx context.Context, action, innerBody string) (string, error) {
-	r.soapMu.Lock()
-	defer r.soapMu.Unlock()
-
 	env := fmt.Sprintf(
 		`<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:%s xmlns:u="%s">%s</u:%s></s:Body></s:Envelope>`,
 		action, playQueueNS, innerBody, action,
 	)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.playQueueURL, strings.NewReader(env))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", `text/xml; charset="utf-8"`)
-	req.Header.Set("SOAPACTION", fmt.Sprintf(`"%s#%s"`, playQueueNS, action))
+	var out string
+	doReq := func() error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.playQueueURL, strings.NewReader(env))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", `text/xml; charset="utf-8"`)
+		req.Header.Set("SOAPACTION", fmt.Sprintf(`"%s#%s"`, playQueueNS, action))
 
-	resp, err := r.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
+		resp, err := r.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = resp.Body.Close() }()
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("SOAP %s HTTP %d: %s", action, resp.StatusCode, strings.TrimSpace(string(data)))
+		}
+		out = string(data)
+		return nil
+	}
+	var err error
+	if r.Renderer != nil {
+		err = r.DoSOAP(ctx, doReq)
+	} else {
+		r.fallbackMu.Lock()
+		err = doReq()
+		r.fallbackMu.Unlock()
+	}
 	if err != nil {
 		return "", err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("SOAP %s HTTP %d: %s", action, resp.StatusCode, strings.TrimSpace(string(data)))
-	}
-	return string(data), nil
+	return out, nil
 }
 
 func (r *Renderer) sinkProtocols() []string {

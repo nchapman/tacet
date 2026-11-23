@@ -110,7 +110,7 @@ func (m *Manager) ReplaceQueue(ctx context.Context, zoneID string, tracks []libr
 		}
 		// Validate every track BEFORE mutating z.queue so an invalid or
 		// unauthenticated track never wipes the active queue.
-		if _, _, lerr := m.buildQueueMediaItems(ctrl, items, quality); lerr != nil {
+		if _, _, lerr := m.buildQueueMediaItems(ctrl, items, startIndex, quality); lerr != nil {
 			m.emitZoneError(zoneID, lerr)
 			return ZoneSnapshot{}, lerr
 		}
@@ -277,7 +277,7 @@ func (m *Manager) AddQueueItems(ctx context.Context, zoneID string, tracks []lib
 				return ZoneSnapshot{}, err
 			}
 		} else if !wasEmpty {
-			if addedMedia, _, merr := m.buildQueueMediaItems(ctrl, added, quality); merr == nil {
+			if addedMedia, _, merr := m.buildQueueMediaItems(ctrl, added, 0, quality); merr == nil {
 				if err := qc.AppendQueue(ctx, addedMedia); err == nil && insertAt < prevLen {
 					for i := 0; i < len(addedMedia); i++ {
 						_ = qc.MoveQueueItem(ctx, prevLen+i, insertAt+i)
@@ -520,11 +520,9 @@ func (m *Manager) MoveItem(zoneID, itemID string, toIndex int) (ZoneSnapshot, er
 	m.mu.Unlock()
 
 	if qc, ok := ctrl.(upnp.QueueController); ok && fromIndex != toIndex {
-		go func(from, to int) {
-			mctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			_ = qc.MoveQueueItem(mctx, from, to)
-		}(fromIndex, toIndex)
+		mctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = qc.MoveQueueItem(mctx, fromIndex, toIndex)
+		cancel()
 	} else if clearedPreload {
 		m.clearNextPreloadAsync(ctrl)
 	}
@@ -543,8 +541,10 @@ func (m *Manager) ClearQueue(ctx context.Context, zoneID string) (ZoneSnapshot, 
 	defer z.opMu.Unlock()
 
 	m.mu.Lock()
+	prevLen := len(z.queue)
 	z.queue = make([]Item, 0)
 	z.originalQueue = nil
+	delete(m.savedQueues, zoneID)
 	z.currentIndex = -1
 	z.nextPreloaded = false
 	z.nextPreloading = false
@@ -567,6 +567,9 @@ func (m *Manager) ClearQueue(ctx context.Context, zoneID string) (ZoneSnapshot, 
 	snap := m.snapshotLocked(z)
 	m.mu.Unlock()
 
+	if qc, ok := ctrl.(upnp.QueueController); ok && prevLen > 0 {
+		_ = qc.RemoveQueueRange(ctx, 0, prevLen-1)
+	}
 	_ = ctrl.Stop(ctx)
 	m.emit("zone.queue", zoneID, qEv)
 	m.emit("zone.playback", zoneID, pbEv)
@@ -949,12 +952,40 @@ func (m *Manager) SetShuffle(_ context.Context, zoneID string, enabled bool) (Zo
 	clearedPreload := invalidatePreloadLocked(z)
 	z.revision++
 	ctrl := z.ctrl
+	queueCopy := append([]Item(nil), z.queue...)
+	curIdx := z.currentIndex
+	quality := z.audioQuality
+	repeat := z.repeat
+	active := z.currentURI != "" && (z.status.State == "PLAYING" || z.status.State == "PAUSED_PLAYBACK" || z.status.State == "TRANSITIONING")
+	if _, isQC := ctrl.(upnp.QueueController); isQC && !active {
+		// Force next Play/Jump to reload the reordered queue onto the device.
+		z.currentURI = ""
+	}
 	qEv := m.queueEventLocked(z)
 	pbEv := m.playbackEventLocked(z)
 	snap := m.snapshotLocked(z)
 	m.mu.Unlock()
 
-	if clearedPreload {
+	if qc, ok := ctrl.(upnp.QueueController); ok && active && len(queueCopy) > 0 {
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if curIdx >= 0 && curIdx < len(queueCopy) {
+			// Rebuild upcoming tracks in-place on the device without interrupting
+			// the currently playing track; if the current track moved (e.g. unshuffle),
+			// reload the queue cleanly at curIdx.
+			if enabled && curIdx == 0 && len(queueCopy) > 1 {
+				_ = qc.RemoveQueueRange(sctx, 1, len(queueCopy)-1)
+				if tail, _, err := m.buildQueueMediaItems(ctrl, queueCopy[1:], 0, quality); err == nil {
+					_ = qc.AppendQueue(sctx, tail)
+				}
+			} else {
+				if all, _, err := m.buildQueueMediaItems(ctrl, queueCopy, curIdx, quality); err == nil {
+					_ = qc.ReplaceQueue(sctx, all, curIdx)
+					_ = qc.SetLoopMode(sctx, string(repeat), false)
+				}
+			}
+		}
+		cancel()
+	} else if clearedPreload {
 		m.clearNextPreloadAsync(ctrl)
 	}
 	m.emit("zone.queue", zoneID, qEv)
@@ -1005,7 +1036,23 @@ func (m *Manager) SetRepeat(ctx context.Context, zoneID string, mode RepeatMode)
 }
 
 func (m *Manager) playDeviceQueueIndex(ctx context.Context, zoneID string, z *zone, qc upnp.QueueController, idx int, gen uint64) error {
+	m.mu.RLock()
+	needsReload := z.currentURI == "" || z.status.State == "STOPPED" || z.status.State == "NO_MEDIA_PRESENT"
+	queueCopy := append([]Item(nil), z.queue...)
+	quality := z.audioQuality
+	repeat := z.repeat
+	ctrl := z.ctrl
+	m.mu.RUnlock()
+
+	if needsReload && len(queueCopy) > 0 && idx >= 0 && idx < len(queueCopy) {
+		return m.replaceDeviceQueueAndPlay(ctx, z, queueCopy, idx, gen, ctrl, qc, quality, repeat)
+	}
 	if err := qc.PlayIndex(ctx, idx); err != nil {
+		// Device queue may be missing/stale (e.g. after speaker reboot or server restart);
+		// fall back to reloading the full queue at idx before surfacing an error.
+		if len(queueCopy) > 0 && idx >= 0 && idx < len(queueCopy) {
+			return m.replaceDeviceQueueAndPlay(ctx, z, queueCopy, idx, gen, ctrl, qc, quality, repeat)
+		}
 		werr := wrapRendererErr("PlayIndex", err)
 		m.emitZoneError(zoneID, werr)
 		return werr
