@@ -1095,7 +1095,6 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/QobuzArtist" }
         "400": { $ref: "#/components/responses/ErrorResponse" }
-        "400": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/players:
     post:
       summary: Register or reattach any HTTP/SSE audio player endpoint as a controllable zone
@@ -1314,10 +1313,10 @@ components:
         available: { type: boolean }
     AlbumCredit:
       type: object
-      required: [role, names]
+      required: [name, roles]
       properties:
-        role: { type: string }
-        names:
+        name: { type: string }
+        roles:
           type: array
           items: { type: string }
     Album:

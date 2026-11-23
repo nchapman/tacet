@@ -134,7 +134,7 @@ func (s *Server) handleSimilarAlbums(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 			}
-			if qobuzID == "" {
+			if qobuzID == "" && !s.qobuz.IsRateLimited() {
 				matchCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 				matched, matchErr := s.qobuz.MatchAlbum(matchCtx, alb.Artist, alb.Title)
 				cancel()

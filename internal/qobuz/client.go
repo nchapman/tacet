@@ -1361,6 +1361,14 @@ func parseRetryAfter(raw string, now time.Time) (time.Duration, bool) {
 	return 0, false
 }
 
+// IsRateLimited reports whether the client is currently in an active upstream
+// 429/503 cooldown window so best-effort callers can fail fast instead of
+// waiting out a request timeout.
+func (c *Client) IsRateLimited() bool {
+	until := c.cooldownUntil.Load()
+	return until > 0 && time.Now().UnixNano() < until
+}
+
 func (c *Client) waitForCooldown(ctx context.Context) error {
 	until := c.cooldownUntil.Load()
 	if until == 0 {
