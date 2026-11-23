@@ -224,6 +224,17 @@ func invalidatePreloadLocked(z *zone) bool {
 // SSE codes and retryable flags.
 type ErrorClassifier func(err error) (code string, retryable bool, matched bool)
 
+// SavedZoneQueue is the persisted per-zone queue snapshot stored in SQLite so
+// queues survive server restarts and resync with live speaker playback.
+type SavedZoneQueue struct {
+	Tracks       []library.Track `json:"tracks"`
+	CurrentIndex int             `json:"currentIndex"`
+	Repeat       RepeatMode      `json:"repeat,omitempty"`
+	Shuffle      bool            `json:"shuffle,omitempty"`
+}
+
+const maxPersistedZoneTracks = 500
+
 // Manager coordinates discovered renderers, per-zone queues, gapless preloading,
 // GENA event updates, and split SSE broadcasts to connected remote clients.
 type Manager struct {
@@ -231,6 +242,7 @@ type Manager struct {
 	zones              map[string]*zone
 	zoneOrder          []string
 	savedQualities     map[string]AudioQuality
+	savedQueues        map[string]SavedZoneQueue
 	transcodeAvailable bool
 	streamMode         StreamMode
 	httpPort           int
@@ -239,6 +251,10 @@ type Manager struct {
 	gena               *upnp.GENAClient
 	errorClassifier    ErrorClassifier
 	onTrackPlayed      func(library.Track)
+	onQueuePersist     func(map[string]SavedZoneQueue)
+	persistMu          sync.Mutex
+	persistTimer       *time.Timer
+	persistDirty       bool
 	runCtx             context.Context
 
 	itemSeq  atomic.Uint64
@@ -256,6 +272,7 @@ func NewManager(httpPort int, publicBaseURL string, qb *qobuz.Client) *Manager {
 	return &Manager{
 		zones:          make(map[string]*zone),
 		savedQualities: make(map[string]AudioQuality),
+		savedQueues:    make(map[string]SavedZoneQueue),
 		streamMode:     StreamModeDirect,
 		httpPort:       httpPort,
 		publicBaseURL:  strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
@@ -431,6 +448,135 @@ func (m *Manager) LoadZoneQualities(saved map[string]AudioQuality) {
 	}
 }
 
+// LoadZoneQueues pre-populates persisted per-zone queues loaded from SQLite
+// before renderers are discovered on startup.
+func (m *Manager) LoadZoneQueues(saved map[string]SavedZoneQueue) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, sq := range saved {
+		if len(sq.Tracks) == 0 {
+			continue
+		}
+		cp := SavedZoneQueue{
+			Tracks:       append([]library.Track(nil), sq.Tracks...),
+			CurrentIndex: sq.CurrentIndex,
+			Repeat:       sq.Repeat,
+			Shuffle:      sq.Shuffle,
+		}
+		m.savedQueues[id] = cp
+		if z, ok := m.zones[id]; ok && len(z.queue) == 0 {
+			m.hydrateZoneQueueLocked(z, cp)
+		}
+	}
+}
+
+func (m *Manager) hydrateZoneQueueLocked(z *zone, sq SavedZoneQueue) {
+	items := make([]Item, len(sq.Tracks))
+	for i, tr := range sq.Tracks {
+		items[i] = Item{ItemID: m.nextItemID(), Track: tr}
+	}
+	idx := sq.CurrentIndex
+	if idx < 0 || idx >= len(items) {
+		idx = 0
+	}
+	z.queue = items
+	z.currentIndex = idx
+	if rep, ok := ParseRepeatMode(string(sq.Repeat)); ok {
+		z.repeat = rep
+	}
+	z.shuffle = sq.Shuffle
+	// Zero loadedAt so the very first Status() poll snaps currentIndex to live playback.
+	z.loadedAt = time.Time{}
+}
+
+// SavedZoneQueues returns a snapshot of all non-empty zone queues for persistence.
+func (m *Manager) SavedZoneQueues() map[string]SavedZoneQueue {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]SavedZoneQueue, len(m.savedQueues)+len(m.zones))
+	for id, sq := range m.savedQueues {
+		if len(sq.Tracks) > 0 {
+			out[id] = sq
+		}
+	}
+	for id, z := range m.zones {
+		if z.ctrl.Info().Kind == "player" {
+			// Ephemeral browser players get a new ID per session unless reused; still skip empty.
+			if len(z.queue) == 0 {
+				delete(out, id)
+				continue
+			}
+		}
+		if len(z.queue) == 0 {
+			delete(out, id)
+			continue
+		}
+		n := len(z.queue)
+		if n > maxPersistedZoneTracks {
+			n = maxPersistedZoneTracks
+		}
+		tracks := make([]library.Track, n)
+		for i := 0; i < n; i++ {
+			tracks[i] = z.queue[i].Track
+		}
+		idx := z.currentIndex
+		if idx >= n {
+			idx = n - 1
+		}
+		out[id] = SavedZoneQueue{
+			Tracks:       tracks,
+			CurrentIndex: idx,
+			Repeat:       z.repeat,
+			Shuffle:      z.shuffle,
+		}
+	}
+	return out
+}
+
+// SetQueuePersistFunc registers a callback invoked (debounced) whenever a zone's
+// queue, currentIndex, repeat, or shuffle changes.
+func (m *Manager) SetQueuePersistFunc(fn func(map[string]SavedZoneQueue)) {
+	m.mu.Lock()
+	m.onQueuePersist = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) scheduleQueuePersist() {
+	m.mu.RLock()
+	hasFn := m.onQueuePersist != nil
+	m.mu.RUnlock()
+	if !hasFn {
+		return
+	}
+	m.persistMu.Lock()
+	m.persistDirty = true
+	if m.persistTimer == nil {
+		m.persistTimer = time.AfterFunc(500*time.Millisecond, m.FlushQueuePersist)
+	}
+	m.persistMu.Unlock()
+}
+
+// FlushQueuePersist immediately persists any pending zone queue changes.
+func (m *Manager) FlushQueuePersist() {
+	m.persistMu.Lock()
+	if m.persistTimer != nil {
+		m.persistTimer.Stop()
+		m.persistTimer = nil
+	}
+	dirty := m.persistDirty
+	m.persistDirty = false
+	m.persistMu.Unlock()
+	if !dirty {
+		return
+	}
+	m.mu.RLock()
+	fn := m.onQueuePersist
+	m.mu.RUnlock()
+	if fn != nil {
+		fn(m.SavedZoneQueues())
+	}
+}
+
 // SavedZoneQualities returns a copy of all non-default per-endpoint quality settings for persistence.
 func (m *Manager) SavedZoneQualities() map[string]AudioQuality {
 	m.mu.RLock()
@@ -524,7 +670,7 @@ func (m *Manager) RegisterRenderer(ctrl upnp.Controller) {
 		if savedQ == "" {
 			savedQ = AudioQualityOriginal
 		}
-		m.zones[info.ID] = &zone{
+		z := &zone{
 			ctrl:               ctrl,
 			currentIndex:       -1,
 			revision:           1,
@@ -536,6 +682,10 @@ func (m *Manager) RegisterRenderer(ctrl upnp.Controller) {
 				HasVolume: info.HasVolume,
 			},
 		}
+		if sq, ok := m.savedQueues[info.ID]; ok && len(sq.Tracks) > 0 {
+			m.hydrateZoneQueueLocked(z, sq)
+		}
+		m.zones[info.ID] = z
 		m.zoneOrder = append(m.zoneOrder, info.ID)
 	}
 	if unchanged {
@@ -825,6 +975,9 @@ func (m *Manager) Publish(eventType string, data any) {
 }
 
 func (m *Manager) emit(eventType, zoneID string, data any) {
+	if eventType == "zone.queue" {
+		m.scheduleQueuePersist()
+	}
 	ev := Event{
 		ID:     m.eventSeq.Add(1),
 		Type:   eventType,

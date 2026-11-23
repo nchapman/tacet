@@ -543,6 +543,7 @@ type updateResult struct {
 	fallbackAdvanceIdx int
 	gen                uint64
 	emitPlayback       bool
+	emitQueue          bool
 	emitVolume         bool
 	playbackEv         PlaybackEvent
 	volumeEv           VolumeEvent
@@ -649,6 +650,9 @@ func (m *Manager) finishUpdate(ctx context.Context, z *zone, zoneID string, res 
 	if res.emitPlayback {
 		m.emit("zone.playback", zoneID, res.playbackEv)
 	}
+	if res.emitQueue {
+		m.scheduleQueuePersist()
+	}
 	if res.playedTrack != nil {
 		m.mu.RLock()
 		onPlayed := m.onTrackPlayed
@@ -721,8 +725,8 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		gen:                z.generation,
 	}
 
-	// 1. Detect device-managed queue transition (Linkplay PlayQueue / Cast Media Queue)
-	// or virtual-queue gapless transition (UPnP SetNextAVTransportURI).
+	// 1. Detect device-managed queue transition (Linkplay PlayQueue / Cast Media Queue),
+	// restored-zone live playback resync, or virtual-queue gapless transition.
 	if isNativeQueue && st.HasQueueIndex && st.QueueIndex >= 0 && st.QueueIndex < len(z.queue) {
 		if st.QueueIndex != z.currentIndex && time.Since(z.loadedAt) > 1500*time.Millisecond {
 			z.currentIndex = st.QueueIndex
@@ -730,6 +734,16 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 				z.currentURI = st.TrackURI
 			}
 			z.loadedAt = time.Now()
+			z.positionUpdatedAt = now
+		} else if z.currentURI == "" && st.TrackURI != "" {
+			z.currentURI = st.TrackURI
+		}
+	} else if z.currentURI == "" && st.TrackURI != "" && len(z.queue) > 0 {
+		// Freshly restored zone after server restart: match the renderer's active
+		// TrackURI against our restored queue so playback/index resync seamlessly.
+		if matched := matchTrackURIInQueue(st.TrackURI, z.queue); matched >= 0 {
+			z.currentIndex = matched
+			z.currentURI = st.TrackURI
 			z.positionUpdatedAt = now
 		}
 	} else if !isNativeQueue && z.nextPreloaded && z.nextURI != "" && z.status.TrackURI == z.nextURI {
@@ -848,7 +862,36 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		res.playbackEv = m.playbackEventLocked(z)
 	}
 
+	if z.currentIndex != prevIdx {
+		res.emitQueue = true
+	}
 	return res
+}
+
+// matchTrackURIInQueue matches a renderer's reported TrackURI (e.g.
+// /media/local/local:abc.flac or /media/qobuz/12345.flac?handoff=1) against a
+// restored queue so playback resyncs after a server restart.
+func matchTrackURIInQueue(uri string, items []Item) int {
+	for i, it := range items {
+		tr := it.Track
+		switch tr.Source {
+		case library.SourceLocal:
+			if tr.ID != "" && strings.Contains(uri, "/media/local/"+tr.ID) {
+				return i
+			}
+		case library.SourceQobuz:
+			qID := tr.QobuzTrackID
+			if qID <= 0 {
+				if parsed, err := strconv.ParseInt(strings.TrimPrefix(tr.ID, "qobuz:"), 10, 64); err == nil {
+					qID = parsed
+				}
+			}
+			if qID > 0 && strings.Contains(uri, "/media/qobuz/"+strconv.FormatInt(qID, 10)) {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func (m *Manager) preloadNext(ctx context.Context, z *zone, track library.Track, gen, pgen uint64) {

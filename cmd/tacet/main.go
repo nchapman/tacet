@@ -143,6 +143,24 @@ func run() error {
 			mgr.LoadZoneQualities(savedQ)
 		}
 	}
+	if rawQueues, ok, prefErr := cat.GetPref(ctx, library.PrefZoneQueues); prefErr == nil && ok && strings.TrimSpace(rawQueues) != "" {
+		var savedQueues map[string]queue.SavedZoneQueue
+		if uErr := json.Unmarshal([]byte(rawQueues), &savedQueues); uErr == nil {
+			mgr.LoadZoneQueues(savedQueues)
+		}
+	}
+	mgr.SetQueuePersistFunc(func(queues map[string]queue.SavedZoneQueue) {
+		encoded, merr := json.Marshal(queues)
+		if merr != nil {
+			return
+		}
+		pctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if perr := cat.SetPref(pctx, library.PrefZoneQueues, string(encoded)); perr != nil {
+			log.Printf("warning: failed to persist zone queues: %v", perr)
+		}
+	})
+	defer mgr.FlushQueuePersist()
 	if err = mgr.SetStreamMode(queue.StreamMode(*streamMode)); err != nil {
 		return fmt.Errorf("invalid --stream-mode: %w", err)
 	}

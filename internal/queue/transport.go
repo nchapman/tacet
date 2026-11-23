@@ -594,18 +594,26 @@ func (m *Manager) Play(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	if idx < 0 && len(z.queue) > 0 {
 		idx = 0
 	}
-	needsReload := (z.status.State == "STOPPED" || z.status.State == "NO_MEDIA_PRESENT" || z.currentURI == "") &&
+	needsReload := (z.status.State == "STOPPED" || z.status.State == "NO_MEDIA_PRESENT" ||
+		(z.currentURI == "" && z.status.State != "PAUSED_PLAYBACK")) &&
 		idx >= 0 && idx < len(z.queue)
 	var gen uint64
 	if needsReload {
 		z.generation++
 		gen = z.generation
 	}
+	queueCopy := append([]Item(nil), z.queue...)
+	quality := z.audioQuality
+	repeat := z.repeat
 	ctrl := z.ctrl
 	m.mu.Unlock()
 
 	if needsReload {
-		if err := m.loadAndPlay(ctx, z, idx, gen); err != nil {
+		if qc, ok := ctrl.(upnp.QueueController); ok {
+			if err := m.replaceDeviceQueueAndPlay(ctx, z, queueCopy, idx, gen, ctrl, qc, quality, repeat); err != nil {
+				return ZoneSnapshot{}, err
+			}
+		} else if err := m.loadAndPlay(ctx, z, idx, gen); err != nil {
 			return ZoneSnapshot{}, err
 		}
 		snap, _ := m.Zone(zoneID)
@@ -991,6 +999,7 @@ func (m *Manager) SetRepeat(ctx context.Context, zoneID string, mode RepeatMode)
 	} else if clearedPreload {
 		m.clearNextPreloadAsync(ctrl)
 	}
+	m.scheduleQueuePersist()
 	m.emit("zone.playback", zoneID, pbEv)
 	return snap, nil
 }
@@ -1017,6 +1026,7 @@ func (m *Manager) playDeviceQueueIndex(ctx context.Context, zoneID string, z *zo
 	}
 	pbEv := m.playbackEventLocked(z)
 	m.mu.Unlock()
+	m.scheduleQueuePersist()
 	m.emit("zone.playback", zoneID, pbEv)
 	return nil
 }

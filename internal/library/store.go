@@ -26,6 +26,7 @@ const (
 	PrefQobuzMaxQuality        = "qobuz_max_quality"
 	PrefManualRenderers        = "manual_renderers"
 	PrefZoneQualities          = "zone_qualities"
+	PrefZoneQueues             = "zone_queues"
 	PrefLibraryWatchEnabled    = "library_watch_enabled"
 	PrefLibraryScanIntervalMin = "library_scan_interval_min"
 )
