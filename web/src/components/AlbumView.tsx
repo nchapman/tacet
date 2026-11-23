@@ -261,7 +261,7 @@ export function AlbumView({
               )}
             </div>
             {album.awards && album.awards.length > 0 && (
-              <div className="mt-3 flex flex-wrap items-center justify-center sm:justify-start gap-1.5">
+              <div className="mt-3.5 flex flex-wrap items-center justify-center sm:justify-start gap-2">
                 {album.awards.slice(0, 2).map((aw) => (
                   <span
                     key={aw}
@@ -280,7 +280,7 @@ export function AlbumView({
                 title={album.title}
                 subtitle={[album.artist, album.year, album.label].filter(Boolean).join(" · ")}
                 targetWords={35}
-                className="mt-5 max-w-2xl"
+                className={cn("max-w-2xl", album.awards?.length ? "mt-3.5" : "mt-5")}
               />
             )}
           </div>
