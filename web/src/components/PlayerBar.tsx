@@ -20,8 +20,8 @@ import { fmtDuration, fmtOutputQuality, isHiResOutput } from "@/api/format";
 import type { AudioQuality, RepeatMode, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
 import { AlbumArt, AmbientBackdrop } from "@/components/ui/artwork";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SignalBadge } from "@/components/ui/SignalBadge";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
@@ -136,6 +136,7 @@ export const PlayerBar = memo(function PlayerBar({
       : activeZone.renderer.name
     : "No Device";
   const qualLabel = track ? fmtOutputQuality(track, activeZone?.activeQuality) : "";
+  const trackProvider = track ? track.provider || track.source : "";
   const hiRes = track ? isHiResOutput(track, activeZone?.activeQuality) : false;
   const progressPct = duration > 0 ? Math.min(100, (shownPos / duration) * 100) : 0;
 
@@ -196,13 +197,8 @@ export const PlayerBar = memo(function PlayerBar({
                   >
                     {track.artist}
                   </button>
-                  {qualLabel && (
-                    <Badge
-                      variant={hiRes ? "hires" : "muted"}
-                      className="shrink-0 text-[10px] px-1.5 py-0 leading-4"
-                    >
-                      {qualLabel}
-                    </Badge>
+                  {(trackProvider || qualLabel) && (
+                    <SignalBadge provider={trackProvider} format={qualLabel} hiRes={hiRes} size="sm" />
                   )}
                 </div>
               </>
@@ -584,10 +580,8 @@ export const PlayerBar = memo(function PlayerBar({
                   />
                   <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-[11px] font-mono tabular-nums text-muted-foreground">
                     <span>{fmtDuration(shownPos)}</span>
-                    {qualLabel ? (
-                      <Badge variant={hiRes ? "hires" : "muted"} className="px-2 py-0 text-[10px] leading-4 whitespace-nowrap">
-                        {qualLabel}
-                      </Badge>
+                    {trackProvider || qualLabel ? (
+                      <SignalBadge provider={trackProvider} format={qualLabel} hiRes={hiRes} size="sm" />
                     ) : (
                       <span />
                     )}

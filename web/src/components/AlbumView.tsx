@@ -6,13 +6,13 @@ import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format"
 import type { Album, AlbumVersion, QueuePosition, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { EditorialNote } from "@/components/ui/EditorialNote";
 import { ExplicitBadge } from "@/components/ui/ExplicitBadge";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { PlayingBars } from "@/components/ui/PlayingBars";
+import { SignalBadge } from "@/components/ui/SignalBadge";
 import { QOBUZ_ALBUM_GC_TIME_MS, QOBUZ_ALBUM_STALE_TIME_MS, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -174,10 +174,7 @@ export function AlbumView({
           <ArrowLeft className="h-4 w-4" />
           <span>{backLabel}</span>
         </Button>
-        <div className="flex items-center gap-2">
-          <Badge variant={provider === "local" ? "local" : "qobuz"}>{sourceLabel(album.provider, album.source)}</Badge>
-          {qLabel && <Badge variant={hiRes ? "hires" : "muted"}>{qLabel}</Badge>}
-        </div>
+        <SignalBadge provider={album.provider || album.source} format={qLabel} hiRes={hiRes} size="md" />
       </PageHeader>
 
       <div className="relative z-10 px-4 sm:px-8 pt-6 sm:pt-8">
