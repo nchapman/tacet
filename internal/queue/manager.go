@@ -188,6 +188,7 @@ type zone struct {
 	status             upnp.TransportStatus
 	positionUpdatedAt  time.Time
 	clockAnchored      bool
+	unanchoredAt       time.Time
 	lastPlaybackEmit   time.Time
 	currentURI         string
 	nextURI            string

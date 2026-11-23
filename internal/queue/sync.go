@@ -52,6 +52,7 @@ func (m *Manager) replaceDeviceQueueAndPlay(
 		z.status.TrackURI = curMedia.URL
 		z.positionUpdatedAt = time.Now().UTC()
 		z.clockAnchored = false
+		z.unanchoredAt = z.positionUpdatedAt
 		z.lastPlaybackEmit = z.positionUpdatedAt
 		z.wasPlaying = false
 		z.loadedAt = time.Now()
@@ -544,7 +545,7 @@ func (m *Manager) pollTick(ctx context.Context) {
 			if !z.clockAnchored {
 				// Poll at 1s until the renderer reports advancing audio (Position > 0)
 				// so we can anchor the client clock cleanly; cap at 15s for live streams.
-				if z.loadedAt.IsZero() || now.Sub(z.loadedAt) <= 15*time.Second {
+				if z.unanchoredAt.IsZero() || now.Sub(z.unanchoredAt) <= 15*time.Second {
 					interval = 1 * time.Second
 				} else {
 					interval = 20 * time.Second
@@ -835,9 +836,13 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 	// event already carries an exact decoded timestamp).
 	kind := z.ctrl.Info().Kind
 	if st.State != "PLAYING" {
+		if z.clockAnchored || z.unanchoredAt.IsZero() {
+			z.unanchoredAt = now
+		}
 		z.clockAnchored = false
 	} else if !staleTrack && st.HasPosition && (st.Position > 0 || kind == "player" || kind == "cast") {
 		z.clockAnchored = true
+		z.unanchoredAt = time.Time{}
 	}
 	if st.HasVolValue {
 		z.status.Volume = st.Volume

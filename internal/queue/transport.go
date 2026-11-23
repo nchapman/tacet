@@ -845,6 +845,7 @@ func (m *Manager) seekLockedOp(ctx context.Context, zoneID string, z *zone, posi
 	z.status.Position = d
 	z.positionUpdatedAt = time.Now().UTC()
 	z.clockAnchored = z.status.State == "PLAYING"
+	z.unanchoredAt = z.positionUpdatedAt
 	z.revision++
 	pbEv := m.playbackEventLocked(z)
 	snap := m.snapshotLocked(z)
@@ -1079,6 +1080,7 @@ func (m *Manager) playDeviceQueueIndex(ctx context.Context, zoneID string, z *zo
 		}
 		z.positionUpdatedAt = time.Now().UTC()
 		z.clockAnchored = false
+		z.unanchoredAt = z.positionUpdatedAt
 		z.lastPlaybackEmit = z.positionUpdatedAt
 		z.wasPlaying = false
 		z.loadedAt = time.Now()
