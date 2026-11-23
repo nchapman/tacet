@@ -224,6 +224,15 @@ func buildRenderer(ctx context.Context, root *goupnp.RootDevice, loc *url.URL, l
 		}
 	}
 
+	var playQueueControlURL string
+	root.Device.VisitServices(func(s *goupnp.Service) {
+		if strings.EqualFold(s.ServiceType, "urn:schemas-wiimu-com:service:PlayQueue:1") && s.ControlURL.Ok {
+			if pinned, err := validateRendererURL(ctx, s.ControlURL.URL.String()); err == nil {
+				playQueueControlURL = pinned.String()
+			}
+		}
+	})
+
 	id := strings.TrimSpace(root.Device.UDN)
 	if id == "" {
 		id = loc.String()
@@ -248,13 +257,15 @@ func buildRenderer(ctx context.Context, root *goupnp.RootDevice, loc *url.URL, l
 			SupportsEvents:  avEventURL != "",
 			SinkProtocols:   sinkProtocols,
 		},
-		supportsSetNext: supportsSetNext,
-		supportsSeek:    supportsSeek,
-		localIP:         outboundIPForHost(ctx, loc, localAddr),
-		avEventURL:      avEventURL,
-		rcEventURL:      rcEventURL,
-		av:              avClients[0],
-		rc:              rcClient,
-		cm:              cmClient,
+		supportsSetNext:     supportsSetNext,
+		supportsSeek:        supportsSeek,
+		localIP:             outboundIPForHost(ctx, loc, localAddr),
+		avControlURL:        avClients[0].SOAPClient.EndpointURL.String(),
+		avEventURL:          avEventURL,
+		rcEventURL:          rcEventURL,
+		playQueueControlURL: playQueueControlURL,
+		av:                  avClients[0],
+		rc:                  rcClient,
+		cm:                  cmClient,
 	}, nil
 }

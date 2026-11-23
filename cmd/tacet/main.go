@@ -21,6 +21,7 @@ import (
 	"tacet/internal/cache"
 	"tacet/internal/cast"
 	"tacet/internal/library"
+	"tacet/internal/linkplay"
 	"tacet/internal/media"
 	"tacet/internal/qobuz"
 	"tacet/internal/queue"
@@ -281,10 +282,11 @@ func run() error {
 				if dev, connErr := upnp.ConnectByURL(cctx, u); connErr != nil {
 					log.Printf("warning: failed to reconnect renderer %s: %v", u, connErr)
 				} else {
-					mgr.RegisterRenderer(dev)
-					info := dev.Info()
-					log.Printf("connected renderer: %s (%s, gapless=%v, events=%v)",
-						info.Name, info.Location, info.SupportsSetNext, info.SupportsEvents)
+					wrapped := linkplay.Wrap(dev)
+					mgr.RegisterRenderer(wrapped)
+					info := wrapped.Info()
+					log.Printf("connected renderer: %s (%s, queue=%v, gapless=%v, events=%v)",
+						info.Name, info.Location, info.SupportsQueue, info.SupportsSetNext, info.SupportsEvents)
 				}
 				cancel()
 			}
@@ -295,7 +297,7 @@ func run() error {
 		ListUPnP: mgr.UPnPRenderers,
 		IsActive: mgr.IsZoneActive,
 		OnFound: func(r *upnp.Renderer) {
-			mgr.RegisterRenderer(r)
+			mgr.RegisterRenderer(linkplay.Wrap(r))
 		},
 		OnRemoved: func(id, _ string) {
 			mgr.UnregisterRenderer(id)

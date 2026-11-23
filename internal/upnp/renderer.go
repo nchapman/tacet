@@ -52,21 +52,24 @@ type RendererInfo struct {
 	SupportsSetNext bool     `json:"supportsSetNext"`
 	SupportsSeek    bool     `json:"supportsSeek"`
 	SupportsEvents  bool     `json:"supportsEvents"`
+	SupportsQueue   bool     `json:"supportsQueue,omitempty"`
 	SinkProtocols   []string `json:"sinkProtocols,omitempty"`
 }
 
 // TransportStatus is a live snapshot of a renderer's playback and volume state.
 type TransportStatus struct {
-	State       string        `json:"state"`
-	Position    time.Duration `json:"position"`
-	Duration    time.Duration `json:"duration"`
-	TrackURI    string        `json:"trackUri,omitempty"`
-	HasPosition bool          `json:"-"`
-	Volume      int           `json:"volume"`
-	HasVolValue bool          `json:"-"`
-	Muted       bool          `json:"muted"`
-	HasMuteVal  bool          `json:"-"`
-	HasVolume   bool          `json:"hasVolume"`
+	State         string        `json:"state"`
+	Position      time.Duration `json:"position"`
+	Duration      time.Duration `json:"duration"`
+	TrackURI      string        `json:"trackUri,omitempty"`
+	HasPosition   bool          `json:"-"`
+	QueueIndex    int           `json:"-"`
+	HasQueueIndex bool          `json:"-"`
+	Volume        int           `json:"volume"`
+	HasVolValue   bool          `json:"-"`
+	Muted         bool          `json:"muted"`
+	HasMuteVal    bool          `json:"-"`
+	HasVolume     bool          `json:"hasVolume"`
 }
 
 // Controller is the transport/volume interface used by the queue manager.
@@ -111,6 +114,32 @@ type PushStatusController interface {
 	PushConnected() bool
 }
 
+// QueueController is optionally implemented by renderers with a native
+// device-managed playback queue (e.g. Linkplay PlayQueue:1, Google Cast Media
+// Queue). Renderers that do not implement QueueController automatically use
+// queue.Manager's virtual queue path (SetURI + SetNextURI + auto-advance).
+//
+// All queue indices are 0-based (matching queue.Manager).
+type QueueController interface {
+	// ReplaceQueue replaces the device's active queue with items and starts
+	// playback at startIndex.
+	ReplaceQueue(ctx context.Context, items []MediaItem, startIndex int) error
+	// AppendQueue appends items to the end of the device's active queue.
+	AppendQueue(ctx context.Context, items []MediaItem) error
+	// RemoveQueueRange removes items at 0-based inclusive indices [start..end].
+	RemoveQueueRange(ctx context.Context, start, end int) error
+	// MoveQueueItem moves the item at 0-based index from to 0-based index to.
+	MoveQueueItem(ctx context.Context, from, to int) error
+	// PlayIndex jumps playback to the 0-based index in the device's active queue.
+	PlayIndex(ctx context.Context, index int) error
+	// Next advances to the next track in the device's active queue.
+	Next(ctx context.Context) error
+	// Previous returns to the previous track in the device's active queue.
+	Previous(ctx context.Context) error
+	// SetLoopMode configures repeat ("off"|"all"|"one") and shuffle on the device.
+	SetLoopMode(ctx context.Context, repeat string, shuffle bool) error
+}
+
 // Renderer wraps huin/goupnp AV1 service clients for a single UPnP/DLNA device.
 type Renderer struct {
 	capMu           sync.RWMutex
@@ -118,9 +147,11 @@ type Renderer struct {
 	supportsSetNext bool
 	supportsSeek    bool
 
-	localIP    string
-	avEventURL string
-	rcEventURL string
+	localIP             string
+	avControlURL        string
+	avEventURL          string
+	rcEventURL          string
+	playQueueControlURL string
 
 	soapMu sync.Mutex // Serializes SOAP calls so embedded libupnp servers (e.g. WiiM) don't drop concurrent requests.
 	av     *av1.AVTransport1
@@ -187,6 +218,31 @@ func (r *Renderer) Info() RendererInfo {
 // RenderingControl (empty string if unavailable).
 func (r *Renderer) EventURLs() (string, string) {
 	return r.avEventURL, r.rcEventURL
+}
+
+// PlayQueueControlURL returns the validated Linkplay PlayQueue:1 SOAP control URL,
+// or empty string if the UPnP device does not advertise PlayQueue:1.
+func (r *Renderer) PlayQueueControlURL() string {
+	return r.playQueueControlURL
+}
+
+// AVTransportControlURL returns the validated AVTransport:1 SOAP control URL.
+func (r *Renderer) AVTransportControlURL() string {
+	return r.avControlURL
+}
+
+// Next sends UPnP AVTransport#Next (used by Linkplay PlayQueue).
+func (r *Renderer) Next(ctx context.Context) error {
+	r.soapMu.Lock()
+	defer r.soapMu.Unlock()
+	return r.av.NextCtx(ctx, 0)
+}
+
+// Previous sends UPnP AVTransport#Previous (used by Linkplay PlayQueue).
+func (r *Renderer) Previous(ctx context.Context) error {
+	r.soapMu.Lock()
+	defer r.soapMu.Unlock()
+	return r.av.PreviousCtx(ctx, 0)
 }
 
 // LocalIP returns the local LAN IP address on the interface that reaches this renderer.

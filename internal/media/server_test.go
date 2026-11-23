@@ -207,3 +207,55 @@ func TestServeCoverArt_HeadersAndErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestServeQobuzHandoffRedirect(t *testing.T) {
+	const signedCDN = "https://streaming-qobuz-std.akamaized.net/file?sig=abc123"
+	fakeQobuz := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/track/getFileUrl" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"track_id":      42,
+				"url":           signedCDN,
+				"format_id":     27,
+				"mime_type":     "audio/flac",
+				"sampling_rate": 96.0,
+				"bit_depth":     24,
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer fakeQobuz.Close()
+
+	qc := qobuz.NewClient(qobuz.Config{
+		BaseURL:   fakeQobuz.URL,
+		AppID:     "test-app",
+		AppSecret: "test-secret",
+		AuthToken: "test-token",
+	})
+
+	mux := http.NewServeMux()
+	NewHandler(library.NewCatalog(t.TempDir()), qc).Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	noRedirect := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := noRedirect.Get(srv.URL + "/media/qobuz/42.flac?handoff=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("got status %d, want 302", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != signedCDN {
+		t.Fatalf("got Location=%q, want %q", loc, signedCDN)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("got Cache-Control=%q, want no-store", cc)
+	}
+}

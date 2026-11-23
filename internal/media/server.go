@@ -383,6 +383,11 @@ func (h *Handler) serveQobuzRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	ti := h.transcoderInfo()
 	spec, transcode := parseTranscodeSpec(r.URL.Query().Get("q"), r.URL.Query().Get("container"), qTrack, 0, ti.HasLibSoxr, ti.HasLibFDKAAC)
+	if !transcode && r.URL.Query().Get("handoff") == "1" {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, stream.URL, http.StatusFound)
+		return
+	}
 	if transcode && r.Method == http.MethodHead {
 		h.streamTranscode(w, r, spec, "", "", nil, nil)
 		return

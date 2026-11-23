@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tacet/internal/library"
+	"tacet/internal/linkplay"
 	"tacet/internal/qobuz"
 	"tacet/internal/queue"
 )
@@ -41,7 +42,7 @@ func (s *Server) handleDiscoverZones(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, dev := range found {
-		s.manager.RegisterRenderer(dev)
+		s.manager.RegisterRenderer(linkplay.Wrap(dev))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"discovered": len(found),
@@ -68,7 +69,7 @@ func (s *Server) handleConnectZone(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	s.manager.RegisterRenderer(dev)
+	s.manager.RegisterRenderer(linkplay.Wrap(dev))
 	manualURL := strings.TrimSpace(dev.Info().Location)
 	if manualURL == "" {
 		manualURL = strings.TrimSpace(body.URL)

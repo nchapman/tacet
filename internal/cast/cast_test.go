@@ -69,6 +69,46 @@ func TestBuildCastLoadPayload(t *testing.T) {
 	}
 }
 
+func TestBuildCastQueueLoadPayload(t *testing.T) {
+	var _ upnp.QueueController = (*Renderer)(nil)
+	p := buildCastQueueLoadPayload([]upnp.MediaItem{
+		{URL: "http://example/1.flac", Title: "One", Artist: "A", Album: "Alb", MIME: "audio/flac"},
+		{URL: "http://example/2.flac", Title: "Two", Artist: "A", Album: "Alb", MIME: "audio/flac"},
+	}, 1)
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal queue payload: %v", err)
+	}
+	var got struct {
+		Type      string `json:"type"`
+		Autoplay  bool   `json:"autoplay"`
+		QueueData struct {
+			StartIndex int    `json:"startIndex"`
+			RepeatMode string `json:"repeatMode"`
+			Items      []struct {
+				Autoplay    bool    `json:"autoplay"`
+				PreloadTime float64 `json:"preloadTime"`
+				Media       struct {
+					ContentID string `json:"contentId"`
+					Metadata  struct {
+						MetadataType int    `json:"metadataType"`
+						Title        string `json:"title"`
+					} `json:"metadata"`
+				} `json:"media"`
+			} `json:"items"`
+		} `json:"queueData"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal queue payload: %v", err)
+	}
+	if got.Type != "LOAD" || !got.Autoplay || got.QueueData.StartIndex != 1 || got.QueueData.RepeatMode != "REPEAT_OFF" || len(got.QueueData.Items) != 2 {
+		t.Fatalf("unexpected queue load payload: %+v", got)
+	}
+	if got.QueueData.Items[1].Media.Metadata.MetadataType != 3 || got.QueueData.Items[1].Media.Metadata.Title != "Two" {
+		t.Fatalf("unexpected second queue item metadata: %+v", got.QueueData.Items[1])
+	}
+}
+
 func TestMapCastStatus(t *testing.T) {
 	st := mapCastStatus(
 		&castproto.Media{

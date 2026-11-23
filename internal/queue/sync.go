@@ -13,6 +13,79 @@ import (
 	"tacet/internal/upnp"
 )
 
+func (m *Manager) replaceDeviceQueueAndPlay(
+	ctx context.Context,
+	z *zone,
+	items []Item,
+	startIndex int,
+	gen uint64,
+	ctrl upnp.Controller,
+	qc upnp.QueueController,
+	quality AudioQuality,
+	repeat RepeatMode,
+) error {
+	zoneID := ctrl.Info().ID
+	mediaItems, effQuality, err := m.buildQueueMediaItems(ctrl, items, quality)
+	if err != nil {
+		m.emitZoneError(zoneID, err)
+		return err
+	}
+	if err := qc.ReplaceQueue(ctx, mediaItems, startIndex); err != nil {
+		werr := wrapRendererErr("ReplaceQueue", err)
+		m.emitZoneError(zoneID, werr)
+		return werr
+	}
+	// Keep shuffle=false on the device because tacet manages canonical queue order
+	// so device indices always match z.queue 1:1.
+	_ = qc.SetLoopMode(ctx, string(repeat), false)
+
+	curMedia := mediaItems[startIndex]
+	m.mu.Lock()
+	if z.generation == gen {
+		z.currentIndex = startIndex
+		z.currentURI = curMedia.URL
+		z.activeQuality = effQuality
+		z.status.State = "TRANSITIONING"
+		z.status.Position = 0
+		z.status.Duration = curMedia.Duration
+		z.status.TrackURI = curMedia.URL
+		z.positionUpdatedAt = time.Now().UTC()
+		z.lastPlaybackEmit = z.positionUpdatedAt
+		z.wasPlaying = false
+		z.loadedAt = time.Now()
+		z.revision++
+	}
+	pbEv := m.playbackEventLocked(z)
+	m.mu.Unlock()
+	m.emit("zone.playback", zoneID, pbEv)
+	return nil
+}
+
+func (m *Manager) buildQueueMediaItems(ctrl upnp.Controller, items []Item, quality AudioQuality) ([]upnp.MediaItem, AudioQuality, error) {
+	out := make([]upnp.MediaItem, 0, len(items))
+	effQuality := quality
+	for i, it := range items {
+		mi, q, err := m.buildLazyMediaItem(ctrl, it.Track, quality)
+		if err != nil {
+			return nil, quality, err
+		}
+		if i == 0 {
+			effQuality = q
+		}
+		out = append(out, mi)
+	}
+	return out, effQuality, nil
+}
+
+// buildLazyMediaItem constructs a MediaItem without making any blocking upstream
+// Qobuz API calls. Qobuz tracks receive permanent /media/qobuz/{id} URLs
+// (with ?handoff=1 in Direct mode so the media handler lazily issues a 302
+// redirect to a freshly-signed Qobuz CDN URL only when the speaker requests it).
+func (m *Manager) buildLazyMediaItem(ctrl upnp.Controller, track library.Track, quality AudioQuality) (upnp.MediaItem, AudioQuality, error) {
+	mi, _, q, err := m.buildMediaItemInternal(context.Background(), ctrl, track, quality, true)
+	return mi, q, err
+}
+
 func (m *Manager) loadAndPlay(ctx context.Context, z *zone, idx int, gen uint64) error {
 	m.mu.RLock()
 	if idx < 0 || idx >= len(z.queue) {
@@ -109,6 +182,10 @@ func (m *Manager) clearNextPreloadAsync(ctrl upnp.Controller) {
 }
 
 func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, track library.Track, quality AudioQuality) (upnp.MediaItem, library.Track, AudioQuality, error) {
+	return m.buildMediaItemInternal(ctx, ctrl, track, quality, false)
+}
+
+func (m *Manager) buildMediaItemInternal(ctx context.Context, ctrl upnp.Controller, track library.Track, quality AudioQuality, lazyQobuz bool) (upnp.MediaItem, library.Track, AudioQuality, error) {
 	info := ctrl.Info()
 
 	effQuality, ok := NormalizeAudioQuality(string(quality))
@@ -193,24 +270,31 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 				track.QobuzTrackID = parsed
 			}
 		}
-		stream, err := m.qobuz.StreamURL(ctx, qID)
-		if err != nil {
-			return upnp.MediaItem{}, track, effQuality, fmt.Errorf("qobuz stream URL: %w", err)
-		}
-		if stream.SampleRate > 0 {
-			track.SampleRate = stream.SampleRate
-		}
-		if stream.BitDepth > 0 {
-			track.BitDepth = stream.BitDepth
-		}
-		if stream.Duration > 0 {
-			track.DurationSec = int(stream.Duration.Seconds() + 0.5)
-		}
-		if stream.MIME != "" {
-			track.MIME = stream.MIME
+		var streamURL string
+		if !lazyQobuz {
+			stream, err := m.qobuz.StreamURL(ctx, qID)
+			if err != nil {
+				return upnp.MediaItem{}, track, effQuality, fmt.Errorf("qobuz stream URL: %w", err)
+			}
+			if stream.SampleRate > 0 {
+				track.SampleRate = stream.SampleRate
+			}
+			if stream.BitDepth > 0 {
+				track.BitDepth = stream.BitDepth
+			}
+			if stream.Duration > 0 {
+				track.DurationSec = int(stream.Duration.Seconds() + 0.5)
+			}
+			if stream.MIME != "" {
+				track.MIME = stream.MIME
+			}
+			streamURL = stream.URL
 		}
 
 		outMIME := track.MIME
+		if outMIME == "" {
+			outMIME = "audio/flac"
+		}
 		outRate := track.SampleRate
 		outDepth := track.BitDepth
 		outCh := 2
@@ -240,16 +324,17 @@ func (m *Manager) buildMediaItem(ctx context.Context, ctrl upnp.Controller, trac
 			}
 		}
 
-		streamURL := stream.URL
-		if useRelay {
+		if useRelay || lazyQobuz {
 			ext := ".flac"
-			if strings.Contains(strings.ToLower(track.MIME), "mpeg") || strings.Contains(strings.ToLower(track.MIME), "mp3") {
+			if strings.Contains(strings.ToLower(outMIME), "mpeg") || strings.Contains(strings.ToLower(outMIME), "mp3") {
 				ext = ".mp3"
 			}
 			query := ""
 			if effQuality.NeedsTranscode() {
 				ext = transcodeExt
 				query = transcodeQuery
+			} else if !useRelay && lazyQobuz {
+				query = "?handoff=1"
 			}
 			streamURL = baseURL + "/media/qobuz/" + strconv.FormatInt(qID, 10) + ext + query
 		}
@@ -595,8 +680,10 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 	prevMute := z.status.Muted
 	prevPosUpdated := z.positionUpdatedAt
 
+	_, isNativeQueue := z.ctrl.(upnp.QueueController)
+
 	// Ignore stale track reports (URI belongs to neither the current nor preloaded track).
-	staleTrack := z.currentURI != "" && st.TrackURI != "" &&
+	staleTrack := !isNativeQueue && z.currentURI != "" && st.TrackURI != "" &&
 		st.TrackURI != z.currentURI &&
 		(z.nextURI == "" || st.TrackURI != z.nextURI)
 
@@ -634,8 +721,18 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		gen:                z.generation,
 	}
 
-	// 1. Detect gapless transition: renderer URI switched to our preloaded nextURI.
-	if z.nextPreloaded && z.nextURI != "" && z.status.TrackURI == z.nextURI {
+	// 1. Detect device-managed queue transition (Linkplay PlayQueue / Cast Media Queue)
+	// or virtual-queue gapless transition (UPnP SetNextAVTransportURI).
+	if isNativeQueue && st.HasQueueIndex && st.QueueIndex >= 0 && st.QueueIndex < len(z.queue) {
+		if st.QueueIndex != z.currentIndex && time.Since(z.loadedAt) > 1500*time.Millisecond {
+			z.currentIndex = st.QueueIndex
+			if st.TrackURI != "" {
+				z.currentURI = st.TrackURI
+			}
+			z.loadedAt = time.Now()
+			z.positionUpdatedAt = now
+		}
+	} else if !isNativeQueue && z.nextPreloaded && z.nextURI != "" && z.status.TrackURI == z.nextURI {
 		if z.nextIndex >= 0 && z.nextIndex < len(z.queue) {
 			z.currentIndex = z.nextIndex
 		} else {
@@ -680,23 +777,25 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 				}
 			}
 		}
-		nextIdx := nextAutoIndexLocked(z)
-		// Skip gapless preload when nextIdx == currentIndex (repeat one / 1-track repeat all)
-		// because nextURI would match currentURI and trigger immediate transition detection;
-		// fallback auto-advance handles single-track repeat cleanly at track end.
-		if !z.setNextUnsupported && !z.nextPreloaded && !z.nextPreloading && !z.nextFailed &&
-			nextIdx >= 0 && nextIdx != z.currentIndex {
-			t := z.queue[nextIdx].Track
-			res.preloadTrack = &t
-			res.preloadGen = z.preloadGen
-			z.nextIndex = nextIdx
-			z.nextPreloading = true
+		if !isNativeQueue {
+			nextIdx := nextAutoIndexLocked(z)
+			// Skip gapless preload when nextIdx == currentIndex (repeat one / 1-track repeat all)
+			// because nextURI would match currentURI and trigger immediate transition detection;
+			// fallback auto-advance handles single-track repeat cleanly at track end.
+			if !z.setNextUnsupported && !z.nextPreloaded && !z.nextPreloading && !z.nextFailed &&
+				nextIdx >= 0 && nextIdx != z.currentIndex {
+				t := z.queue[nextIdx].Track
+				res.preloadTrack = &t
+				res.preloadGen = z.preloadGen
+				z.nextIndex = nextIdx
+				z.nextPreloading = true
+			}
 		}
 	}
 
 	// 3. Fallback advance: if track finished and renderer became STOPPED/NO_MEDIA_PRESENT
 	// without advancing gaplessly, explicitly load & play the next queued track.
-	if allowAutoAdvance && (st.State == "STOPPED" || st.State == "NO_MEDIA_PRESENT") &&
+	if !isNativeQueue && allowAutoAdvance && (st.State == "STOPPED" || st.State == "NO_MEDIA_PRESENT") &&
 		z.wasPlaying && !z.userStopped && time.Since(z.loadedAt) > 2*time.Second {
 		z.wasPlaying = false
 		if nextIdx := nextAutoIndexLocked(z); nextIdx >= 0 {

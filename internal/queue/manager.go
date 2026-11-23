@@ -507,6 +507,7 @@ func (m *Manager) RegisterRenderer(ctrl upnp.Controller) {
 			prev.SupportsSetNext == info.SupportsSetNext &&
 			prev.SupportsSeek == info.SupportsSeek &&
 			prev.SupportsEvents == info.SupportsEvents &&
+			prev.SupportsQueue == info.SupportsQueue &&
 			slices.Equal(prev.SinkProtocols, info.SinkProtocols) {
 			unchanged = true
 		}
