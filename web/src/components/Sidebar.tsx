@@ -21,7 +21,7 @@ const LIBRARY_ITEMS: Array<{ id: AppSection; label: string; icon: typeof Home }>
 
 export const Sidebar = memo(function Sidebar({ activeSection, libraryStatus, onNavigate }: SidebarProps) {
   return (
-    <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-white/[0.07] bg-black/30 backdrop-blur-2xl select-none">
+    <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-white/[0.07] bg-black/30 select-none">
       {/* Brand header — optical centers aligned with nav icons (30px) and text labels (52px) */}
       <div className="flex items-center justify-between pl-[18px] pr-3 pt-4 pb-3 shrink-0">
         <Link
