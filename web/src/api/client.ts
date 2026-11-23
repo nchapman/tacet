@@ -712,7 +712,7 @@ export class TacetClient {
 
   getDiscover(genreIds?: number[], opts?: RequestOptions): Promise<DiscoverFeed> {
     const genreParam = genreIds && genreIds.length > 0 ? genreIds.join(",") : undefined;
-    return this.request("/api/v1/discover", {}, { genre_ids: genreParam }, opts);
+    return this.request("/api/v1/discover", {}, { genreIds: genreParam }, opts);
   }
 
   getDiscoverShelf(
@@ -724,7 +724,7 @@ export class TacetClient {
     return this.request(
       `/api/v1/discover/shelves/${encodeURIComponent(slug)}`,
       {},
-      { genre_ids: genreParam, limit: params.limit, offset: params.offset },
+      { genreIds: genreParam, limit: params.limit, offset: params.offset },
       opts,
     );
   }

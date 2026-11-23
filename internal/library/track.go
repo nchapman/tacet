@@ -124,7 +124,6 @@ type Album struct {
 	Awards         []string       `json:"awards,omitempty"`
 	BookletURL     string         `json:"bookletUrl,omitempty"`
 	Credits        []AlbumCredit  `json:"credits,omitempty"`
-	QobuzAlbumID   string         `json:"qobuzAlbumId,omitempty"`
 	Year           int            `json:"year,omitempty"`
 	TrackCount     int            `json:"trackCount"`
 	DurationSec    int            `json:"durationSec,omitempty"`

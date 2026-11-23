@@ -126,7 +126,6 @@ export interface Album {
   awards?: string[];
   bookletUrl?: string;
   credits?: AlbumCredit[];
-  qobuzAlbumId?: string;
   year?: number;
   trackCount: number;
   durationSec?: number;

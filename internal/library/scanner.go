@@ -959,6 +959,9 @@ func (c *Catalog) PreferLocalAlbums(ctx context.Context, albums []Album) []Album
 			continue
 		}
 		if matched, ok := matchLocalAlbum(localByKey, a.Artist, a.Title); ok {
+			if matched.ArtworkURL == "" {
+				matched.ArtworkURL = a.ArtworkURL
+			}
 			out[i] = matched
 			continue
 		}

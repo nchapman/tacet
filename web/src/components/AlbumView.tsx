@@ -83,21 +83,16 @@ export function AlbumView({
   onAdd,
 }: AlbumViewProps) {
   const queryClient = useQueryClient();
-  const similarAlbumId = album.id.startsWith("qobuz:")
-    ? album.id
-    : album.qobuzAlbumId
-      ? `qobuz:${album.qobuzAlbumId}`
-      : (album.versions?.find((v) => v.id.startsWith("qobuz:"))?.id ?? "");
-  const canSuggest = qobuzConnected && Boolean(similarAlbumId);
+  const canSuggest = qobuzConnected && Boolean(album.id);
   const similarQuery = useQuery({
-    queryKey: queryKeys.discover.similarAlbums(similarAlbumId || album.id),
-    queryFn: ({ signal }) => tacetClient.getSimilarAlbums(similarAlbumId, 12, { signal }),
+    queryKey: queryKeys.discover.similarAlbums(album.id),
+    queryFn: ({ signal }) => tacetClient.getSimilarAlbums(album.id, 12, { signal }),
     enabled: canSuggest,
     staleTime: QOBUZ_ALBUM_STALE_TIME_MS,
     gcTime: QOBUZ_ALBUM_GC_TIME_MS,
   });
   const similarAlbums = (similarQuery.data?.items ?? [])
-    .filter((a) => a.id !== album.id && a.id !== similarAlbumId)
+    .filter((a) => a.id !== album.id)
     .slice(0, 6);
   const [busyLibrary, setBusyLibrary] = useState(false);
   const [busyPrimary, setBusyPrimary] = useState(false);

@@ -118,9 +118,6 @@ func (s *Server) handleLibraryAlbum(w http.ResponseWriter, r *http.Request) {
 			if len(alb.Credits) == 0 {
 				alb.Credits = qAlb.Credits
 			}
-			if alb.QobuzAlbumID == "" {
-				alb.QobuzAlbumID = strings.TrimPrefix(strings.TrimSpace(qAlb.ID), "qobuz:")
-			}
 			if len(alb.Tracks) > 0 && len(qAlb.Tracks) > 0 {
 				explicitByTitle := make(map[string]bool, len(qAlb.Tracks))
 				for _, qt := range qAlb.Tracks {

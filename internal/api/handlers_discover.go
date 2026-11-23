@@ -6,13 +6,18 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"tacet/internal/library"
 	"tacet/internal/qobuz"
 )
 
-func parseGenreIDsParam(raw string) []int64 {
-	raw = strings.TrimSpace(raw)
+func parseGenreIDsParam(r *http.Request) []int64 {
+	qv := r.URL.Query()
+	raw := strings.TrimSpace(qv.Get("genreIds"))
+	if raw == "" {
+		raw = strings.TrimSpace(qv.Get("genre_ids"))
+	}
 	if raw == "" {
 		return nil
 	}
@@ -49,7 +54,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	genreIDs := parseGenreIDsParam(r.URL.Query().Get("genre_ids"))
+	genreIDs := parseGenreIDsParam(r)
 	feed, err := s.qobuz.Discover(r.Context(), genreIDs)
 	if err != nil {
 		writeDomainError(w, err)
@@ -73,15 +78,20 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDiscoverShelf(w http.ResponseWriter, r *http.Request) {
-	if s.qobuz == nil {
-		writeDomainError(w, ErrQobuzUnavailable)
-		return
-	}
-	slug := r.PathValue("slug")
-	genreIDs := parseGenreIDsParam(r.URL.Query().Get("genre_ids"))
+	slug := strings.TrimSpace(r.PathValue("slug"))
+	genreIDs := parseGenreIDsParam(r)
 	limit, offset, err := parsePageParams(r, 24, 100)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	if s.qobuz == nil || !s.qobuz.IsConnected() {
+		writeJSON(w, http.StatusOK, qobuz.DiscoverShelfPage{
+			Slug:   slug,
+			Items:  []library.Album{},
+			Limit:  limit,
+			Offset: offset,
+		})
 		return
 	}
 
@@ -98,16 +108,21 @@ func (s *Server) handleSimilarAlbums(w http.ResponseWriter, r *http.Request) {
 	type similarResp struct {
 		Items []library.Album `json:"items"`
 	}
-	if s.qobuz == nil || !s.qobuz.IsConnected() {
-		writeJSON(w, http.StatusOK, similarResp{Items: []library.Album{}})
-		return
-	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "album id is required", false)
 		return
 	}
-	// Resolve Qobuz ID either directly ("qobuz:<ext>") or via sibling version in the library.
+	limit, _, err := parsePageParams(r, 12, 50)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	if s.qobuz == nil || !s.qobuz.IsConnected() {
+		writeJSON(w, http.StatusOK, similarResp{Items: []library.Album{}})
+		return
+	}
+	// Resolve Qobuz ID either directly ("qobuz:<ext>"), via sibling version, or via cached MatchAlbum.
 	qobuzID := ""
 	if strings.HasPrefix(id, "qobuz:") {
 		qobuzID = strings.TrimPrefix(id, "qobuz:")
@@ -119,6 +134,14 @@ func (s *Server) handleSimilarAlbums(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 			}
+			if qobuzID == "" {
+				matchCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+				matched, matchErr := s.qobuz.MatchAlbum(matchCtx, alb.Artist, alb.Title)
+				cancel()
+				if matchErr == nil {
+					qobuzID = strings.TrimPrefix(strings.TrimSpace(matched.ID), "qobuz:")
+				}
+			}
 		}
 	}
 	if qobuzID == "" {
@@ -126,11 +149,6 @@ func (s *Server) handleSimilarAlbums(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, _, err := parsePageParams(r, 12, 50)
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
-		return
-	}
 	items, err := s.qobuz.SimilarAlbums(r.Context(), qobuzID, limit)
 	if err != nil {
 		// Contextual suggestions are best-effort; return empty on 404 so album pages never break.
@@ -148,11 +166,8 @@ func (s *Server) handleSimilarArtists(w http.ResponseWriter, r *http.Request) {
 	type similarResp struct {
 		Items []qobuz.Artist `json:"items"`
 	}
-	if s.qobuz == nil || !s.qobuz.IsConnected() {
-		writeJSON(w, http.StatusOK, similarResp{Items: []qobuz.Artist{}})
-		return
-	}
-	artistID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	rawID := strings.TrimPrefix(strings.TrimSpace(r.PathValue("id")), "qobuz:")
+	artistID, err := strconv.ParseInt(rawID, 10, 64)
 	if err != nil || artistID <= 0 {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "artist id must be a positive integer", false)
 		return
@@ -160,6 +175,10 @@ func (s *Server) handleSimilarArtists(w http.ResponseWriter, r *http.Request) {
 	limit, _, err := parsePageParams(r, 12, 50)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	if s.qobuz == nil || !s.qobuz.IsConnected() {
+		writeJSON(w, http.StatusOK, similarResp{Items: []qobuz.Artist{}})
 		return
 	}
 	items, err := s.qobuz.SimilarArtists(r.Context(), artistID, limit)
