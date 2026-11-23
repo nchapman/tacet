@@ -203,7 +203,7 @@ export function QobuzView({
           </section>
         ) : (
           <div className="flex flex-col items-center justify-center py-20 text-center">
-            <Compass className="h-10 w-10 text-zinc-700 mb-3" />
+            <Compass className="h-10 w-10 text-white/20 mb-3" />
             <p className="text-sm font-medium text-foreground/85">Explore the Qobuz catalog</p>
             <p className="mt-1 text-xs text-muted-foreground max-w-sm">
               Use Global Search to find any artist, album, or track on Qobuz alongside your local library.

@@ -49,7 +49,7 @@ function shelfIcon(slug: string) {
     case "ideal-discography":
       return <LibraryBig className="h-4 w-4 text-violet-400" />;
     default:
-      return <Compass className="h-4 w-4 text-zinc-300" />;
+      return <Compass className="h-4 w-4 text-white/80" />;
   }
 }
 
@@ -180,7 +180,7 @@ export const HomeView = memo(function HomeView({
         {/* Empty library onboarding state */}
         {libraryEmpty && !discover?.connected && (
           <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-8 text-center">
-            <Disc3 className="mx-auto h-9 w-9 text-zinc-700 mb-3" />
+            <Disc3 className="mx-auto h-9 w-9 text-white/20 mb-3" />
             <h2 className="text-base font-medium text-foreground">Your library is empty</h2>
             <p className="mt-1 text-sm text-muted-foreground max-w-md mx-auto">
               Point <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-xs">--music-dir</code> at your NAS library or connect your Qobuz account in Settings.

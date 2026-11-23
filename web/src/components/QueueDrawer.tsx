@@ -57,7 +57,7 @@ export function QueueContent({ items, currentItemId, onJump, onRemove, onClear, 
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-5">
         {items.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center">
-            <ListMusic className="h-8 w-8 text-zinc-700 mb-3" />
+            <ListMusic className="h-8 w-8 text-white/20 mb-3" />
             <p className="text-sm font-medium text-foreground/80">Queue is empty</p>
             <p className="mt-1 text-xs text-muted-foreground max-w-[200px]">
               Play an album or add tracks to build your listening session.

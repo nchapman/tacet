@@ -421,7 +421,7 @@ function TopResultCard({
         }}
         className="group relative flex h-[216px] flex-col justify-between rounded-2xl border border-white/[0.08] bg-white/[0.04] p-5 transition-colors hover:bg-white/[0.07] cursor-pointer"
       >
-        <div className="h-20 w-20 overflow-hidden rounded-full border border-white/10 bg-zinc-900 shadow-lg">
+        <div className="h-20 w-20 overflow-hidden rounded-full border border-white/10 bg-white/[0.06] shadow-lg">
           {a.artworkUrl ? (
             <AlbumArt artworkUrl={a.artworkUrl} alt={a.name} className="h-full w-full" />
           ) : (
@@ -590,7 +590,7 @@ function ArtistResultCard({
       onClick={onClick}
       className="group flex flex-col items-center rounded-xl border border-white/[0.06] bg-white/[0.03] p-4 text-center transition-colors hover:bg-white/[0.07] cursor-pointer"
     >
-      <div className="h-24 w-24 overflow-hidden rounded-full border border-white/10 bg-zinc-900 shadow-md transition-transform duration-300 group-hover:scale-[1.03]">
+      <div className="h-24 w-24 overflow-hidden rounded-full border border-white/10 bg-white/[0.06] shadow-md transition-transform duration-300 group-hover:scale-[1.03]">
         {artworkUrl ? (
           <AlbumArt artworkUrl={artworkUrl} alt={name} className="h-full w-full" />
         ) : (

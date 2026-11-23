@@ -366,7 +366,7 @@ export const PlayerBar = memo(function PlayerBar({
           >
             <ListMusic className="h-4 w-4" />
             {(activeZone?.queue?.length ?? 0) > 0 && (
-              <span className="absolute -top-1 -right-1.5 flex h-4 min-w-4 items-center justify-center rounded-full border border-white/15 bg-zinc-800 px-1 text-[9px] font-mono text-foreground shadow">
+              <span className="absolute -top-1 -right-1.5 flex h-4 min-w-4 items-center justify-center rounded-full border border-white/15 bg-black/75 backdrop-blur-md px-1 text-[9px] font-mono text-foreground shadow">
                 {activeZone!.queue.length}
               </span>
             )}

@@ -36,7 +36,7 @@ interface AlbumArtProps {
 export function AlbumArt({ artworkUrl, alt, size = "sm", className, iconClassName, priority }: AlbumArtProps) {
   const src = resolveArtworkSrc(artworkUrl, size);
   return (
-    <div className={cn("relative overflow-hidden bg-zinc-900/90 flex items-center justify-center", className)}>
+    <div className={cn("relative overflow-hidden bg-white/[0.05] flex items-center justify-center", className)}>
       {src ? (
         <img
           src={src}
@@ -46,7 +46,7 @@ export function AlbumArt({ artworkUrl, alt, size = "sm", className, iconClassNam
           className="h-full w-full object-cover"
         />
       ) : (
-        <Disc3 className={cn("h-1/3 w-1/3 text-zinc-700", iconClassName)} />
+        <Disc3 className={cn("h-1/3 w-1/3 text-white/20", iconClassName)} />
       )}
     </div>
   );

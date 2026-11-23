@@ -64,7 +64,7 @@ export const AlbumCard = memo(function AlbumCard({
 
         {/* Bottom-left version count badge */}
         {(album.versionCount ?? 1) > 1 && (
-          <span className="pointer-events-none absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-black/75 px-2 py-0.5 text-[10px] font-medium text-zinc-200 backdrop-blur-md border border-white/10">
+          <span className="pointer-events-none absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-black/75 px-2 py-0.5 text-[10px] font-medium text-white/90 backdrop-blur-md border border-white/10">
             <Layers className="h-2.5 w-2.5" />
             {album.versionCount}
           </span>
