@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -496,17 +498,25 @@ func (m *Manager) RegisterRenderer(ctrl upnp.Controller) {
 	if existing, ok := m.zones[info.ID]; ok {
 		prev := existing.ctrl.Info()
 		if prev.Kind != "player" && info.Kind != "player" &&
-			prev.Location != "" && prev.Location == info.Location &&
-			prev.Name == info.Name && prev.Host == info.Host &&
+			prev.Location != "" &&
+			prev.Kind == info.Kind &&
+			prev.Location == info.Location &&
+			prev.Name == info.Name &&
+			prev.Host == info.Host &&
+			prev.HasVolume == info.HasVolume &&
 			prev.SupportsSetNext == info.SupportsSetNext &&
+			prev.SupportsSeek == info.SupportsSeek &&
 			prev.SupportsEvents == info.SupportsEvents &&
-			len(prev.SinkProtocols) == len(info.SinkProtocols) {
+			slices.Equal(prev.SinkProtocols, info.SinkProtocols) {
 			unchanged = true
 		}
-		existing.ctrl = ctrl
 		if !unchanged {
+			existing.ctrl = ctrl
 			existing.setNextUnsupported = !info.SupportsSetNext
 			existing.revision++
+		} else if info.Kind != "cast" {
+			// Refresh stateless UPnP controller, but preserve stateful Cast TLS sessions.
+			existing.ctrl = ctrl
 		}
 	} else {
 		savedQ := m.savedQualities[info.ID]
@@ -543,7 +553,7 @@ func (m *Manager) RegisterRenderer(ctrl upnp.Controller) {
 }
 
 // UPnPRenderers returns info snapshots for all currently registered UPnP renderers
-// (excluding HTTP/SSE browser player endpoints).
+// (excluding HTTP/SSE browser players and Google Cast endpoints).
 func (m *Manager) UPnPRenderers() []upnp.RendererInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -551,12 +561,44 @@ func (m *Manager) UPnPRenderers() []upnp.RendererInfo {
 	for _, id := range m.zoneOrder {
 		if z, ok := m.zones[id]; ok {
 			info := z.ctrl.Info()
-			if info.Kind != "player" {
+			if info.Kind != "player" && info.Kind != "cast" {
 				out = append(out, info)
 			}
 		}
 	}
 	return out
+}
+
+// CastRenderers returns info snapshots for all currently registered Google Cast endpoints.
+func (m *Manager) CastRenderers() []upnp.RendererInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]upnp.RendererInfo, 0, len(m.zoneOrder))
+	for _, id := range m.zoneOrder {
+		if z, ok := m.zones[id]; ok {
+			info := z.ctrl.Info()
+			if info.Kind == "cast" {
+				out = append(out, info)
+			}
+		}
+	}
+	return out
+}
+
+// UPnPHosts returns the set of IP hosts currently served by UPnP renderers.
+func (m *Manager) UPnPHosts() map[string]struct{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	hosts := make(map[string]struct{}, len(m.zoneOrder))
+	for _, id := range m.zoneOrder {
+		if z, ok := m.zones[id]; ok {
+			info := z.ctrl.Info()
+			if info.Kind != "player" && info.Kind != "cast" && info.Host != "" {
+				hosts[info.Host] = struct{}{}
+			}
+		}
+	}
+	return hosts
 }
 
 // IsZoneActive reports whether zoneID is currently playing or buffering.
@@ -574,7 +616,8 @@ func (m *Manager) IsZoneActive(zoneID string) bool {
 // UnregisterRenderer removes a renderer zone and broadcasts zones.updated.
 func (m *Manager) UnregisterRenderer(zoneID string) bool {
 	m.mu.Lock()
-	if _, ok := m.zones[zoneID]; !ok {
+	removed, ok := m.zones[zoneID]
+	if !ok {
 		m.mu.Unlock()
 		return false
 	}
@@ -589,6 +632,9 @@ func (m *Manager) UnregisterRenderer(zoneID string) bool {
 	zones := m.zonesLocked()
 	m.mu.Unlock()
 
+	if closer, ok := removed.ctrl.(io.Closer); ok {
+		_ = closer.Close()
+	}
 	m.emit("zones.updated", "", map[string]any{"zones": zones})
 	return true
 }

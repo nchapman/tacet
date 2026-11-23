@@ -1,4 +1,4 @@
-import { Laptop, Plus, RefreshCw, SlidersHorizontal, Speaker, Volume2 } from "lucide-react";
+import { Cast, Laptop, Plus, RefreshCw, SlidersHorizontal, Speaker, Volume2 } from "lucide-react";
 import { useState } from "react";
 import { AUDIO_QUALITY_STOPS, audioQualityIndex, audioQualityStop, rendererLossyCodec } from "@/api/format";
 import type { AudioQuality, ZoneSnapshot } from "@/api/types";
@@ -304,7 +304,13 @@ export function DeviceList({
                               : "bg-white/[0.06] text-muted-foreground",
                         )}
                       >
-                        {playing ? <Volume2 className="h-4 w-4 animate-pulse" /> : <Speaker className="h-4 w-4" />}
+                        {playing ? (
+                          <Volume2 className="h-4 w-4 animate-pulse" />
+                        ) : z.renderer.kind === "cast" ? (
+                          <Cast className="h-4 w-4" />
+                        ) : (
+                          <Speaker className="h-4 w-4" />
+                        )}
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">

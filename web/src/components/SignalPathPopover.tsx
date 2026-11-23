@@ -208,20 +208,23 @@ export function SignalPathPopover({
         accent: "neutral",
       });
     } else {
+      const isCastKind = zone.renderer.kind === "cast";
       const transportBits: string[] = [];
       if (isQobuz) {
         transportBits.push(streamMode === "direct" && !isOpus && !isWav ? "Handoff" : "Relay");
       } else {
         transportBits.push("LAN HTTP");
       }
-      if (zone.gaplessArmed) {
-        transportBits.push("Gapless armed");
-      } else if (zone.renderer.supportsSetNext) {
-        transportBits.push("Gapless ready");
+      if (!isCastKind) {
+        if (zone.gaplessArmed) {
+          transportBits.push("Gapless armed");
+        } else if (zone.renderer.supportsSetNext) {
+          transportBits.push("Gapless ready");
+        }
       }
       stages.push({
         icon: Radio,
-        title: "UPnP / DLNA AVTransport",
+        title: isCastKind ? "Google Cast" : "UPnP / DLNA AVTransport",
         detail: transportBits.join(" · "),
         accent: "neutral",
       });

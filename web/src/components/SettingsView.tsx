@@ -437,7 +437,12 @@ export function SettingsView({
                 {zones.map((z) => {
                   const isPlaying = z.state === "playing";
                   const isPaused = z.state === "paused";
-                  const kindLabel = z.renderer.kind === "player" ? "Remote Player" : "UPnP / DLNA";
+                  const kindLabel =
+                    z.renderer.kind === "player"
+                      ? "Remote Player"
+                      : z.renderer.kind === "cast"
+                        ? "Google Cast"
+                        : "UPnP / DLNA";
                   const model = [z.renderer.manufacturer, z.renderer.model].filter(Boolean).join(" ");
                   const meta = [kindLabel, model, z.renderer.host].filter(Boolean).join(" · ");
                   return (

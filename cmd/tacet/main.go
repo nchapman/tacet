@@ -19,6 +19,7 @@ import (
 
 	"tacet/internal/api"
 	"tacet/internal/cache"
+	"tacet/internal/cast"
 	"tacet/internal/library"
 	"tacet/internal/media"
 	"tacet/internal/qobuz"
@@ -302,6 +303,20 @@ func run() error {
 	})
 	upnpMonitor.Start(ctx)
 	defer upnpMonitor.Stop()
+
+	castMonitor := cast.NewMonitor(cast.MonitorConfig{}, cast.MonitorCallbacks{
+		ListUPnPHosts: mgr.UPnPHosts,
+		ListCast:      mgr.CastRenderers,
+		IsActive:      mgr.IsZoneActive,
+		OnFound: func(r *cast.Renderer) {
+			mgr.RegisterRenderer(r)
+		},
+		OnRemoved: func(id, _ string) {
+			mgr.UnregisterRenderer(id)
+		},
+	})
+	castMonitor.Start(ctx)
+	defer castMonitor.Stop()
 
 	go func() {
 		<-ctx.Done()
