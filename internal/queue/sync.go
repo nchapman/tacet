@@ -60,6 +60,7 @@ func (m *Manager) replaceDeviceQueueAndPlay(
 	pbEv := m.playbackEventLocked(z)
 	m.mu.Unlock()
 	m.emit("zone.playback", zoneID, pbEv)
+	m.startAwaitingAudioPoll(z, zoneID, gen)
 	return nil
 }
 
@@ -170,7 +171,44 @@ func (m *Manager) playPreparedMedia(
 	m.mu.Unlock()
 
 	m.emit("zone.playback", zoneID, pbEv)
+	m.startAwaitingAudioPoll(z, zoneID, gen)
 	return nil
+}
+
+// startAwaitingAudioPoll polls a buffering zone every 250ms (independent of the
+// sequential 1s poll loop) so the UI leaves the spinner state as soon as the
+// renderer reports advancing audio (Position > 0). Exits automatically once
+// awaitingAudio clears, the zone generation changes, or 15s elapse.
+func (m *Manager) startAwaitingAudioPoll(z *zone, zoneID string, gen uint64) {
+	m.mu.RLock()
+	runCtx := m.runCtx
+	m.mu.RUnlock()
+	if runCtx == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-m.stopCh:
+				return
+			case <-ticker.C:
+				m.mu.RLock()
+				stillWaiting := z.awaitingAudio && z.generation == gen
+				m.mu.RUnlock()
+				if !stillWaiting || time.Now().After(deadline) {
+					return
+				}
+				pctx, cancel := context.WithTimeout(runCtx, 1500*time.Millisecond)
+				m.pollOne(pctx, zoneID)
+				cancel()
+			}
+		}
+	}()
 }
 
 func (m *Manager) clearNextPreloadAsync(ctrl upnp.Controller) {

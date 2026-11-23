@@ -1078,6 +1078,7 @@ func (m *Manager) playDeviceQueueIndex(ctx context.Context, zoneID string, z *zo
 	m.mu.Unlock()
 	m.scheduleQueuePersist()
 	m.emit("zone.playback", zoneID, pbEv)
+	m.startAwaitingAudioPoll(z, zoneID, gen)
 	return nil
 }
 
