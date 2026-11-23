@@ -14,11 +14,15 @@ interface SettingsViewProps {
   libraryStatus: LibraryStatus | null;
   qobuzStatus: QobuzStatus | null;
   streamMode: StreamMode;
+  libraryWatchEnabled: boolean;
+  libraryScanIntervalMin: number;
   groupVersions: boolean;
   discoverGenreIds: number[];
   zones: ZoneSnapshot[];
   discovering: boolean;
   onStreamModeChange: (mode: StreamMode) => void;
+  onLibraryWatchChange: (enabled: boolean) => void;
+  onLibraryScanIntervalChange: (minutes: number) => void;
   onGroupVersionsChange: (enabled: boolean) => void;
   onDiscoverGenreIdsChange: (ids: number[]) => void;
   onQobuzStatusChange: (status: QobuzStatus) => void;
@@ -27,15 +31,28 @@ interface SettingsViewProps {
   onGoToQobuz: () => void;
 }
 
+const SCAN_INTERVAL_OPTIONS = [
+  { minutes: 0, label: "Off" },
+  { minutes: 15, label: "15m" },
+  { minutes: 30, label: "30m" },
+  { minutes: 60, label: "1h" },
+  { minutes: 360, label: "6h" },
+  { minutes: 1440, label: "24h" },
+] as const;
+
 export function SettingsView({
   libraryStatus,
   qobuzStatus,
   streamMode,
+  libraryWatchEnabled,
+  libraryScanIntervalMin,
   groupVersions,
   discoverGenreIds,
   zones,
   discovering,
   onStreamModeChange,
+  onLibraryWatchChange,
+  onLibraryScanIntervalChange,
   onGroupVersionsChange,
   onDiscoverGenreIdsChange,
   onQobuzStatusChange,
@@ -174,6 +191,56 @@ export function SettingsView({
               onCheckedChange={onGroupVersionsChange}
             />
           </div>
+
+          {libraryStatus?.configured && (
+            <>
+              <div className="border-t border-white/[0.06] pt-4 flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-white">Watch for file changes</div>
+                  <p className="text-xs text-muted-foreground">
+                    Automatically scan when audio files or album folders are added, updated, or removed.
+                  </p>
+                </div>
+                <Switch
+                  aria-label="Watch for file changes"
+                  checked={libraryWatchEnabled}
+                  onCheckedChange={onLibraryWatchChange}
+                />
+              </div>
+
+              <div className="border-t border-white/[0.06] pt-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-white">Scheduled rescan</div>
+                  <p className="text-xs text-muted-foreground">
+                    Periodic incremental check (recommended even with watching for NAS and network mounts).
+                  </p>
+                </div>
+                <div className="flex items-center gap-1 rounded-xl border border-white/[0.08] bg-white/[0.03] p-1">
+                  {SCAN_INTERVAL_OPTIONS.map((opt) => {
+                    const active = libraryScanIntervalMin === opt.minutes;
+                    return (
+                      <button
+                        key={opt.minutes}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => {
+                          if (!active) onLibraryScanIntervalChange(opt.minutes);
+                        }}
+                        className={cn(
+                          "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer",
+                          active
+                            ? "bg-white text-black"
+                            : "text-muted-foreground hover:text-foreground hover:bg-white/[0.06]",
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
         </section>
 
         {/* Qobuz Account & Streaming Delivery */}
@@ -344,7 +411,7 @@ export function SettingsView({
               <div>
                 <h2 className="text-base font-semibold text-white">Playback Devices</h2>
                 <p className="text-xs text-muted-foreground">
-                  {zones.length} {zones.length === 1 ? "zone" : "zones"} available on the network
+                  {zones.length} {zones.length === 1 ? "zone" : "zones"} available · monitored automatically
                 </p>
               </div>
             </div>

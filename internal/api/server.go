@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,28 +41,31 @@ type DiscoverFunc func(ctx context.Context) ([]*upnp.Renderer, error)
 // ConnectFunc connects to a renderer by its UPnP device description URL.
 type ConnectFunc func(ctx context.Context, rawURL string) (*upnp.Renderer, error)
 
-// Settings represents global server playback preferences.
+// Settings represents global server playback and library preferences.
 type Settings struct {
-	StreamMode         queue.StreamMode `json:"streamMode"`
-	QobuzMaxQuality    string           `json:"qobuzMaxQuality"`
-	TranscodeAvailable bool             `json:"transcodeAvailable"`
+	StreamMode             queue.StreamMode `json:"streamMode"`
+	QobuzMaxQuality        string           `json:"qobuzMaxQuality"`
+	TranscodeAvailable     bool             `json:"transcodeAvailable"`
+	LibraryWatchEnabled    bool             `json:"libraryWatchEnabled"`
+	LibraryScanIntervalMin int              `json:"libraryScanIntervalMin"`
 }
 
 // Server wires HTTP API endpoints, media endpoints, SSE events, GENA callbacks, and web UI.
 type Server struct {
-	catalog    *library.Catalog
-	qobuz      *qobuz.Client
-	manager    *queue.Manager
-	players    *player.Registry
-	media      *media.Handler
-	gena       *upnp.GENAClient
-	discover   DiscoverFunc
-	connect    ConnectFunc
-	corsOrigin string
-	mux        *http.ServeMux
-	apiMux     *http.ServeMux
-	oauthMu    sync.Mutex
-	oauthState map[string]time.Time
+	catalog     *library.Catalog
+	autoScanner *library.AutoScanner
+	qobuz       *qobuz.Client
+	manager     *queue.Manager
+	players     *player.Registry
+	media       *media.Handler
+	gena        *upnp.GENAClient
+	discover    DiscoverFunc
+	connect     ConnectFunc
+	corsOrigin  string
+	mux         *http.ServeMux
+	apiMux      *http.ServeMux
+	oauthMu     sync.Mutex
+	oauthState  map[string]time.Time
 }
 
 // NewServer constructs the HTTP API and web remote server.
@@ -321,15 +325,39 @@ func (s *Server) routes() {
 	}
 }
 
+// SetAutoScanner attaches the background library file watcher / scheduled scanner
+// so PATCH /api/v1/settings reconfigures it live.
+func (s *Server) SetAutoScanner(a *library.AutoScanner) {
+	s.autoScanner = a
+}
+
 func (s *Server) currentSettings() Settings {
 	maxQ := qobuz.QualityLabel(qobuz.FormatFLAC192)
 	if s.qobuz != nil {
 		maxQ = s.qobuz.MaxQuality()
 	}
+	watchEnabled := library.DefaultLibraryWatchEnabled
+	scanIntervalMin := library.DefaultLibraryScanIntervalMin
+	if s.autoScanner != nil {
+		cfg := s.autoScanner.Config()
+		watchEnabled = cfg.WatchEnabled
+		scanIntervalMin = int(cfg.Interval / time.Minute)
+	} else if s.catalog != nil {
+		if raw, ok, err := s.catalog.GetPref(context.Background(), library.PrefLibraryWatchEnabled); err == nil && ok {
+			watchEnabled = raw == "true" || raw == "1"
+		}
+		if raw, ok, err := s.catalog.GetPref(context.Background(), library.PrefLibraryScanIntervalMin); err == nil && ok {
+			if v, parseErr := strconv.Atoi(strings.TrimSpace(raw)); parseErr == nil && v >= 0 && v <= library.MaxLibraryScanIntervalMin {
+				scanIntervalMin = v
+			}
+		}
+	}
 	return Settings{
-		StreamMode:         s.manager.StreamMode(),
-		QobuzMaxQuality:    maxQ,
-		TranscodeAvailable: s.manager.TranscodeAvailable(),
+		StreamMode:             s.manager.StreamMode(),
+		QobuzMaxQuality:        maxQ,
+		TranscodeAvailable:     s.manager.TranscodeAvailable(),
+		LibraryWatchEnabled:    watchEnabled,
+		LibraryScanIntervalMin: scanIntervalMin,
 	}
 }
 
@@ -361,12 +389,22 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		StreamMode      *queue.StreamMode `json:"streamMode"`
-		QobuzMaxQuality *string           `json:"qobuzMaxQuality"`
+		StreamMode             *queue.StreamMode `json:"streamMode"`
+		QobuzMaxQuality        *string           `json:"qobuzMaxQuality"`
+		LibraryWatchEnabled    *bool             `json:"libraryWatchEnabled"`
+		LibraryScanIntervalMin *int              `json:"libraryScanIntervalMin"`
 	}
 	if err := decodeJSON(w, r, &body); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
+	}
+	if body.LibraryScanIntervalMin != nil {
+		v := *body.LibraryScanIntervalMin
+		if v < 0 || v > library.MaxLibraryScanIntervalMin {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST",
+				fmt.Sprintf("libraryScanIntervalMin must be between 0 and %d", library.MaxLibraryScanIntervalMin), false)
+			return
+		}
 	}
 	if body.StreamMode != nil {
 		if err := s.manager.SetStreamMode(*body.StreamMode); err != nil {
@@ -394,6 +432,33 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.manager.Publish("qobuz.status", s.qobuz.Status())
+	}
+	if body.LibraryWatchEnabled != nil || body.LibraryScanIntervalMin != nil {
+		cur := s.currentSettings()
+		watchEnabled := cur.LibraryWatchEnabled
+		scanIntervalMin := cur.LibraryScanIntervalMin
+		if body.LibraryWatchEnabled != nil {
+			watchEnabled = *body.LibraryWatchEnabled
+			if s.catalog != nil {
+				if err := s.catalog.SetPref(r.Context(), library.PrefLibraryWatchEnabled, strconv.FormatBool(watchEnabled)); err != nil {
+					log.Printf("warning: failed to persist library_watch_enabled preference: %v", err)
+				}
+			}
+		}
+		if body.LibraryScanIntervalMin != nil {
+			scanIntervalMin = *body.LibraryScanIntervalMin
+			if s.catalog != nil {
+				if err := s.catalog.SetPref(r.Context(), library.PrefLibraryScanIntervalMin, strconv.Itoa(scanIntervalMin)); err != nil {
+					log.Printf("warning: failed to persist library_scan_interval_min preference: %v", err)
+				}
+			}
+		}
+		if s.autoScanner != nil {
+			s.autoScanner.Configure(library.AutoScanConfig{
+				WatchEnabled: watchEnabled,
+				Interval:     time.Duration(scanIntervalMin) * time.Minute,
+			})
+		}
 	}
 	settings := s.currentSettings()
 	s.manager.Publish("settings.updated", settings)

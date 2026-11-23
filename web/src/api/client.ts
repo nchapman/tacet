@@ -348,7 +348,12 @@ export class TacetClient {
   }
 
   patchSettings(
-    patch: { streamMode?: StreamMode; qobuzMaxQuality?: QobuzQuality },
+    patch: {
+      streamMode?: StreamMode;
+      qobuzMaxQuality?: QobuzQuality;
+      libraryWatchEnabled?: boolean;
+      libraryScanIntervalMin?: number;
+    },
     opts?: RequestOptions,
   ): Promise<Settings> {
     return this.request("/api/v1/settings", { method: "PATCH", body: JSON.stringify(patch) }, undefined, opts);

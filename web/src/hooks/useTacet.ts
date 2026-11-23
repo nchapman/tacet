@@ -117,7 +117,12 @@ export function resolveActiveZone(
 export function useTacet(defaultZoneId?: string | null) {
   const [zones, setZones] = useState<ZoneSnapshot[]>([]);
   const [selectedZoneId, setSelectedZoneId] = useState<string>(readSavedZoneId);
-  const [settings, setSettings] = useState<Settings>({ streamMode: "direct", qobuzMaxQuality: "flac_24_192" });
+  const [settings, setSettings] = useState<Settings>({
+    streamMode: "direct",
+    qobuzMaxQuality: "flac_24_192",
+    libraryWatchEnabled: true,
+    libraryScanIntervalMin: 60,
+  });
   const [qobuzStatus, setQobuzStatus] = useState<QobuzStatus | null>(null);
   const [libraryStatus, setLibraryStatus] = useState<LibraryStatus | null>(null);
   const [connection, setConnection] = useState<ConnectionStatus>("connecting");
@@ -381,6 +386,13 @@ export function useTacet(defaultZoneId?: string | null) {
     [runAction],
   );
 
+  const setLibraryAutoScan = useCallback(
+    async (patch: { libraryWatchEnabled?: boolean; libraryScanIntervalMin?: number }) => {
+      await runAction(() => tacetClient.patchSettings(patch), setSettings);
+    },
+    [runAction],
+  );
+
   const activeZoneId = activeZone?.zoneId ?? "";
 
   const playSource = useCallback(
@@ -531,6 +543,7 @@ export function useTacet(defaultZoneId?: string | null) {
     connectZone,
     setStreamMode,
     setQobuzMaxQuality,
+    setLibraryAutoScan,
     playSource,
     addSource,
     jumpItem,

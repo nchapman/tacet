@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -182,8 +183,29 @@ func run() error {
 		mgr.Close()
 	}()
 
-	// 5. Background non-blocking library imports (local incremental scan + Qobuz favorites).
+	// 5. Background non-blocking library imports (local incremental scan + auto-scanner + Qobuz favorites).
+	watchEnabled := library.DefaultLibraryWatchEnabled
+	scanIntervalMin := library.DefaultLibraryScanIntervalMin
+	if raw, ok, prefErr := cat.GetPref(ctx, library.PrefLibraryWatchEnabled); prefErr == nil && ok {
+		watchEnabled = raw == "true" || raw == "1"
+	}
+	if raw, ok, prefErr := cat.GetPref(ctx, library.PrefLibraryScanIntervalMin); prefErr == nil && ok {
+		if v, parseErr := strconv.Atoi(strings.TrimSpace(raw)); parseErr == nil && v >= 0 && v <= library.MaxLibraryScanIntervalMin {
+			scanIntervalMin = v
+		}
+	}
+	autoScanner := library.NewAutoScanner(cat, library.AutoScanConfig{
+		WatchEnabled: watchEnabled,
+		Interval:     time.Duration(scanIntervalMin) * time.Minute,
+	}, func(scanCtx context.Context, _ int) {
+		apiServer.PrewarmArt(scanCtx)
+		apiServer.PrewarmArtists(scanCtx)
+	})
+	apiServer.SetAutoScanner(autoScanner)
+	defer autoScanner.Stop()
+
 	if len(roots) > 0 {
+		autoScanner.Start(ctx)
 		go func() {
 			start := time.Now()
 			log.Printf("background scan started for local music directories: %v", roots)
@@ -268,24 +290,18 @@ func run() error {
 		}(manualURLs)
 	}
 
-	go func() {
-		dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		devices, err := upnp.Discover(dctx)
-		if err != nil {
-			log.Printf("SSDP discovery warning: %v", err)
-			return
-		}
-		for _, d := range devices {
-			mgr.RegisterRenderer(d)
-			info := d.Info()
-			log.Printf("discovered UPnP renderer: %s [%s] (%s, %d protocols, gapless=%v, events=%v)",
-				info.Name, info.Model, info.Host, len(info.SinkProtocols), info.SupportsSetNext, info.SupportsEvents)
-		}
-		if len(devices) == 0 {
-			log.Printf("no UPnP renderers discovered yet — click Discover or + URL in the web remote")
-		}
-	}()
+	upnpMonitor := upnp.NewMonitor(upnp.MonitorConfig{}, upnp.MonitorCallbacks{
+		ListUPnP: mgr.UPnPRenderers,
+		IsActive: mgr.IsZoneActive,
+		OnFound: func(r *upnp.Renderer) {
+			mgr.RegisterRenderer(r)
+		},
+		OnRemoved: func(id, _ string) {
+			mgr.UnregisterRenderer(id)
+		},
+	})
+	upnpMonitor.Start(ctx)
+	defer upnpMonitor.Stop()
 
 	go func() {
 		<-ctx.Done()

@@ -317,6 +317,18 @@ export function App() {
     },
     [tacet.setStreamMode],
   );
+  const handleLibraryWatchChange = useCallback(
+    (enabled: boolean) => {
+      void tacet.setLibraryAutoScan({ libraryWatchEnabled: enabled });
+    },
+    [tacet.setLibraryAutoScan],
+  );
+  const handleLibraryScanIntervalChange = useCallback(
+    (minutes: number) => {
+      void tacet.setLibraryAutoScan({ libraryScanIntervalMin: minutes });
+    },
+    [tacet.setLibraryAutoScan],
+  );
   const handleGoToQobuz = useCallback(() => navigateSection("qobuz"), [navigateSection]);
 
   const isAlbumPage = location.pathname.startsWith("/albums/");
@@ -506,11 +518,15 @@ export function App() {
                   libraryStatus={tacet.libraryStatus}
                   qobuzStatus={tacet.qobuzStatus}
                   streamMode={tacet.settings.streamMode}
+                  libraryWatchEnabled={tacet.settings.libraryWatchEnabled ?? true}
+                  libraryScanIntervalMin={tacet.settings.libraryScanIntervalMin ?? 60}
                   groupVersions={groupVersions}
                   discoverGenreIds={discoverGenreIds}
                   zones={tacet.zones}
                   discovering={tacet.discovering}
                   onStreamModeChange={handleStreamModeChange}
+                  onLibraryWatchChange={handleLibraryWatchChange}
+                  onLibraryScanIntervalChange={handleLibraryScanIntervalChange}
                   onGroupVersionsChange={handleGroupVersionsChange}
                   onDiscoverGenreIdsChange={handleDiscoverGenreIdsChange}
                   onQobuzStatusChange={tacet.setQobuzStatus}

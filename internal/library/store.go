@@ -22,10 +22,19 @@ import (
 
 // Well-known keys stored in the SQLite app_prefs KV table.
 const (
-	PrefStreamMode      = "stream_mode"
-	PrefQobuzMaxQuality = "qobuz_max_quality"
-	PrefManualRenderers = "manual_renderers"
-	PrefZoneQualities   = "zone_qualities"
+	PrefStreamMode             = "stream_mode"
+	PrefQobuzMaxQuality        = "qobuz_max_quality"
+	PrefManualRenderers        = "manual_renderers"
+	PrefZoneQualities          = "zone_qualities"
+	PrefLibraryWatchEnabled    = "library_watch_enabled"
+	PrefLibraryScanIntervalMin = "library_scan_interval_min"
+)
+
+// Defaults for automatic local library scanning.
+const (
+	DefaultLibraryWatchEnabled    = true
+	DefaultLibraryScanIntervalMin = 60
+	MaxLibraryScanIntervalMin     = 10080 // 7 days
 )
 
 const (

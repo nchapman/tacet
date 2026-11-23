@@ -30,6 +30,8 @@ export interface Settings {
   streamMode: StreamMode;
   qobuzMaxQuality: QobuzQuality;
   transcodeAvailable?: boolean;
+  libraryWatchEnabled?: boolean;
+  libraryScanIntervalMin?: number;
 }
 
 export interface ProviderSyncStatus {

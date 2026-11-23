@@ -62,6 +62,8 @@ paths:
               properties:
                 streamMode: { $ref: "#/components/schemas/StreamMode" }
                 qobuzMaxQuality: { $ref: "#/components/schemas/QobuzQuality" }
+                libraryWatchEnabled: { type: boolean }
+                libraryScanIntervalMin: { type: integer, minimum: 0, maximum: 10080 }
       responses:
         "200":
           description: Updated settings
@@ -1244,11 +1246,13 @@ components:
       enum: [off, all, one]
     Settings:
       type: object
-      required: [streamMode, qobuzMaxQuality, transcodeAvailable]
+      required: [streamMode, qobuzMaxQuality, transcodeAvailable, libraryWatchEnabled, libraryScanIntervalMin]
       properties:
         streamMode: { $ref: "#/components/schemas/StreamMode" }
         qobuzMaxQuality: { $ref: "#/components/schemas/QobuzQuality" }
         transcodeAvailable: { type: boolean }
+        libraryWatchEnabled: { type: boolean }
+        libraryScanIntervalMin: { type: integer, minimum: 0, maximum: 10080 }
     ServerInfo:
       type: object
       required: [name, version, apiVersion, capabilities]

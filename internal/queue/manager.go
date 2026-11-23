@@ -487,13 +487,27 @@ func (m *Manager) SetZoneQuality(zoneID string, quality AudioQuality) (ZoneSnaps
 }
 
 // RegisterRenderer adds or updates a discovered UPnP renderer zone.
+// Re-registering an unchanged UPnP renderer (same Location, Name, and Host)
+// quietly refreshes its controller without spamming zones.updated or GENA.
 func (m *Manager) RegisterRenderer(ctrl upnp.Controller) {
 	info := ctrl.Info()
 	m.mu.Lock()
+	unchanged := false
 	if existing, ok := m.zones[info.ID]; ok {
+		prev := existing.ctrl.Info()
+		if prev.Kind != "player" && info.Kind != "player" &&
+			prev.Location != "" && prev.Location == info.Location &&
+			prev.Name == info.Name && prev.Host == info.Host &&
+			prev.SupportsSetNext == info.SupportsSetNext &&
+			prev.SupportsEvents == info.SupportsEvents &&
+			len(prev.SinkProtocols) == len(info.SinkProtocols) {
+			unchanged = true
+		}
 		existing.ctrl = ctrl
-		existing.setNextUnsupported = !info.SupportsSetNext
-		existing.revision++
+		if !unchanged {
+			existing.setNextUnsupported = !info.SupportsSetNext
+			existing.revision++
+		}
 	} else {
 		savedQ := m.savedQualities[info.ID]
 		if savedQ == "" {
@@ -513,6 +527,10 @@ func (m *Manager) RegisterRenderer(ctrl upnp.Controller) {
 		}
 		m.zoneOrder = append(m.zoneOrder, info.ID)
 	}
+	if unchanged {
+		m.mu.Unlock()
+		return
+	}
 	ctx := m.runCtx
 	gena := m.gena
 	zones := m.zonesLocked()
@@ -522,6 +540,35 @@ func (m *Manager) RegisterRenderer(ctrl upnp.Controller) {
 		m.subscribeRendererGENA(ctx, gena, ctrl)
 	}
 	m.emit("zones.updated", "", map[string]any{"zones": zones})
+}
+
+// UPnPRenderers returns info snapshots for all currently registered UPnP renderers
+// (excluding HTTP/SSE browser player endpoints).
+func (m *Manager) UPnPRenderers() []upnp.RendererInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]upnp.RendererInfo, 0, len(m.zoneOrder))
+	for _, id := range m.zoneOrder {
+		if z, ok := m.zones[id]; ok {
+			info := z.ctrl.Info()
+			if info.Kind != "player" {
+				out = append(out, info)
+			}
+		}
+	}
+	return out
+}
+
+// IsZoneActive reports whether zoneID is currently playing or buffering.
+func (m *Manager) IsZoneActive(zoneID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	z, ok := m.zones[zoneID]
+	if !ok {
+		return false
+	}
+	st := strings.ToUpper(strings.TrimSpace(z.status.State))
+	return st == "PLAYING" || st == "TRANSITIONING"
 }
 
 // UnregisterRenderer removes a renderer zone and broadcasts zones.updated.
