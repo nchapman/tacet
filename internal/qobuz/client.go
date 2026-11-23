@@ -20,6 +20,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"tacet/internal/cache"
 	"tacet/internal/library"
 )
@@ -38,6 +40,7 @@ const (
 // Domain sentinel errors returned by Qobuz client operations.
 var (
 	ErrUnauthenticated = errors.New("qobuz is not authenticated")
+	ErrRateLimited     = errors.New("qobuz rate limited")
 	ErrNotFound        = errors.New("qobuz resource not found")
 	ErrInvalidQuality  = errors.New("invalid qobuz max quality (use mp3_320, flac_16_44, flac_24_96, or flac_24_192)")
 )
@@ -129,26 +132,30 @@ type SearchResult struct {
 
 // Client talks to the Qobuz v0.2 REST API.
 type Client struct {
-	mu           sync.RWMutex
-	baseURL      string
-	http         *http.Client
-	appID        string
-	appSecret    string
-	privateKey   string
-	altSecrets   []string
-	authToken    string
-	userName     string
-	subscription string
-	formatID     int
-	urlCache     map[int64]StreamInfo
-	trackCache   map[int64]library.Track
-	kv           *cache.Namespaced
-	ownedCache   *cache.Cache
-	authGen      atomic.Uint64
-	prewarmMu    sync.Mutex
-	prewarmStop  context.CancelFunc
-	prewarmDone  bool
-	prewarmWG    sync.WaitGroup
+	mu             sync.RWMutex
+	baseURL        string
+	http           *http.Client
+	appID          string
+	appSecret      string
+	privateKey     string
+	altSecrets     []string
+	authToken      string
+	userName       string
+	subscription   string
+	formatID       int
+	urlCache       map[int64]StreamInfo
+	trackCache     map[int64]library.Track
+	kv             *cache.Namespaced
+	ownedCache     *cache.Cache
+	authGen        atomic.Uint64
+	sf             singleflight.Group
+	reqSem         chan struct{}
+	cooldownUntil  atomic.Int64
+	consecutive429 atomic.Int32
+	prewarmMu      sync.Mutex
+	prewarmStop    context.CancelFunc
+	prewarmDone    bool
+	prewarmWG      sync.WaitGroup
 }
 
 // NewClient initializes a Qobuz client.
@@ -173,9 +180,16 @@ func NewClient(cfg Config) *Client {
 	if backing != nil {
 		kv = backing.Namespace("qobuz")
 	}
+	var transport http.RoundTripper
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		cloned := dt.Clone()
+		cloned.MaxIdleConnsPerHost = 8
+		cloned.MaxConnsPerHost = 8
+		transport = cloned
+	}
 	return &Client{
 		baseURL:    base,
-		http:       &http.Client{Timeout: 15 * time.Second},
+		http:       &http.Client{Timeout: 15 * time.Second, Transport: transport},
 		appID:      strings.TrimSpace(cfg.AppID),
 		appSecret:  strings.TrimSpace(cfg.AppSecret),
 		authToken:  strings.TrimSpace(cfg.AuthToken),
@@ -184,6 +198,7 @@ func NewClient(cfg Config) *Client {
 		trackCache: make(map[int64]library.Track),
 		kv:         kv,
 		ownedCache: owned,
+		reqSem:     make(chan struct{}, 4),
 	}
 }
 
@@ -701,22 +716,38 @@ func (c *Client) MatchAlbum(ctx context.Context, artist, title string) (library.
 	var matchedID string
 
 	// 1. Check the artist's cached/fetched Qobuz discography first (usually already warm).
+	var artistErr, searchErr error
 	if detail, err := c.GetArtistByName(ctx, artist, 50); err == nil {
 		matchedID = pickMatchingAlbumID(detail.Albums, wantArtist, wantTitle, false)
+	} else {
+		artistErr = err
 	}
 
 	// 2. Fall back to /catalog/search if not found in the artist's top 50 albums.
 	if matchedID == "" {
 		if res, err := c.Search(ctx, artist+" "+title, 10); err == nil {
 			matchedID = pickMatchingAlbumID(res.Albums, wantArtist, wantTitle, true)
+		} else {
+			searchErr = err
 		}
+	}
+
+	if matchedID == "" {
+		// Never poison the 24h negative cache on transient upstream failures (429, 5xx, timeout).
+		if artistErr != nil && !errors.Is(artistErr, ErrNotFound) {
+			return library.Album{}, artistErr
+		}
+		if searchErr != nil && !errors.Is(searchErr, ErrNotFound) {
+			return library.Album{}, searchErr
+		}
+		if c.authGen.Load() == gen {
+			c.putCachedAlbumMatch(artist, title, "")
+		}
+		return library.Album{}, ErrNotFound
 	}
 
 	if c.authGen.Load() == gen {
 		c.putCachedAlbumMatch(artist, title, matchedID)
-	}
-	if matchedID == "" {
-		return library.Album{}, ErrNotFound
 	}
 	return c.GetAlbum(ctx, matchedID)
 }
@@ -866,11 +897,15 @@ func (c *Client) PrewarmLibrary(ctx context.Context, artistNames []string, local
 						reqCancel()
 						if err == nil {
 							warmedArtists.Add(1)
+						} else if errors.Is(err, ErrRateLimited) {
+							log.Printf("qobuz prewarm: rate limited while warming artists; pausing pass")
+							cancel()
+							return
 						}
 						select {
 						case <-runCtx.Done():
 							return
-						case <-time.After(120 * time.Millisecond):
+						case <-time.After(200 * time.Millisecond):
 						}
 					}
 				}()
@@ -900,11 +935,15 @@ func (c *Client) PrewarmLibrary(ctx context.Context, artistNames []string, local
 						reqCancel()
 						if err == nil {
 							warmedAlbums.Add(1)
+						} else if errors.Is(err, ErrRateLimited) {
+							log.Printf("qobuz prewarm: rate limited while warming albums; pausing pass")
+							cancel()
+							return
 						}
 						select {
 						case <-runCtx.Done():
 							return
-						case <-time.After(120 * time.Millisecond):
+						case <-time.After(200 * time.Millisecond):
 						}
 					}
 				}()
@@ -1130,12 +1169,20 @@ func (c *Client) evictTrackCacheLocked() {
 const maxURLCacheEntries = 128
 
 type apiError struct {
-	status  int
-	message string
+	status     int
+	message    string
+	retryAfter time.Duration
 }
 
 func (e *apiError) Error() string {
 	return fmt.Sprintf("qobuz HTTP %d: %s", e.status, e.message)
+}
+
+func (e *apiError) Unwrap() error {
+	if e.status == http.StatusTooManyRequests {
+		return ErrRateLimited
+	}
+	return nil
 }
 
 func isSignatureOrAuthError(err error) bool {
@@ -1293,6 +1340,92 @@ func (c *Client) requireAuth() error {
 	return nil
 }
 
+func parseRetryAfter(raw string, now time.Time) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(raw); err == nil {
+		if secs <= 0 {
+			return 0, true
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(raw); err == nil {
+		d := t.Sub(now)
+		if d < 0 {
+			d = 0
+		}
+		return d, true
+	}
+	return 0, false
+}
+
+func (c *Client) waitForCooldown(ctx context.Context) error {
+	until := c.cooldownUntil.Load()
+	if until == 0 {
+		return nil
+	}
+	wait := time.Until(time.Unix(0, until))
+	if wait <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (c *Client) noteRateLimit(retryAfterHeader string) time.Duration {
+	now := time.Now()
+	wait, ok := parseRetryAfter(retryAfterHeader, now)
+	if !ok {
+		n := c.consecutive429.Add(1)
+		shift := min(n-1, 5)
+		wait = time.Second << shift // 1s, 2s, 4s, 8s, 16s, 32s
+	} else {
+		c.consecutive429.Add(1)
+	}
+	if wait > 60*time.Second {
+		wait = 60 * time.Second
+	}
+	target := now.Add(wait).UnixNano()
+	for {
+		cur := c.cooldownUntil.Load()
+		if cur >= target {
+			break
+		}
+		if c.cooldownUntil.CompareAndSwap(cur, target) {
+			break
+		}
+	}
+	return wait
+}
+
+func (c *Client) acquireReqSlot(ctx context.Context) (func(), error) {
+	if c.reqSem == nil {
+		return func() {}, nil
+	}
+	select {
+	case c.reqSem <- struct{}{}:
+		return func() { <-c.reqSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func isRetryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests ||
+		code == http.StatusInternalServerError ||
+		code == http.StatusBadGateway ||
+		code == http.StatusServiceUnavailable ||
+		code == http.StatusGatewayTimeout
+}
+
 func (c *Client) getRawJSON(ctx context.Context, path string, params url.Values, withAuth bool) ([]byte, error) {
 	c.mu.RLock()
 	appID := c.appID
@@ -1305,28 +1438,63 @@ func (c *Client) getRawJSON(ctx context.Context, path string, params url.Values,
 		q[k] = vals
 	}
 	q.Set("app_id", appID)
+	fullURL := base + path + "?" + q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path+"?"+q.Encode(), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-App-Id", appID)
-	if withAuth && token != "" {
-		req.Header.Set("X-User-Auth-Token", token)
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := c.waitForCooldown(ctx); err != nil {
+			return nil, err
+		}
+		release, err := c.acquireReqSlot(ctx)
+		if err != nil {
+			return nil, err
+		}
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+		if err != nil {
+			release()
+			return nil, err
+		}
+		req.Header.Set("X-App-Id", appID)
+		if withAuth && token != "" {
+			req.Header.Set("X-User-Auth-Token", token)
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0")
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		resp, err := c.http.Do(req)
+		if err != nil {
+			release()
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			lastErr = err
+			if attempt < maxAttempts-1 {
+				backoff := time.Duration(300*(attempt+1)) * time.Millisecond
+				t := time.NewTimer(backoff)
+				select {
+				case <-ctx.Done():
+					t.Stop()
+					return nil, ctx.Err()
+				case <-t.C:
+				}
+				continue
+			}
+			return nil, lastErr
+		}
+
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		_ = resp.Body.Close()
+		release()
+		if readErr != nil {
+			return nil, readErr
+		}
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			c.consecutive429.Store(0)
+			return body, nil
+		}
+
 		var apiErr struct {
 			Message string `json:"message"`
 			Code    int    `json:"code"`
@@ -1335,9 +1503,33 @@ func (c *Client) getRawJSON(ctx context.Context, path string, params url.Values,
 		if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
 			msg = apiErr.Message
 		}
-		return nil, &apiError{status: resp.StatusCode, message: msg}
+		var retryWait time.Duration
+		if resp.StatusCode == http.StatusTooManyRequests {
+			retryWait = c.noteRateLimit(resp.Header.Get("Retry-After"))
+		} else if isRetryableStatus(resp.StatusCode) {
+			if d, ok := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()); ok {
+				retryWait = d
+			} else {
+				retryWait = time.Duration(300*(attempt+1)) * time.Millisecond
+			}
+		}
+		lastErr = &apiError{status: resp.StatusCode, message: msg, retryAfter: retryWait}
+
+		if !isRetryableStatus(resp.StatusCode) || attempt == maxAttempts-1 {
+			return nil, lastErr
+		}
+		// For 429, waitForCooldown on the next iteration enforces the shared cooldown.
+		if resp.StatusCode != http.StatusTooManyRequests && retryWait > 0 {
+			t := time.NewTimer(retryWait)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				return nil, ctx.Err()
+			case <-t.C:
+			}
+		}
 	}
-	return body, nil
+	return nil, lastErr
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, params url.Values, withAuth bool, dst any) error {

@@ -71,6 +71,8 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		writeAPIError(w, http.StatusUnprocessableEntity, "CAPABILITY_UNSUPPORTED", err.Error(), false)
 	case errors.Is(err, qobuz.ErrUnauthenticated):
 		writeAPIError(w, http.StatusUnauthorized, "QOBUZ_UNAUTHENTICATED", err.Error(), false)
+	case errors.Is(err, qobuz.ErrRateLimited):
+		writeAPIError(w, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), true)
 	case errors.Is(err, ErrQobuzUnavailable):
 		writeAPIError(w, http.StatusServiceUnavailable, "QOBUZ_UNAVAILABLE", err.Error(), false)
 	case errors.Is(err, player.ErrPlaybackBlocked):

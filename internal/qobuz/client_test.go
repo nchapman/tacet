@@ -3,6 +3,7 @@ package qobuz
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -332,5 +333,76 @@ func TestRichEditorialMetadataAndPopularTracks(t *testing.T) {
 	}
 	if _, err := c.ResolveTrack(context.Background(), 901); err != nil {
 		t.Fatalf("expected popular track 901 to be cached in trackCache: %v", err)
+	}
+}
+
+func TestClient_RateLimitRetryAndNoNegativeCachePoisoning(t *testing.T) {
+	var attempts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/album/get":
+			attempts++
+			if attempts == 1 {
+				w.Header().Set("Retry-After", "0")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"message":"Too many requests"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"alb-rl","title":"Recovered","artist":{"name":"Tester"},"tracks":{"items":[{"id":1,"title":"T1","duration":60,"streamable":true}]}}`))
+		case "/artist/search", "/catalog/search":
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"message":"Rate limited"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, AppID: "app", AuthToken: "tok"})
+	defer func() { _ = c.Close() }()
+
+	alb, err := c.GetAlbum(context.Background(), "alb-rl")
+	if err != nil {
+		t.Fatalf("GetAlbum should succeed after 429 retry, got: %v", err)
+	}
+	if alb.Title != "Recovered" || attempts != 2 {
+		t.Fatalf("got title=%q attempts=%d, want Recovered/2", alb.Title, attempts)
+	}
+
+	// Persistent 429 on MatchAlbum must return ErrRateLimited and NOT write a 24h miss.
+	_, err = c.MatchAlbum(context.Background(), "Miles Davis", "Kind of Blue")
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("MatchAlbum err = %v, want ErrRateLimited", err)
+	}
+	if _, cached := c.getCachedAlbumMatch("Miles Davis", "Kind of Blue"); cached {
+		t.Fatalf("MatchAlbum poisoned negative cache after 429")
+	}
+}
+
+func TestClient_SyncFavoritesAbortsOnTransientError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/favorite/getUserFavorites":
+			if r.URL.Query().Get("type") == "albums" {
+				_, _ = w.Write([]byte(`{"albums":{"total":1,"items":[{"id":"alb-1","title":"Demo","artist":{"name":"Artist"}}]}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"tracks":{"total":0,"items":[]}}`))
+		case "/album/get":
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"message":"Too many requests"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, AppID: "app", AuthToken: "tok"})
+	defer func() { _ = c.Close() }()
+
+	if _, err := c.SyncFavorites(context.Background()); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("SyncFavorites err = %v, want ErrRateLimited (must not silently commit 0-track stub)", err)
 	}
 }

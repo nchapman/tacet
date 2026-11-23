@@ -82,9 +82,24 @@ func (c *Client) getCachedJSONValid(ctx context.Context, path string, params url
 		// Corrupt or semantically empty cached payload: fall through to re-fetch and heal.
 	}
 	gen := c.authGen.Load()
-	body, err := c.getRawJSON(ctx, path, params, true)
-	if err != nil {
-		return err
+	ch := c.sf.DoChan(key, func() (any, error) {
+		fetchCtx := context.WithoutCancel(ctx)
+		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+			var cancel context.CancelFunc
+			fetchCtx, cancel = context.WithTimeout(fetchCtx, 20*time.Second)
+			defer cancel()
+		}
+		return c.getRawJSON(fetchCtx, path, params, true)
+	})
+	var body []byte
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return res.Err
+		}
+		body, _ = res.Val.([]byte)
 	}
 	if err := json.Unmarshal(body, dst); err != nil {
 		return err

@@ -123,36 +123,64 @@ func (c *Client) SyncFavorites(ctx context.Context) (library.RemoteCollection, e
 		}
 	}
 
-	// Hydrate full tracklists for favorited albums with bounded concurrency (4 workers)
-	// so every synced album is searchable by track title and immediately playable.
+	// Hydrate full tracklists for favorited albums with a fixed worker pool so every
+	// synced album is searchable by track title and immediately playable. Transient
+	// errors (429, 5xx, timeout, cancel) abort the sync instead of overwriting
+	// existing SQLite tracklists with 0-track stubs; 404 stubs are marked unavailable.
 	albums := make([]library.Album, len(favAlbums))
-	sem := make(chan struct{}, 4)
-	var wg sync.WaitGroup
-	for i, qa := range favAlbums {
-		wg.Add(1)
-		go func(idx int, stub qAlbum) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				albums[idx] = stub.toLibraryAlbum(false)
-				return
-			}
-			full, err := c.GetAlbum(ctx, stub.ID)
-			if err != nil {
-				log.Printf("qobuz favorites sync: album %s tracklist fetch failed (%v); using summary", stub.ID, err)
-				summary := stub.toLibraryAlbum(false)
-				if errors.Is(err, ErrNotFound) {
-					summary.Available = false
+	if len(favAlbums) > 0 {
+		type hydrateJob struct {
+			idx  int
+			stub qAlbum
+		}
+		jobs := make(chan hydrateJob, len(favAlbums))
+		for i, qa := range favAlbums {
+			jobs <- hydrateJob{idx: i, stub: qa}
+		}
+		close(jobs)
+
+		hydrateCtx, cancelHydrate := context.WithCancel(ctx)
+		defer cancelHydrate()
+
+		var firstErr error
+		var errOnce sync.Once
+		var wg sync.WaitGroup
+		workers := min(3, len(favAlbums))
+		for range workers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for job := range jobs {
+					if hydrateCtx.Err() != nil {
+						return
+					}
+					full, err := c.GetAlbum(hydrateCtx, job.stub.ID)
+					if err != nil {
+						if errors.Is(err, ErrNotFound) {
+							log.Printf("qobuz favorites sync: album %s not found; marking unavailable", job.stub.ID)
+							summary := job.stub.toLibraryAlbum(false)
+							summary.Available = false
+							albums[job.idx] = summary
+							continue
+						}
+						errOnce.Do(func() {
+							firstErr = fmt.Errorf("hydrate qobuz favorite album %s: %w", job.stub.ID, err)
+							cancelHydrate()
+						})
+						return
+					}
+					albums[job.idx] = full
 				}
-				albums[idx] = summary
-				return
-			}
-			albums[idx] = full
-		}(i, qa)
+			}()
+		}
+		wg.Wait()
+		if firstErr != nil {
+			return library.RemoteCollection{}, firstErr
+		}
+		if err := ctx.Err(); err != nil {
+			return library.RemoteCollection{}, err
+		}
 	}
-	wg.Wait()
 
 	return library.RemoteCollection{
 		Albums: albums,
