@@ -16,9 +16,10 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { fmtDuration, fmtOutputQuality, rendererLossyCodec } from "@/api/format";
+import { type PlaybackClockState, syncPlaybackClock, tickPlaybackClock } from "@/lib/playbackClock";
 import type { AudioQuality, RepeatMode, StreamMode, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
 import { NowPlayingOverlay } from "@/components/NowPlayingOverlay";
@@ -55,17 +56,6 @@ interface PlayerBarProps {
   onJumpItem?: (itemId: string) => void;
   onOpenAlbum?: (albumId: string) => void;
   onOpenArtist?: (artist: string) => void;
-}
-
-function computeAnchoredPosition(zone: ZoneSnapshot | null, clockOffsetMs: number, nowMs: number): number {
-  if (!zone) return 0;
-  const base = zone.positionSec ?? 0;
-  if (zone.state !== "playing" || !zone.clockAnchored) return base;
-  const updatedMs = Date.parse(zone.positionUpdatedAt);
-  if (!Number.isFinite(updatedMs)) return base;
-  const elapsed = Math.max(0, Math.floor((nowMs - clockOffsetMs - updatedMs) / 1000));
-  const maxDur = zone.durationSec || zone.currentTrack?.durationSec || 0;
-  return maxDur > 0 ? Math.min(maxDur, base + elapsed) : base + elapsed;
 }
 
 export const PlayerBar = memo(function PlayerBar({
@@ -125,17 +115,42 @@ export const PlayerBar = memo(function PlayerBar({
     });
   }, [setSearchParams]);
 
-  const [positionSec, setPositionSec] = useState<number>(() =>
-    computeAnchoredPosition(activeZone, getClockOffsetMs(), Date.now()),
-  );
+  const clockRef = useRef<PlaybackClockState | null>(null);
+  const [positionSec, setPositionSec] = useState<number>(() => activeZone?.positionSec ?? 0);
+
   useEffect(() => {
-    const sync = () => {
-      const next = computeAnchoredPosition(activeZone, getClockOffsetMs(), Date.now());
+    if (!activeZone) {
+      clockRef.current = null;
+      setPositionSec(0);
+      return;
+    }
+    const nowMs = Date.now();
+    const rawUpdatedMs = Date.parse(activeZone.positionUpdatedAt);
+    const updatedMs = Number.isFinite(rawUpdatedMs) ? rawUpdatedMs + getClockOffsetMs() : nowMs;
+    const trackKey = activeZone.currentItemId || activeZone.currentTrack?.id || String(activeZone.currentIndex);
+    const durationSec = Math.max(0, activeZone.durationSec || activeZone.currentTrack?.durationSec || 0);
+    const playing = activeZone.state === "playing";
+
+    const synced = syncPlaybackClock(clockRef.current, {
+      zoneId: activeZone.zoneId,
+      trackKey,
+      playing,
+      serverPosSec: activeZone.positionSec ?? 0,
+      positionUpdatedAtMs: updatedMs,
+      durationSec,
+      nowMs,
+    });
+    clockRef.current = synced;
+    const initialDisplay = Math.floor(synced.displayPos);
+    setPositionSec((prev) => (prev === initialDisplay ? prev : initialDisplay));
+
+    if (!playing) return;
+    const id = window.setInterval(() => {
+      if (!clockRef.current) return;
+      clockRef.current = tickPlaybackClock(clockRef.current, Date.now());
+      const next = Math.floor(clockRef.current.displayPos);
       setPositionSec((prev) => (prev === next ? prev : next));
-    };
-    sync();
-    if (activeZone?.state !== "playing" || !activeZone.clockAnchored) return;
-    const id = window.setInterval(sync, 500);
+    }, 250);
     return () => window.clearInterval(id);
   }, [activeZone, getClockOffsetMs]);
 

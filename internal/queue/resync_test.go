@@ -277,9 +277,9 @@ func TestGaplessTransition_WithoutPositionResetsPositionAndDoesNotFalseScrobble(
 	}
 }
 
-func TestClockAnchored_Lifecycle(t *testing.T) {
+func TestTransitioning_IgnoresStaleRelTime(t *testing.T) {
 	mgr := NewManager(4320, "http://192.168.1.10:4320", nil)
-	zoneID := "uuid:linkplay-anchor"
+	zoneID := "uuid:linkplay-trans"
 	tracks := []library.Track{
 		{ID: "local:t1", Source: library.SourceLocal, Title: "Track 1", DurationSec: 200, MIME: "audio/flac"},
 	}
@@ -299,52 +299,9 @@ func TestClockAnchored_Lifecycle(t *testing.T) {
 		t.Fatalf("ReplaceQueue: %v", err)
 	}
 
-	// Poll during TRANSITIONING must ignore stale RelTime=20s and keep clockAnchored=false.
 	mgr.pollOne(context.Background(), zoneID)
 	snap, _ := mgr.Zone(zoneID)
-	if snap.PositionSec != 0 || snap.ClockAnchored {
-		t.Fatalf("during TRANSITIONING: pos=%d anchored=%v, want 0/false", snap.PositionSec, snap.ClockAnchored)
-	}
-
-	// Positionless GENA PLAYING leaves clockAnchored=false so client doesn't tick ahead.
-	mgr.HandleDeviceEvent(upnp.DeviceEvent{
-		RendererID: zoneID,
-		Seq:        1,
-		HasState:   true,
-		State:      "PLAYING",
-	})
-	snap, _ = mgr.Zone(zoneID)
-	if snap.State != StatePlaying || snap.ClockAnchored {
-		t.Fatalf("after positionless GENA PLAYING: state=%q anchored=%v, want playing/false", snap.State, snap.ClockAnchored)
-	}
-
-	// Poll PLAYING at pos=0 still unanchored.
-	ctrl.mu.Lock()
-	ctrl.status.State = "PLAYING"
-	ctrl.status.Position = 0
-	ctrl.mu.Unlock()
-	mgr.pollOne(context.Background(), zoneID)
-	snap, _ = mgr.Zone(zoneID)
-	if snap.ClockAnchored {
-		t.Fatalf("at PLAYING pos=0: clockAnchored=true, want false")
-	}
-
-	// Poll PLAYING at pos=1s anchors the clock!
-	ctrl.mu.Lock()
-	ctrl.status.Position = 1 * time.Second
-	ctrl.mu.Unlock()
-	mgr.pollOne(context.Background(), zoneID)
-	snap, _ = mgr.Zone(zoneID)
-	if !snap.ClockAnchored || snap.PositionSec != 1 {
-		t.Fatalf("at PLAYING pos=1s: pos=%d anchored=%v, want 1/true", snap.PositionSec, snap.ClockAnchored)
-	}
-
-	// Pause clears clockAnchored.
-	if _, err := mgr.Pause(context.Background(), zoneID); err != nil {
-		t.Fatalf("Pause: %v", err)
-	}
-	snap, _ = mgr.Zone(zoneID)
-	if snap.ClockAnchored {
-		t.Fatalf("after Pause: clockAnchored=true, want false")
+	if snap.PositionSec != 0 {
+		t.Fatalf("during TRANSITIONING: pos=%d, want 0", snap.PositionSec)
 	}
 }

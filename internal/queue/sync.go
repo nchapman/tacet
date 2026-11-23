@@ -51,8 +51,6 @@ func (m *Manager) replaceDeviceQueueAndPlay(
 		z.status.Duration = curMedia.Duration
 		z.status.TrackURI = curMedia.URL
 		z.positionUpdatedAt = time.Now().UTC()
-		z.clockAnchored = false
-		z.unanchoredAt = z.positionUpdatedAt
 		z.lastPlaybackEmit = z.positionUpdatedAt
 		z.wasPlaying = false
 		z.loadedAt = time.Now()
@@ -542,18 +540,10 @@ func (m *Manager) pollTick(ctx context.Context) {
 		var interval time.Duration
 		switch {
 		case isPlaying:
-			if !z.clockAnchored {
-				// Poll at 1s until the renderer reports advancing audio (Position > 0)
-				// so we can anchor the client clock cleanly; cap at 15s for live streams.
-				if z.unanchoredAt.IsZero() || now.Sub(z.unanchoredAt) <= 15*time.Second {
-					interval = 1 * time.Second
-				} else {
-					interval = 20 * time.Second
-				}
-			} else if pushConnected {
-				// Anchored with live GENA/Cast push: only poll every 20s for external
-				// seeks/drift, or every 2s near track end on plain UPnP to arm SetNextURI.
-				interval = 20 * time.Second
+			if pushConnected {
+				// Live GENA/Cast push: poll every 15s for gentle clock sync and external
+				// seeks, or every 2s near track end on plain UPnP to arm SetNextURI.
+				interval = 15 * time.Second
 				_, isNativeQueue := z.ctrl.(upnp.QueueController)
 				if !isNativeQueue && !z.nextPreloaded && z.status.Duration > 0 {
 					estPos := z.status.Position + now.Sub(z.positionUpdatedAt)
@@ -771,7 +761,6 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 	prevGapless := z.nextPreloaded
 	prevPos := z.status.Position
 	prevPosUpdated := z.positionUpdatedAt
-	prevAnchored := z.clockAnchored
 	prevDur := z.status.Duration
 	prevVol := z.status.Volume
 	prevMute := z.status.Muted
@@ -791,7 +780,6 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		}
 		z.status.State = "STOPPED"
 		z.wasPlaying = false
-		z.clockAnchored = false
 		res := updateResult{fallbackAdvanceIdx: -1, gen: z.generation}
 		if NormalizePlaybackState(z.status.State) != prevState || z.status.Volume != prevVol || z.status.Muted != prevMute {
 			z.revision++
@@ -830,20 +818,6 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 			}
 		}
 	}
-
-	// Maintain clockAnchored: true only once the renderer is PLAYING and has
-	// reported an advancing position (or is a Cast/browser player whose PLAYING
-	// event already carries an exact decoded timestamp).
-	kind := z.ctrl.Info().Kind
-	if st.State != "PLAYING" {
-		if z.clockAnchored || z.unanchoredAt.IsZero() {
-			z.unanchoredAt = now
-		}
-		z.clockAnchored = false
-	} else if !staleTrack && st.HasPosition && (st.Position > 0 || kind == "player" || kind == "cast") {
-		z.clockAnchored = true
-		z.unanchoredAt = time.Time{}
-	}
 	if st.HasVolValue {
 		z.status.Volume = st.Volume
 	}
@@ -867,7 +841,6 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 			if !st.HasPosition {
 				z.status.Position = 0
 			}
-			z.clockAnchored = st.HasPosition && st.Position > 0
 			z.loadedAt = time.Now()
 			z.positionUpdatedAt = now
 		} else if z.currentURI == "" && st.TrackURI != "" {
@@ -900,7 +873,6 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		z.nextPreloaded = false
 		z.nextPreloading = false
 		z.nextFailed = false
-		z.clockAnchored = st.HasPosition && st.Position > 0
 		z.loadedAt = time.Now()
 		z.positionUpdatedAt = now
 	}
@@ -967,26 +939,29 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 	newState := NormalizePlaybackState(z.status.State)
 	volChanged := z.status.Volume != prevVol || z.status.Muted != prevMute
 
-	// Emit zone.playback on discrete state/track/duration/gapless/anchor changes,
-	// or when an anchored clock drifts >2s (e.g. external seek on the speaker),
-	// or when position changes while not playing.
+	// Emit zone.playback on discrete state/track/duration/gapless changes,
+	// or whenever a poll brings a real position update (client slews smoothly
+	// for small jitter and snaps on seeks/jumps).
 	discreteChange := newState != prevState ||
 		z.currentIndex != prevIdx ||
 		z.nextPreloaded != prevGapless ||
-		z.status.Duration != prevDur ||
-		z.clockAnchored != prevAnchored
+		z.status.Duration != prevDur
 
-	posJump := false
+	posUpdate := false
 	if st.HasPosition && st.State != "TRANSITIONING" {
-		if newState == StatePlaying && prevAnchored && !prevPosUpdated.IsZero() {
-			expected := prevPos + now.Sub(prevPosUpdated)
-			diff := z.status.Position - expected
-			if diff < 0 {
-				diff = -diff
+		if newState == StatePlaying {
+			if !prevPosUpdated.IsZero() {
+				expected := prevPos + now.Sub(prevPosUpdated)
+				diff := z.status.Position - expected
+				if diff < 0 {
+					diff = -diff
+				}
+				posUpdate = diff > 2*time.Second || now.Sub(z.lastPlaybackEmit) >= 10*time.Second
+			} else {
+				posUpdate = true
 			}
-			posJump = diff > 2*time.Second
-		} else if newState != StatePlaying && int(z.status.Position.Seconds()) != int(prevPos.Seconds()) {
-			posJump = true
+		} else if int(z.status.Position.Seconds()) != int(prevPos.Seconds()) {
+			posUpdate = true
 		}
 	}
 
@@ -995,7 +970,7 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		res.emitVolume = true
 		res.volumeEv = m.volumeEventLocked(z)
 	}
-	if discreteChange || posJump {
+	if discreteChange || posUpdate {
 		z.revision++
 		z.lastPlaybackEmit = now
 		res.emitPlayback = true

@@ -93,7 +93,6 @@ type ZoneSnapshot struct {
 	State             PlaybackState     `json:"state"`
 	PositionSec       int               `json:"positionSec"`
 	PositionUpdatedAt time.Time         `json:"positionUpdatedAt"`
-	ClockAnchored     bool              `json:"clockAnchored"`
 	DurationSec       int               `json:"durationSec"`
 	Volume            int               `json:"volume"`
 	Muted             bool              `json:"muted"`
@@ -116,7 +115,6 @@ type PlaybackEvent struct {
 	State             PlaybackState  `json:"state"`
 	PositionSec       int            `json:"positionSec"`
 	PositionUpdatedAt time.Time      `json:"positionUpdatedAt"`
-	ClockAnchored     bool           `json:"clockAnchored"`
 	ServerTime        time.Time      `json:"serverTime"`
 	DurationSec       int            `json:"durationSec"`
 	CurrentIndex      int            `json:"currentIndex"`
@@ -187,8 +185,6 @@ type zone struct {
 	revision           uint64
 	status             upnp.TransportStatus
 	positionUpdatedAt  time.Time
-	clockAnchored      bool
-	unanchoredAt       time.Time
 	lastPlaybackEmit   time.Time
 	currentURI         string
 	nextURI            string
@@ -913,15 +909,13 @@ func (m *Manager) snapshotLocked(z *zone) ZoneSnapshot {
 	if repeat == "" {
 		repeat = RepeatOff
 	}
-	state := NormalizePlaybackState(z.status.State)
 	return ZoneSnapshot{
 		ZoneID:            info.ID,
 		Renderer:          info,
 		Revision:          z.revision,
-		State:             state,
+		State:             NormalizePlaybackState(z.status.State),
 		PositionSec:       int(z.status.Position.Seconds()),
 		PositionUpdatedAt: updatedAt,
-		ClockAnchored:     z.clockAnchored && state == StatePlaying,
 		DurationSec:       durSec,
 		Volume:            z.status.Volume,
 		Muted:             z.status.Muted,
@@ -946,7 +940,6 @@ func (m *Manager) playbackEventLocked(z *zone) PlaybackEvent {
 		State:             snap.State,
 		PositionSec:       snap.PositionSec,
 		PositionUpdatedAt: snap.PositionUpdatedAt,
-		ClockAnchored:     snap.ClockAnchored,
 		ServerTime:        time.Now().UTC(),
 		DurationSec:       snap.DurationSec,
 		CurrentIndex:      snap.CurrentIndex,

@@ -164,7 +164,6 @@ export function useTacet(defaultZoneId?: string | null) {
             state: ev.state,
             positionSec: ev.positionSec,
             positionUpdatedAt: ev.positionUpdatedAt,
-            clockAnchored: ev.clockAnchored,
             durationSec: ev.durationSec,
             currentIndex: ev.currentIndex,
             currentItemId: ev.currentItemId,

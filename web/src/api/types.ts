@@ -246,7 +246,6 @@ export interface ZoneSnapshot {
   state: PlaybackState;
   positionSec: number;
   positionUpdatedAt: string;
-  clockAnchored?: boolean;
   durationSec: number;
   volume: number;
   muted: boolean;
@@ -412,7 +411,6 @@ export interface PlaybackEvent {
   state: PlaybackState;
   positionSec: number;
   positionUpdatedAt: string;
-  clockAnchored?: boolean;
   serverTime?: string;
   durationSec: number;
   currentIndex: number;
