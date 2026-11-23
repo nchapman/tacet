@@ -556,11 +556,12 @@ func (m *Manager) pollTick(ctx context.Context) {
 			}
 		case isTransitioning:
 			if pushConnected {
-				// GENA/Cast pushes PLAYING immediately when transition finishes;
-				// skip polling mid-transition to avoid reading stale RelTime.
-				continue
+				// GENA/Cast pushes PLAYING immediately on normal transitions (<2s);
+				// keep a 10s self-healing poll in case a GENA packet is dropped on Wi-Fi.
+				interval = 10 * time.Second
+			} else {
+				interval = 2 * time.Second
 			}
-			interval = 2 * time.Second
 		default:
 			if pushConnected {
 				interval = 60 * time.Second
