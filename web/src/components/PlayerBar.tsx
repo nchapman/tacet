@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { memo, useEffect, useState } from "react";
-import { fmtDuration, fmtOutputQuality, isHiResOutput } from "@/api/format";
+import { fmtDuration, fmtOutputQuality } from "@/api/format";
 import type { AudioQuality, RepeatMode, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
 import { AlbumArt, AmbientBackdrop } from "@/components/ui/artwork";
@@ -137,7 +137,6 @@ export const PlayerBar = memo(function PlayerBar({
     : "No Device";
   const qualLabel = track ? fmtOutputQuality(track, activeZone?.activeQuality) : "";
   const trackProvider = track ? track.provider || track.source : "";
-  const hiRes = track ? isHiResOutput(track, activeZone?.activeQuality) : false;
   const progressPct = duration > 0 ? Math.min(100, (shownPos / duration) * 100) : 0;
 
   return (
@@ -198,7 +197,7 @@ export const PlayerBar = memo(function PlayerBar({
                     {track.artist}
                   </button>
                   {(trackProvider || qualLabel) && (
-                    <SignalBadge provider={trackProvider} format={qualLabel} hiRes={hiRes} size="sm" />
+                    <SignalBadge provider={trackProvider} format={qualLabel} size="sm" />
                   )}
                 </div>
               </>
@@ -581,7 +580,7 @@ export const PlayerBar = memo(function PlayerBar({
                   <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-[11px] font-mono tabular-nums text-muted-foreground">
                     <span>{fmtDuration(shownPos)}</span>
                     {trackProvider || qualLabel ? (
-                      <SignalBadge provider={trackProvider} format={qualLabel} hiRes={hiRes} size="sm" />
+                      <SignalBadge provider={trackProvider} format={qualLabel} size="sm" />
                     ) : (
                       <span />
                     )}

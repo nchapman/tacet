@@ -3,7 +3,6 @@ import { cn } from "@/lib/utils";
 interface SignalBadgeProps {
   provider?: string;
   format?: string;
-  hiRes?: boolean;
   size?: "sm" | "md";
   className?: string;
 }
@@ -22,16 +21,13 @@ function normalizeProvider(provider?: string): { label: string; isLocal: boolean
 function compactFormat(label: string): string {
   const trimmed = label.trim();
   if (!trimmed) return "";
-  // "FLAC 24-bit / 96 kHz" -> "24/96", "24-bit / 96 kHz" -> "24/96"
-  const pcm = trimmed.match(/(\d+)-bit\s*\/\s*([\d.]+)\s*kHz/i);
-  if (pcm) {
-    return `${pcm[1]}/${pcm[2]}`;
-  }
-  // "OPUS 256 kbps" -> "OPUS 256k"
-  return trimmed.replace(/\s*kbps$/i, "k");
+  // "FLAC 24-bit / 96 kHz" -> "FLAC 24/96", "24-bit / 96 kHz" -> "24/96"
+  return trimmed
+    .replace(/(\d+)-bit\s*\/\s*([\d.]+)\s*kHz/i, "$1/$2")
+    .replace(/\s*kbps$/i, "k");
 }
 
-export function SignalBadge({ provider, format, hiRes = false, size = "md", className }: SignalBadgeProps) {
+export function SignalBadge({ provider, format, size = "md", className }: SignalBadgeProps) {
   const { label: srcLabel, isLocal, isQobuz } = normalizeProvider(provider);
   const displayFormat = format ? (size === "sm" ? compactFormat(format) : format) : "";
 
@@ -64,12 +60,7 @@ export function SignalBadge({ provider, format, hiRes = false, size = "md", clas
         </span>
       )}
       {srcLabel && displayFormat && <span className="h-2.5 w-px bg-white/15" aria-hidden="true" />}
-      {displayFormat && (
-        <span className="inline-flex items-center gap-1.5 font-mono text-foreground/75">
-          {hiRes && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/85" aria-hidden="true" />}
-          <span>{displayFormat}</span>
-        </span>
-      )}
+      {displayFormat && <span className="font-mono text-foreground/75">{displayFormat}</span>}
     </span>
   );
 }

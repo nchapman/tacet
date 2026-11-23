@@ -348,7 +348,6 @@ export function ArtistsView({
                     <div className="space-y-0.5">
                       {visibleTracks.map((tr, idx) => {
                         const qual = fmtQuality(tr);
-                        const hiRes = isHiRes(tr.bitDepth, tr.sampleRate);
                         return (
                           <div
                             key={tr.id}
@@ -375,14 +374,8 @@ export function ArtistsView({
                                 <div className="truncate text-xs text-muted-foreground">{tr.album}</div>
                               )}
                             </div>
-                            <div className="hidden sm:flex items-center justify-start gap-1.5 whitespace-nowrap">
+                            <div className="hidden sm:flex items-center justify-start whitespace-nowrap">
                               {qual && <span className="font-mono text-[11px] text-muted-foreground/75">{qual}</span>}
-                              {hiRes && (
-                                <span
-                                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/75"
-                                  title="Hi-Res Audio"
-                                />
-                              )}
                             </div>
                             <div className="hidden sm:block text-right font-mono text-xs text-muted-foreground">
                               {fmtDuration(tr.durationSec)}

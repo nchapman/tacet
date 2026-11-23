@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Award, Check, Clock3, FileText, Layers, ListPlus, Pause, Play, Plus, SkipForward, Sparkles, Users } from "lucide-react";
 import { useState } from "react";
 import { tacetClient } from "@/api/client";
-import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
+import { fmtAlbumQuality, fmtDuration, fmtQuality } from "@/api/format";
 import type { Album, AlbumVersion, QueuePosition, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
@@ -109,7 +109,10 @@ export function AlbumView({
   const provider = (album.provider || album.source || "local").toLowerCase();
   const externalId = album.externalId || album.id.replace(`${provider}:`, "");
   const qLabel = fmtAlbumQuality(album);
-  const hiRes = isHiRes(album.maxBitDepth, album.maxSampleRate);
+  const fullFormat =
+    qLabel && qLabel.startsWith("DSD")
+      ? qLabel
+      : [album.primaryFormat, qLabel].filter(Boolean).join(" ");
   const versions = album.versions ?? [];
   const tracks = album.tracks ?? [];
   const totalTime = totalAlbumDuration(album);
@@ -174,7 +177,7 @@ export function AlbumView({
           <ArrowLeft className="h-4 w-4" />
           <span>{backLabel}</span>
         </Button>
-        <SignalBadge provider={album.provider || album.source} format={qLabel} hiRes={hiRes} size="md" />
+        <SignalBadge provider={album.provider || album.source} format={fullFormat} size="md" />
       </PageHeader>
 
       <div className="relative z-10 px-4 sm:px-8 pt-6 sm:pt-8">
@@ -461,11 +464,8 @@ export function AlbumView({
                   </button>
 
                   {/* Format badge (desktop) */}
-                  <div className="hidden sm:flex items-center gap-1.5">
+                  <div className="hidden sm:flex items-center">
                     {trQual && <span className="font-mono text-[11px] text-muted-foreground/75">{trQual}</span>}
-                    {isHiRes(tr.bitDepth, tr.sampleRate) && (
-                      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/75" title="Hi-Res Audio" />
-                    )}
                   </div>
 
                   {/* Duration */}

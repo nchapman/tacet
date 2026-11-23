@@ -519,7 +519,6 @@ function TopResultCard({
   if (result.type === "track" && result.track) {
     const tr = result.track;
     const qLabel = fmtQuality(tr);
-    const hiRes = isHiRes(tr.bitDepth, tr.sampleRate);
     return (
       <div className="group relative flex h-[216px] flex-col justify-between rounded-2xl border border-white/[0.08] bg-white/[0.04] p-5 transition-colors hover:bg-white/[0.07]">
         <div className="flex items-start justify-between gap-3">
@@ -559,9 +558,8 @@ function TopResultCard({
             </button>
             {tr.album && <span className="truncate">· {tr.album}</span>}
             {qLabel && (
-              <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+              <span className="inline-flex items-center font-mono text-[11px] text-muted-foreground">
                 <span>· {qLabel}</span>
-                {hiRes && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/75" title="Hi-Res Audio" />}
               </span>
             )}
           </div>
@@ -621,7 +619,6 @@ function TrackResultRow({
   onOpenArtist: () => void;
 }) {
   const qual = fmtQuality(track);
-  const hiRes = isHiRes(track.bitDepth, track.sampleRate);
   return (
     <div
       className={cn(
@@ -666,9 +663,8 @@ function TrackResultRow({
       </div>
 
       {qual && (
-        <span className="hidden sm:inline-flex w-44 items-center gap-1.5 font-mono text-[11px] text-muted-foreground/75 shrink-0">
+        <span className="hidden sm:inline-flex w-44 items-center font-mono text-[11px] text-muted-foreground/75 shrink-0">
           {qual}
-          {hiRes && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#d4af68]/75" title="Hi-Res Audio" />}
         </span>
       )}
 
