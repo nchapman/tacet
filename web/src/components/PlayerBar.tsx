@@ -1,6 +1,5 @@
 import {
   AlertCircle,
-  ChevronDown,
   Laptop,
   ListMusic,
   Maximize2,
@@ -16,16 +15,15 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router";
 import { fmtDuration, fmtOutputQuality } from "@/api/format";
 import type { AudioQuality, RepeatMode, StreamMode, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
 import { NowPlayingOverlay } from "@/components/NowPlayingOverlay";
 import { SignalPathPopover } from "@/components/SignalPathPopover";
-import { AlbumArt, AmbientBackdrop } from "@/components/ui/artwork";
+import { AlbumArt } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
-import { SignalBadge } from "@/components/ui/SignalBadge";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
 import type { BrowserPlayerController } from "@/hooks/useBrowserPlayer";
@@ -99,9 +97,33 @@ export const PlayerBar = memo(function PlayerBar({
   const [scrubPos, setScrubPos] = useState<number | null>(null);
   const [volDraft, setVolDraft] = useState<number | null>(null);
   const [devicePopoverOpen, setDevicePopoverOpen] = useState(false);
-  const [mobileExpanded, setMobileExpanded] = useState(false);
-  const [desktopExpanded, setDesktopExpanded] = useState(false);
-  const [mobilePanel, setMobilePanel] = useState<"player" | "devices">("player");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const playerParam = searchParams.get("player");
+  const expanded = playerParam === "1" || playerParam === "devices";
+  const overlayPanel: "player" | "devices" = playerParam === "devices" ? "devices" : "player";
+
+  const openOverlay = useCallback(
+    (panel: "player" | "devices") => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("player", panel === "devices" ? "devices" : "1");
+          return next;
+        },
+        { replace: expanded },
+      );
+    },
+    [expanded, setSearchParams],
+  );
+
+  const closeOverlay = useCallback(() => {
+    setSearchParams((prev) => {
+      if (!prev.has("player")) return prev;
+      const next = new URLSearchParams(prev);
+      next.delete("player");
+      return next;
+    });
+  }, [setSearchParams]);
 
   // Local 1s playback clock tick scoped strictly to PlayerBar so the rest of
   // the app never re-renders while a track plays.
@@ -178,7 +200,7 @@ export const PlayerBar = memo(function PlayerBar({
           <button
             type="button"
             disabled={!track}
-            onClick={() => setDesktopExpanded(true)}
+            onClick={() => openOverlay("player")}
             aria-label="Open full screen player"
             className="group relative h-13 w-13 shrink-0 rounded-lg overflow-hidden shadow-lg ring-1 ring-white/10 cursor-pointer disabled:cursor-default"
             title={track ? "Open full screen player" : undefined}
@@ -423,7 +445,7 @@ export const PlayerBar = memo(function PlayerBar({
             variant="ghost"
             size="icon-sm"
             disabled={!track}
-            onClick={() => setDesktopExpanded(true)}
+            onClick={() => openOverlay("player")}
             aria-label="Open full screen player"
             title="Full screen player"
             className="text-muted-foreground hover:text-foreground"
@@ -432,30 +454,6 @@ export const PlayerBar = memo(function PlayerBar({
           </Button>
         </div>
       </footer>
-
-      <NowPlayingOverlay
-        open={desktopExpanded}
-        onClose={() => setDesktopExpanded(false)}
-        activeZone={activeZone}
-        activeDeviceName={activeDeviceName}
-        isBrowserActive={isBrowserActive}
-        streamMode={streamMode}
-        qualLabel={qualLabel}
-        shownPos={shownPos}
-        duration={duration}
-        shownVol={shownVol}
-        onScrub={setScrubPos}
-        onSeek={onSeek}
-        onVolDraft={setVolDraft}
-        onVolume={onVolume}
-        onMute={onMute}
-        onTransport={onTransport}
-        onShuffle={onShuffle}
-        onRepeat={onRepeat}
-        onJumpItem={onJumpItem}
-        onOpenAlbum={onOpenAlbum}
-        onOpenArtist={onOpenArtist}
-      />
 
       {/* ==================== MOBILE MINI-PLAYER (< lg) ==================== */}
       <div className="lg:hidden shrink-0 px-2 pb-1.5 bg-transparent">
@@ -468,10 +466,7 @@ export const PlayerBar = memo(function PlayerBar({
           <div className="flex items-center gap-3 px-2.5 py-2">
             <button
               type="button"
-              onClick={() => {
-                setMobilePanel("player");
-                setMobileExpanded(true);
-              }}
+              onClick={() => openOverlay("player")}
               className="flex min-w-0 flex-1 items-center gap-3 text-left cursor-pointer"
             >
               <AlbumArt
@@ -498,10 +493,7 @@ export const PlayerBar = memo(function PlayerBar({
               type="button"
               variant="ghost"
               size="icon-sm"
-              onClick={() => {
-                setMobilePanel("devices");
-                setMobileExpanded(true);
-              }}
+              onClick={() => openOverlay("devices")}
               aria-label="Output device"
               className={cn(hasZone && "text-emerald-400")}
             >
@@ -523,247 +515,41 @@ export const PlayerBar = memo(function PlayerBar({
         </div>
       </div>
 
-      {/* ==================== MOBILE FULL-SCREEN NOW PLAYING SHEET ==================== */}
-      <Dialog open={mobileExpanded} onOpenChange={setMobileExpanded}>
-        <DialogContent
-          hideClose
-          className="lg:hidden inset-0 left-0 top-0 translate-x-0 translate-y-0 w-full max-w-none h-dvh rounded-none border-0 p-0 bg-[#09090b] overflow-hidden flex flex-col"
-        >
-          <DialogTitle className="sr-only">Now Playing</DialogTitle>
-          <AmbientBackdrop artworkUrl={track?.artworkUrl} intensity="full" />
-
-          <div className="relative z-10 flex h-full flex-col px-6 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))]">
-            {/* Top bar */}
-            <div className="flex items-center justify-between">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => setMobileExpanded(false)}
-                aria-label="Minimize player"
-              >
-                <ChevronDown className="h-6 w-6" />
-              </Button>
-              <div className="text-center min-w-0 px-2">
-                <div className="text-[10.5px] font-semibold uppercase tracking-widest text-muted-foreground">
-                  {mobilePanel === "devices" ? "Output Device" : "Playing on"}
-                </div>
-                <div className="truncate text-xs font-medium text-emerald-300">{activeDeviceName}</div>
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => {
-                  setMobileExpanded(false);
-                  onToggleQueue();
-                }}
-                aria-label="Open queue"
-              >
-                <ListMusic className="h-5 w-5" />
-              </Button>
-            </div>
-
-            {mobilePanel === "devices" ? (
-              <div className="flex-1 overflow-y-auto py-6">
-                <div className="rounded-2xl border border-white/10 bg-black/40 p-2 backdrop-blur-xl">
-                  <DeviceList
-                    zones={zones}
-                    activeZoneId={activeZone?.zoneId ?? ""}
-                    discovering={discovering}
-                    transcodeAvailable={transcodeAvailable}
-                    browserPlayer={browserPlayer}
-                    onSelectZone={onSelectZone}
-                    onSetZoneQuality={onSetZoneQuality}
-                    onDiscover={onDiscover}
-                    onOpenConnect={() => {
-                      setMobileExpanded(false);
-                      onOpenConnect();
-                    }}
-                    onDone={() => setMobilePanel("player")}
-                  />
-                </div>
-              </div>
-            ) : (
-              <div className="flex flex-1 flex-col justify-between py-6 gap-6">
-                {/* Large album cover */}
-                <div className="flex items-center justify-center flex-1 min-h-0">
-                  <button
-                    type="button"
-                    disabled={!track?.albumId}
-                    onClick={() => {
-                      if (track?.albumId) {
-                        setMobileExpanded(false);
-                        onOpenAlbum?.(track.albumId);
-                      }
-                    }}
-                    className="aspect-square w-full max-w-[320px] rounded-2xl overflow-hidden shadow-[0_24px_60px_rgba(0,0,0,0.65)] ring-1 ring-white/15 cursor-pointer disabled:cursor-default"
-                  >
-                    <AlbumArt
-                      artworkUrl={track?.artworkUrl}
-                      alt={track?.album || track?.title || "Album cover"}
-                      size="lg"
-                      className="h-full w-full"
-                      priority
-                    />
-                  </button>
-                </div>
-
-                {/* Metadata */}
-                <div className="min-w-0 space-y-0.5">
-                  <h2 className="truncate text-xl font-semibold tracking-tight text-foreground">
-                    {track?.title || "Nothing Playing"}
-                  </h2>
-                  <p className="truncate text-sm text-muted-foreground">
-                    {track ? `${track.artist}${track.album ? ` · ${track.album}` : ""}` : "Select an album to begin"}
-                  </p>
-                </div>
-
-                {/* Seek slider + centered quality badge */}
-                <div className="space-y-1.5">
-                  <Slider
-                    aria-label="Seek position"
-                    min={0}
-                    max={duration || 1}
-                    step={1}
-                    value={[Math.min(shownPos, duration || 1)]}
-                    disabled={!hasZone || duration === 0}
-                    onValueChange={([v]) => setScrubPos(v)}
-                    onValueCommit={([v]) => {
-                      setScrubPos(null);
-                      onSeek(v);
-                    }}
-                  />
-                  <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-[11px] font-mono tabular-nums text-muted-foreground">
-                    <span>{fmtDuration(shownPos)}</span>
-                    {trackProvider || qualLabel ? (
-                      <SignalBadge provider={trackProvider} format={qualLabel} size="sm" />
-                    ) : (
-                      <span />
-                    )}
-                    <span className="text-right">{fmtDuration(duration)}</span>
-                  </div>
-                </div>
-
-                {/* Transport controls */}
-                <div className="flex items-center justify-between px-1">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    disabled={!hasZone}
-                    onClick={() => onShuffle(!shuffle)}
-                    aria-label={shuffle ? "Disable shuffle" : "Enable shuffle"}
-                    aria-pressed={shuffle}
-                    className={cn(
-                      "relative h-11 w-11",
-                      shuffle ? "text-emerald-400 hover:text-emerald-300" : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    <Shuffle className="h-5 w-5" />
-                    {shuffle && <span className="absolute bottom-1 h-1 w-1 rounded-full bg-emerald-400" />}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    disabled={!hasPlayable}
-                    onClick={() => onTransport("prev")}
-                    aria-label="Previous"
-                    className="h-12 w-12"
-                  >
-                    <SkipBack className="h-6 w-6 fill-current" />
-                  </Button>
-                  <button
-                    type="button"
-                    disabled={!hasPlayable}
-                    onClick={() => onTransport(playing ? "pause" : "play")}
-                    aria-label={playing ? "Pause" : "Play"}
-                    className="flex h-16 w-16 items-center justify-center rounded-full bg-white text-black shadow-xl active:scale-95 transition-transform disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-                  >
-                    {playing ? (
-                      <Pause className="h-7 w-7 fill-current" />
-                    ) : (
-                      <Play className="h-7 w-7 fill-current translate-x-0.5" />
-                    )}
-                  </button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    disabled={!hasPlayable}
-                    onClick={() => onTransport("next")}
-                    aria-label="Next"
-                    className="h-12 w-12"
-                  >
-                    <SkipForward className="h-6 w-6 fill-current" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    disabled={!hasZone}
-                    onClick={() => onRepeat(nextRepeatMode)}
-                    aria-label={repeatLabel}
-                    aria-pressed={repeat !== "off"}
-                    className={cn(
-                      "relative h-11 w-11",
-                      repeat !== "off"
-                        ? "text-emerald-400 hover:text-emerald-300"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {repeat === "one" ? <Repeat1 className="h-5 w-5" /> : <Repeat className="h-5 w-5" />}
-                    {repeat !== "off" && <span className="absolute bottom-1 h-1 w-1 rounded-full bg-emerald-400" />}
-                  </Button>
-                </div>
-
-                {/* Volume + Output Device switch */}
-                <div className="flex items-center gap-3 pt-1">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    disabled={!hasZone}
-                    onClick={() => onMute(!activeZone?.muted)}
-                    aria-label={activeZone?.muted ? "Unmute" : "Mute"}
-                  >
-                    {activeZone?.muted || shownVol === 0 ? (
-                      <VolumeX className="h-4 w-4" />
-                    ) : (
-                      <Volume2 className="h-4 w-4" />
-                    )}
-                  </Button>
-                  <Slider
-                    aria-label="Volume"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={[activeZone?.muted ? 0 : shownVol]}
-                    disabled={!hasZone}
-                    onValueChange={([v]) => setVolDraft(v)}
-                    onValueCommit={([v]) => {
-                      setVolDraft(null);
-                      onVolume(v);
-                    }}
-                    className="flex-1"
-                  />
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    className="rounded-full text-xs shrink-0"
-                    onClick={() => setMobilePanel("devices")}
-                  >
-                    {isBrowserActive ? <Laptop className="h-3.5 w-3.5" /> : <Speaker className="h-3.5 w-3.5" />}
-                    <span>Devices</span>
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* ==================== UNIFIED RESPONSIVE FULL-SCREEN PLAYER ==================== */}
+      <NowPlayingOverlay
+        open={expanded}
+        panel={overlayPanel}
+        onPanelChange={openOverlay}
+        onClose={closeOverlay}
+        zones={zones}
+        activeZone={activeZone}
+        activeDeviceName={activeDeviceName}
+        isBrowserActive={isBrowserActive}
+        discovering={discovering}
+        transcodeAvailable={transcodeAvailable}
+        browserPlayer={browserPlayer}
+        streamMode={streamMode}
+        qualLabel={qualLabel}
+        shownPos={shownPos}
+        duration={duration}
+        shownVol={shownVol}
+        onScrub={setScrubPos}
+        onSeek={onSeek}
+        onVolDraft={setVolDraft}
+        onVolume={onVolume}
+        onMute={onMute}
+        onTransport={onTransport}
+        onShuffle={onShuffle}
+        onRepeat={onRepeat}
+        onSelectZone={onSelectZone}
+        onSetZoneQuality={onSetZoneQuality}
+        onDiscover={onDiscover}
+        onOpenConnect={onOpenConnect}
+        onToggleQueue={onToggleQueue}
+        onJumpItem={onJumpItem}
+        onOpenAlbum={onOpenAlbum}
+        onOpenArtist={onOpenArtist}
+      />
     </>
   );
 });
