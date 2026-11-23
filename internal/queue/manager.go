@@ -813,9 +813,13 @@ func (m *Manager) UnregisterRenderer(zoneID string) bool {
 		}
 	}
 	m.zoneOrder = order
+	gena := m.gena
 	zones := m.zonesLocked()
 	m.mu.Unlock()
 
+	if gena != nil {
+		gena.UnwatchRenderer(zoneID)
+	}
 	if closer, ok := removed.ctrl.(io.Closer); ok {
 		_ = closer.Close()
 	}

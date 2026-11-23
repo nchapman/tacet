@@ -163,7 +163,7 @@ func (m *Manager) playPreparedMedia(
 		// via Status() or GENA, otherwise brief STOPPED states during buffering
 		// trigger cascading auto-advances across the queue.
 		z.wasPlaying = false
-		z.awaitingAudio = true
+		z.awaitingAudio = ctrl.Info().Kind != "player"
 		z.loadedAt = time.Now()
 		z.revision++
 	}
@@ -171,7 +171,9 @@ func (m *Manager) playPreparedMedia(
 	m.mu.Unlock()
 
 	m.emit("zone.playback", zoneID, pbEv)
-	m.startAwaitingAudioPoll(z, zoneID, gen)
+	if ctrl.Info().Kind != "player" {
+		m.startAwaitingAudioPoll(z, zoneID, gen)
+	}
 	return nil
 }
 
@@ -663,6 +665,7 @@ func (m *Manager) pollOne(ctx context.Context, zoneID string) {
 	z.polling = true
 	z.lastPoll = time.Now()
 	gen := z.generation
+	startRev := z.revision
 	ctrl := z.ctrl
 	m.mu.Unlock()
 
@@ -678,7 +681,7 @@ func (m *Manager) pollOne(ctx context.Context, zoneID string) {
 	}
 
 	m.mu.Lock()
-	if z.generation != gen {
+	if z.generation != gen || z.revision != startRev {
 		m.mu.Unlock()
 		return
 	}
@@ -709,13 +712,42 @@ func (m *Manager) finishUpdate(ctx context.Context, z *zone, zoneID string, res 
 			go onPlayed(*res.playedTrack)
 		}
 	}
+	m.mu.RLock()
+	runCtx := m.runCtx
+	m.mu.RUnlock()
 	if res.preloadTrack != nil {
-		pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		m.preloadNext(pctx, z, *res.preloadTrack, res.gen, res.preloadGen)
-		cancel()
+		tr := *res.preloadTrack
+		if runCtx != nil {
+			go func() {
+				pctx, cancel := context.WithTimeout(runCtx, 5*time.Second)
+				m.preloadNext(pctx, z, tr, res.gen, res.preloadGen)
+				cancel()
+			}()
+		} else {
+			pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			m.preloadNext(pctx, z, tr, res.gen, res.preloadGen)
+			cancel()
+		}
 	}
 	if res.fallbackAdvanceIdx >= 0 {
-		if err := m.loadAndPlay(ctx, z, res.fallbackAdvanceIdx, res.gen); err != nil {
+		idx := res.fallbackAdvanceIdx
+		if runCtx != nil {
+			go func() {
+				z.opMu.Lock()
+				defer z.opMu.Unlock()
+				m.mu.RLock()
+				stillCurrent := z.generation == res.gen
+				m.mu.RUnlock()
+				if !stillCurrent {
+					return
+				}
+				actx, cancel := context.WithTimeout(runCtx, 10*time.Second)
+				defer cancel()
+				if err := m.loadAndPlay(actx, z, idx, res.gen); err != nil {
+					log.Printf("auto-advance failed on %s: %v", z.ctrl.Info().Name, err)
+				}
+			}()
+		} else if err := m.loadAndPlay(ctx, z, idx, res.gen); err != nil {
 			log.Printf("auto-advance failed on %s: %v", z.ctrl.Info().Name, err)
 		}
 	}
@@ -747,6 +779,7 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		}
 		z.status.State = "STOPPED"
 		z.wasPlaying = false
+		z.awaitingAudio = false
 		res := updateResult{fallbackAdvanceIdx: -1, gen: z.generation}
 		if NormalizePlaybackState(z.status.State) != prevState || z.status.Volume != prevVol || z.status.Muted != prevMute {
 			z.revision++
@@ -756,10 +789,12 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		return res
 	}
 
-	// Ignore stale track reports (URI belongs to neither the current nor preloaded track).
-	staleTrack := !isNativeQueue && z.currentURI != "" && st.TrackURI != "" &&
+	// Ignore stale track reports (URI belongs to neither the current nor preloaded track,
+	// or a native-queue device still reporting the previous QueueIndex while awaitingAudio).
+	staleTrack := (!isNativeQueue && z.currentURI != "" && st.TrackURI != "" &&
 		st.TrackURI != z.currentURI &&
-		(z.nextURI == "" || st.TrackURI != z.nextURI)
+		(z.nextURI == "" || st.TrackURI != z.nextURI)) ||
+		(isNativeQueue && z.awaitingAudio && st.HasQueueIndex && st.QueueIndex != z.currentIndex)
 
 	// Hold "TRANSITIONING" (buffering) after loading a track until the renderer
 	// actually reports advancing audio (Position > 0). Many UPnP/Linkplay/Cast
@@ -771,8 +806,9 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 		case "PLAYING":
 			if !staleTrack && st.HasPosition && st.Position > 0 {
 				z.awaitingAudio = false
-			} else if !staleTrack && !st.HasPosition && !z.loadedAt.IsZero() && time.Since(z.loadedAt) > 10*time.Second {
-				// Safety fallback for broken renderers that never report RelTime.
+			} else if !z.loadedAt.IsZero() && time.Since(z.loadedAt) > 10*time.Second {
+				// Unconditional safety fallback so quirky/live-transcoded renderers
+				// that keep Position at 0 or rewrite TrackURI never spin forever.
 				z.awaitingAudio = false
 			} else {
 				st.State = "TRANSITIONING"
@@ -824,6 +860,9 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 			if st.TrackURI != "" {
 				z.currentURI = st.TrackURI
 			}
+			if !st.HasPosition {
+				z.status.Position = 0
+			}
 			z.loadedAt = time.Now()
 			z.positionUpdatedAt = now
 		} else if z.currentURI == "" && st.TrackURI != "" {
@@ -844,6 +883,9 @@ func (m *Manager) applyTransportUpdateLocked(z *zone, st upnp.TransportStatus, a
 			z.currentIndex++
 		}
 		z.currentURI = z.nextURI
+		if !st.HasPosition {
+			z.status.Position = 0
+		}
 		if z.nextQuality != "" {
 			z.activeQuality = z.nextQuality
 		}

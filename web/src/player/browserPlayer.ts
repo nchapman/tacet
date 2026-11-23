@@ -94,6 +94,7 @@ export class BrowserAudioEngine {
   private volume = 100;
   private muted = false;
   private disposed = false;
+  private suppressPauseEvent = false;
   private progressTimer: ReturnType<typeof setInterval> | null = null;
   private activeCleanup: (() => void) | null = null;
 
@@ -176,9 +177,14 @@ export class BrowserAudioEngine {
         }
         try {
           this.clearStandby();
+          this.suppressPauseEvent = true;
+          try {
+            this.active.pause();
+          } finally {
+            this.suppressPauseEvent = false;
+          }
           this.currentMedia = cmd.media;
           this.currentURI = cmd.media.url;
-          this.active.pause();
           this.active.src = this.resolve(cmd.media.url);
           this.active.volume = this.volume / 100;
           this.active.muted = this.muted;
@@ -253,7 +259,12 @@ export class BrowserAudioEngine {
       }
 
       case "stop": {
-        this.active.pause();
+        this.suppressPauseEvent = true;
+        try {
+          this.active.pause();
+        } finally {
+          this.suppressPauseEvent = false;
+        }
         try {
           this.active.currentTime = 0;
         } catch {
@@ -359,7 +370,7 @@ export class BrowserAudioEngine {
       this.emitState("playing");
     };
     const onPause = () => {
-      if (this.disposed || el !== this.active || el.ended || !this.currentURI) return;
+      if (this.disposed || this.suppressPauseEvent || el !== this.active || el.ended || !this.currentURI) return;
       this.setMediaSessionPlaybackState("paused");
       this.emitState("paused");
     };

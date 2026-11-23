@@ -195,12 +195,12 @@ export function useTacet(defaultZoneId?: string | null) {
   // still being discovered after a server restart) will snap back automatically
   // once it appears in `zones`.
   const replaceZones = useCallback(
-    (list: ZoneSnapshot[]) => {
+    (list: ZoneSnapshot[], force = false) => {
       setZones((prev) => {
         const prevById = new Map(prev.map((z) => [z.zoneId, z]));
         return list.map((incoming) => {
           const existing = prevById.get(incoming.zoneId);
-          if (existing && incoming.revision < existing.revision) {
+          if (!force && existing && incoming.revision < existing.revision) {
             return existing;
           }
           return applyPendingLocks(existing, incoming);
@@ -231,7 +231,7 @@ export function useTacet(defaultZoneId?: string | null) {
     const resyncAll = () => {
       void tacetClient
         .listZones()
-        .then((res) => replaceZones(res.zones ?? []))
+        .then((res) => replaceZones(res.zones ?? [], true))
         .catch(() => {});
     };
 
@@ -241,7 +241,7 @@ export function useTacet(defaultZoneId?: string | null) {
       onResync: resyncAll,
       onSnapshot: (snap) => {
         syncClockOffset(snap.serverTime);
-        replaceZones(snap.zones ?? []);
+        replaceZones(snap.zones ?? [], true);
         if (snap.settings) setSettings(snap.settings);
         if (snap.qobuz) setQobuzStatus(snap.qobuz);
         if (snap.library) setLibraryStatus(snap.library);
@@ -397,22 +397,18 @@ export function useTacet(defaultZoneId?: string | null) {
 
   const setOptimisticBuffering = useCallback(
     (zoneId: string, resetPosition: boolean) => {
-      let prevState: ZoneSnapshot["state"] | null = null;
-      let prevPos = 0;
+      const target = zones.find((z) => z.zoneId === zoneId);
+      const restoreState = target && target.state !== "buffering" ? target.state : null;
+      const restorePos = target?.positionSec ?? 0;
       setZones((prev) =>
-        prev.map((z) => {
-          if (z.zoneId !== zoneId) return z;
-          prevState = z.state;
-          prevPos = z.positionSec;
-          return z.state === "buffering"
-            ? z
-            : { ...z, state: "buffering", positionSec: resetPosition ? 0 : z.positionSec };
-        }),
+        prev.map((z) =>
+          z.zoneId === zoneId && z.state !== "buffering"
+            ? { ...z, state: "buffering", positionSec: resetPosition ? 0 : z.positionSec }
+            : z,
+        ),
       );
       return () => {
-        if (prevState === null) return;
-        const restoreState = prevState;
-        const restorePos = prevPos;
+        if (restoreState === null) return;
         setZones((prev) =>
           prev.map((z) =>
             z.zoneId === zoneId && z.state === "buffering"
@@ -422,7 +418,7 @@ export function useTacet(defaultZoneId?: string | null) {
         );
       };
     },
-    [],
+    [zones],
   );
 
   const playSource = useCallback(
@@ -477,13 +473,14 @@ export function useTacet(defaultZoneId?: string | null) {
   const transport = useCallback(
     async (action: TransportAction) => {
       if (!activeZoneId) return undefined;
-      const shouldBuffer = action === "play" || action === "next" || action === "prev";
+      const isPrevSeekOnly = action === "prev" && (activeZone?.positionSec ?? 0) > 5;
+      const shouldBuffer = action === "play" || action === "next" || (action === "prev" && !isPrevSeekOnly);
       const revert = shouldBuffer ? setOptimisticBuffering(activeZoneId, action !== "play") : null;
       const res = await runAction(() => tacetClient.zone(activeZoneId).transport(action), upsertZone);
       if (!res && revert) revert();
       return res;
     },
-    [activeZoneId, runAction, setOptimisticBuffering, upsertZone],
+    [activeZoneId, activeZone?.positionSec, runAction, setOptimisticBuffering, upsertZone],
   );
 
   const seek = useCallback(

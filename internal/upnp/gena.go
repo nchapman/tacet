@@ -180,6 +180,32 @@ func (g *GENAClient) WatchRenderer(ctx context.Context, rendererID, callbackBase
 	}
 }
 
+// UnwatchRenderer cancels and cleans up all active GENA subscriptions for
+// rendererID so removed renderers never leak renewal goroutines.
+func (g *GENAClient) UnwatchRenderer(rendererID string) {
+	if rendererID == "" {
+		return
+	}
+	g.mu.Lock()
+	existing := g.byRenderer[rendererID]
+	delete(g.byRenderer, rendererID)
+	for _, old := range existing {
+		delete(g.byToken, old.token)
+	}
+	g.mu.Unlock()
+
+	for _, old := range existing {
+		if old.cancelFunc != nil {
+			old.cancelFunc()
+		}
+		go func(s *genaSub) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			g.unsubscribeOneCtx(ctx, s)
+		}(old)
+	}
+}
+
 func sameEndpoints(existing []*genaSub, callbackBaseURL, avEventURL, rcEventURL string) bool {
 	want := 0
 	if avEventURL != "" {

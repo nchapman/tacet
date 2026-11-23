@@ -274,3 +274,113 @@ func TestAwaitingAudio_HoldsBufferingUntilPositionAdvances(t *testing.T) {
 		t.Fatalf("PositionSec = %d, want 1", snap.PositionSec)
 	}
 }
+
+func TestAwaitingAudio_UnconditionalTimeoutAndStopClear(t *testing.T) {
+	mgr := NewManager(4320, "http://192.168.1.10:4320", nil)
+	zoneID := "uuid:linkplay-timeout"
+	tracks := []library.Track{
+		{ID: "local:t1", Source: library.SourceLocal, Title: "Live Stream", DurationSec: 200, MIME: "audio/flac"},
+	}
+	ctrl := &fakeQueueController{
+		info: upnp.RendererInfo{ID: zoneID, Name: "Quirky Renderer", SupportsQueue: true},
+		status: upnp.TransportStatus{
+			State:       "PLAYING",
+			TrackURI:    "http://192.168.1.10:4320/media/local/local:t1.flac",
+			HasPosition: true,
+			Position:    0,
+		},
+	}
+	mgr.RegisterRenderer(ctrl)
+	if _, err := mgr.ReplaceQueue(context.Background(), zoneID, tracks, 0); err != nil {
+		t.Fatalf("ReplaceQueue: %v", err)
+	}
+
+	// Simulate loadedAt > 10s ago with Position still 0 -> must exit buffering unconditionally.
+	mgr.mu.Lock()
+	mgr.zones[zoneID].loadedAt = time.Now().Add(-11 * time.Second)
+	mgr.mu.Unlock()
+	mgr.pollOne(context.Background(), zoneID)
+	snap, _ := mgr.Zone(zoneID)
+	if snap.State != "playing" {
+		t.Fatalf("State = %q after 10s timeout at pos=0, want playing", snap.State)
+	}
+
+	// Stop clears awaitingAudio and bumps generation.
+	if _, err := mgr.ReplaceQueue(context.Background(), zoneID, tracks, 0); err != nil {
+		t.Fatalf("ReplaceQueue 2: %v", err)
+	}
+	mgr.mu.RLock()
+	genBefore := mgr.zones[zoneID].generation
+	mgr.mu.RUnlock()
+	if _, err := mgr.Stop(context.Background(), zoneID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	mgr.mu.RLock()
+	z := mgr.zones[zoneID]
+	stillAwaiting := z.awaitingAudio
+	genAfter := z.generation
+	mgr.mu.RUnlock()
+	if stillAwaiting {
+		t.Fatal("Stop did not clear awaitingAudio")
+	}
+	if genAfter <= genBefore {
+		t.Fatalf("Stop did not bump generation (%d -> %d)", genBefore, genAfter)
+	}
+}
+
+func TestGaplessTransition_WithoutPositionResetsPositionAndDoesNotFalseScrobble(t *testing.T) {
+	mgr := NewManager(4320, "http://192.168.1.10:4320", nil)
+	played := make([]string, 0)
+	var playedMu sync.Mutex
+	mgr.SetOnTrackPlayed(func(tr library.Track) {
+		playedMu.Lock()
+		played = append(played, tr.ID)
+		playedMu.Unlock()
+	})
+	zoneID := "uuid:upnp-gapless"
+	r := newFakeRenderer(zoneID, "WiiM")
+	mgr.RegisterRenderer(r)
+	tracks := []library.Track{
+		{ID: "local:t1", Source: library.SourceLocal, Title: "Track 1", DurationSec: 200, MIME: "audio/flac"},
+		{ID: "local:t2", Source: library.SourceLocal, Title: "Track 2", DurationSec: 200, MIME: "audio/flac"},
+	}
+	if _, err := mgr.ReplaceQueue(context.Background(), zoneID, tracks, 0); err != nil {
+		t.Fatalf("ReplaceQueue: %v", err)
+	}
+	// Advance Track 1 past 60s and arm gapless.
+	r.mu.Lock()
+	r.position = 60 * time.Second
+	r.mu.Unlock()
+	mgr.pollOne(context.Background(), zoneID)
+
+	// GENA announces gapless transition to Track 2 with HasPosition=false.
+	r.mu.Lock()
+	nextURL := r.nextURI
+	r.mu.Unlock()
+	if nextURL == "" {
+		t.Fatal("expected SetNextURI to arm gapless before transition")
+	}
+	mgr.HandleDeviceEvent(upnp.DeviceEvent{
+		RendererID:  zoneID,
+		Seq:         2,
+		HasState:    true,
+		State:       "PLAYING",
+		HasTrackURI: true,
+		TrackURI:    nextURL,
+	})
+	snap, _ := mgr.Zone(zoneID)
+	if snap.CurrentIndex != 1 {
+		t.Fatalf("CurrentIndex = %d, want 1", snap.CurrentIndex)
+	}
+	if snap.PositionSec != 0 {
+		t.Fatalf("PositionSec = %d after gapless transition without RelTime, want 0", snap.PositionSec)
+	}
+	time.Sleep(20 * time.Millisecond)
+	playedMu.Lock()
+	defer playedMu.Unlock()
+	for _, id := range played {
+		if id == "local:t2" {
+			t.Fatal("Track 2 was falsely scrobbled at 0:00 on gapless transition")
+		}
+	}
+}

@@ -286,7 +286,7 @@ export function NowPlayingOverlay({
                 }}
                 className={cn(
                   "aspect-square w-full max-w-[320px] lg:max-w-none lg:w-[min(44vh,400px)] rounded-2xl overflow-hidden shadow-[0_28px_75px_rgba(0,0,0,0.7)] ring-1 ring-white/15 transition-transform duration-500 ease-out cursor-pointer disabled:cursor-default",
-                  playing ? "scale-100" : "scale-[0.96]",
+                  playing || buffering ? "scale-100" : "scale-[0.96]",
                 )}
               >
                 <AlbumArt

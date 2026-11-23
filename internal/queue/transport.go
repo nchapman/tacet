@@ -428,6 +428,8 @@ func (m *Manager) RemoveItem(ctx context.Context, zoneID, itemID string) (ZoneSn
 				z.positionUpdatedAt = time.Now().UTC()
 				z.userStopped = true
 				z.wasPlaying = false
+				z.awaitingAudio = false
+				z.generation++
 				z.revision++
 				pbEv = m.playbackEventLocked(z)
 				m.mu.Unlock()
@@ -453,6 +455,8 @@ func (m *Manager) RemoveItem(ctx context.Context, zoneID, itemID string) (ZoneSn
 			z.positionUpdatedAt = time.Now().UTC()
 			z.userStopped = true
 			z.wasPlaying = false
+			z.awaitingAudio = false
+			z.generation++
 			z.revision++
 			pbEv = m.playbackEventLocked(z)
 			m.mu.Unlock()
@@ -627,6 +631,7 @@ func (m *Manager) Play(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 		return ZoneSnapshot{}, wrapRendererErr("Play", err)
 	}
 	m.mu.Lock()
+	z.awaitingAudio = false
 	z.status.State = "PLAYING"
 	z.positionUpdatedAt = time.Now().UTC()
 	z.revision++
@@ -673,6 +678,8 @@ func (m *Manager) Stop(ctx context.Context, zoneID string) (ZoneSnapshot, error)
 	m.mu.Lock()
 	z.userStopped = true
 	z.wasPlaying = false
+	z.awaitingAudio = false
+	z.generation++
 	ctrl := z.ctrl
 	m.mu.Unlock()
 
