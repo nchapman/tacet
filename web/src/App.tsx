@@ -269,6 +269,9 @@ export function App() {
     },
     [tacet.transport],
   );
+  const handleTogglePlayPause = useCallback(() => {
+    handleTransport(tacet.activeZone?.state === "playing" ? "pause" : "play");
+  }, [handleTransport, tacet.activeZone?.state]);
   const handleSeek = useCallback(
     (sec: number) => {
       void tacet.seek(sec);
@@ -425,6 +428,7 @@ export function App() {
                   onOpenAlbum={handleOpenAlbumId}
                   onOpenArtist={openArtist}
                   onPlay={handlePlay}
+                  onTogglePlayPause={handleTogglePlayPause}
                   onAdd={handleAdd}
                 />
               }
@@ -440,6 +444,7 @@ export function App() {
                   onOpenAlbum={handleOpenAlbumId}
                   onOpenArtist={openArtist}
                   onPlay={handlePlay}
+                  onTogglePlayPause={handleTogglePlayPause}
                   onAdd={handleAdd}
                 />
               }
@@ -707,6 +712,7 @@ function AlbumRoute({
   onOpenAlbum,
   onOpenArtist,
   onPlay,
+  onTogglePlayPause,
   onAdd,
 }: {
   qobuzConnected: boolean;
@@ -716,6 +722,7 @@ function AlbumRoute({
   onOpenAlbum: (albumId: string) => void;
   onOpenArtist: (artistName: string, qobuzArtistId?: number) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
+  onTogglePlayPause?: () => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
 }) {
   const { albumKey } = useParams<{ albumKey: string }>();
@@ -835,6 +842,7 @@ function AlbumRoute({
         onOpenArtist={onOpenArtist}
         onAlbumUpdated={handleAlbumUpdated}
         onPlay={onPlay}
+        onTogglePlayPause={onTogglePlayPause}
         onAdd={onAdd}
       />
     </>

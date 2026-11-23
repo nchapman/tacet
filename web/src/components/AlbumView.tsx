@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Award, Check, Clock3, FileText, Layers, ListPlus, Play, Plus, SkipForward, Sparkles, Users } from "lucide-react";
+import { ArrowLeft, Award, Check, Clock3, FileText, Layers, ListPlus, Pause, Play, Plus, SkipForward, Sparkles, Users } from "lucide-react";
 import { useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { EditorialNote } from "@/components/ui/EditorialNote";
 import { ExplicitBadge } from "@/components/ui/ExplicitBadge";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { PlayingBars } from "@/components/ui/PlayingBars";
 import { QOBUZ_ALBUM_GC_TIME_MS, QOBUZ_ALBUM_STALE_TIME_MS, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -27,6 +28,7 @@ interface AlbumViewProps {
   onOpenArtist?: (artist: string) => void;
   onAlbumUpdated?: (album: Album) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
+  onTogglePlayPause?: () => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
 }
 
@@ -77,6 +79,7 @@ export function AlbumView({
   onOpenArtist,
   onAlbumUpdated,
   onPlay,
+  onTogglePlayPause,
   onAdd,
 }: AlbumViewProps) {
   const queryClient = useQueryClient();
@@ -110,6 +113,8 @@ export function AlbumView({
   const versions = album.versions ?? [];
   const tracks = album.tracks ?? [];
   const totalTime = totalAlbumDuration(album);
+  const isAlbumActive = Boolean(currentTrackId && tracks.some((t) => t.id === currentTrackId));
+  const isAlbumPlaying = isAlbumActive && isPlaying;
 
   const handleToggleLibrary = async () => {
     if (!isRemote || busyLibrary) return;
@@ -220,11 +225,26 @@ export function AlbumView({
               <Button
                 type="button"
                 size="lg"
-                onClick={() => onPlay({ type: "album", albumId: album.id }, 0)}
-                className="bg-white text-black hover:bg-white/90 shadow-lg"
+                onClick={() => {
+                  if (isAlbumActive && onTogglePlayPause) {
+                    onTogglePlayPause();
+                  } else {
+                    onPlay({ type: "album", albumId: album.id }, 0);
+                  }
+                }}
+                className="min-w-[114px] bg-white text-black hover:bg-white/90 shadow-lg"
               >
-                <Play className="h-4 w-4 fill-current" />
-                Play
+                {isAlbumPlaying ? (
+                  <>
+                    <Pause className="h-4 w-4 fill-current" />
+                    Pause
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4 fill-current" />
+                    Play
+                  </>
+                )}
               </Button>
               <Button
                 type="button"
@@ -387,28 +407,44 @@ export function AlbumView({
                     active ? "bg-white/[0.08]" : "hover:bg-white/[0.05]",
                   )}
                 >
-                  {/* Track number / hover Play */}
+                  {/* Track number / animated playing bars / hover Play or Pause */}
                   <button
                     type="button"
-                    onClick={() => onPlay({ type: "album", albumId: album.id }, idx)}
-                    aria-label={`Play ${tr.title}`}
+                    onClick={() => {
+                      if (active && onTogglePlayPause) {
+                        onTogglePlayPause();
+                      } else {
+                        onPlay({ type: "album", albumId: album.id }, idx);
+                      }
+                    }}
+                    aria-label={active && isPlaying ? `Pause ${tr.title}` : `Play ${tr.title}`}
                     className="flex h-8 w-8 items-center justify-end pr-1 text-right cursor-pointer"
                   >
                     <span
                       className={cn(
-                        "font-mono text-xs tabular-nums group-hover:hidden",
+                        "flex items-center justify-end font-mono text-xs tabular-nums group-hover:hidden",
                         active ? "text-emerald-400 font-semibold" : "text-muted-foreground",
                       )}
                     >
-                      {active && isPlaying ? "▶" : tr.trackNumber || idx + 1}
+                      {active && isPlaying ? <PlayingBars /> : tr.trackNumber || idx + 1}
                     </span>
-                    <Play className="hidden h-3.5 w-3.5 fill-white text-white group-hover:block" />
+                    {active && isPlaying ? (
+                      <Pause className="hidden h-3.5 w-3.5 fill-white text-white group-hover:block" />
+                    ) : (
+                      <Play className="hidden h-3.5 w-3.5 fill-white text-white group-hover:block" />
+                    )}
                   </button>
 
                   {/* Title & Artist */}
                   <button
                     type="button"
-                    onClick={() => onPlay({ type: "album", albumId: album.id }, idx)}
+                    onClick={() => {
+                      if (active && onTogglePlayPause) {
+                        onTogglePlayPause();
+                      } else {
+                        onPlay({ type: "album", albumId: album.id }, idx);
+                      }
+                    }}
                     className="min-w-0 text-left cursor-pointer"
                   >
                     <div className="flex items-center gap-1.5 min-w-0">
