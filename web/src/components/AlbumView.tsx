@@ -408,8 +408,8 @@ export function AlbumView({
                 <div
                   key={tr.id}
                   className={cn(
-                    "group grid grid-cols-[32px_1fr_auto] sm:grid-cols-[40px_1fr_auto_72px_72px] items-center gap-3 sm:gap-4 rounded-xl px-2.5 sm:px-3 py-2.5 transition-colors",
-                    active ? "bg-white/[0.08]" : "hover:bg-white/[0.05]",
+                    "group grid grid-cols-[32px_1fr_auto] sm:grid-cols-[40px_1fr_auto_72px_72px] items-center gap-3 sm:gap-4 rounded-xl px-2.5 sm:px-3 py-2.5",
+                    active ? "bg-white/[0.08]" : "hover:bg-white/[0.06]",
                   )}
                 >
                   {/* Track number / animated playing bars / hover Play or Pause */}

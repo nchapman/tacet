@@ -134,8 +134,8 @@ function QueueRow({
   return (
     <div
       className={cn(
-        "group flex items-center gap-2.5 rounded-xl px-2 py-1.5 transition-colors",
-        active ? "bg-white/[0.08]" : "hover:bg-white/[0.05]",
+        "group flex items-center gap-2.5 rounded-xl px-2 py-1.5",
+        active ? "bg-white/[0.08]" : "hover:bg-white/[0.06]",
       )}
     >
       <button

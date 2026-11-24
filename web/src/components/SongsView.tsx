@@ -288,8 +288,8 @@ const SongRow = memo(function SongRow({
   return (
     <div
       className={cn(
-        "group grid h-14 grid-cols-[1fr_auto] md:grid-cols-[minmax(0,2fr)_minmax(0,1.2fr)_175px_60px_68px] items-center gap-3 rounded-xl border-b border-white/[0.03] px-2.5 transition-colors",
-        active ? "bg-white/[0.08]" : "hover:bg-white/[0.05]",
+        "group grid h-14 grid-cols-[1fr_auto] md:grid-cols-[minmax(0,2fr)_minmax(0,1.2fr)_175px_60px_68px] items-center gap-3 rounded-xl border-b border-white/[0.03] px-2.5",
+        active ? "bg-white/[0.08]" : "hover:bg-white/[0.06]",
       )}
     >
       {/* Cover thumb + Title & Artist */}

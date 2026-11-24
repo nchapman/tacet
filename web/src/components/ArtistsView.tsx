@@ -742,8 +742,10 @@ const ArtistRailRow = memo(function ArtistRailRow({
       {...hoverPrefetch}
       onClick={() => onSelect(artist.name)}
       className={cn(
-        "flex h-14 w-full items-center gap-3 rounded-xl px-2.5 text-left transition-colors cursor-pointer",
-        active ? "md:bg-white/[0.1] md:text-white text-foreground/90" : "text-foreground/85 hover:bg-white/[0.04]",
+        "flex h-14 w-full items-center gap-3 rounded-xl px-2.5 text-left cursor-pointer",
+        active
+          ? "md:bg-white/[0.11] md:text-white text-foreground/90"
+          : "text-foreground/85 hover:bg-white/[0.07] hover:text-white",
       )}
     >
       <AlbumArt
@@ -815,7 +817,7 @@ const PopularTrackRow = memo(function PopularTrackRow({
   return (
     <div
       onClick={() => onPlay({ type: "tracks", trackIds: popularIds }, idx)}
-      className="group grid grid-cols-[24px_40px_1fr_auto] sm:grid-cols-[24px_40px_1fr_172px_48px_68px] items-center gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-white/[0.06] cursor-pointer"
+      className="group grid grid-cols-[24px_40px_1fr_auto] sm:grid-cols-[24px_40px_1fr_172px_48px_68px] items-center gap-3 rounded-xl px-2.5 py-2 hover:bg-white/[0.06] cursor-pointer"
     >
       <div className="flex items-center justify-center">
         <span className="font-mono text-xs text-muted-foreground group-hover:hidden">

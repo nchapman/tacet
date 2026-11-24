@@ -124,10 +124,10 @@ function NavItem({
       aria-current={active ? "page" : undefined}
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-3.5 rounded-lg px-2.5 py-2 text-[13.5px] font-medium transition-colors cursor-pointer",
+        "flex w-full items-center gap-3.5 rounded-lg px-2.5 py-2 text-[13.5px] font-medium cursor-pointer",
         active
           ? "bg-white/[0.09] text-foreground"
-          : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
+          : "text-muted-foreground hover:bg-white/[0.06] hover:text-foreground",
       )}
     >
       <Icon className={cn("h-4 w-4 shrink-0", active ? "text-foreground" : "text-muted-foreground")} />
