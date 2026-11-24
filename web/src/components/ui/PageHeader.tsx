@@ -5,17 +5,24 @@ import { cn } from "@/lib/utils";
 interface PageHeaderProps {
   children: ReactNode;
   className?: string;
+  /**
+   * "fixed" (default): pinned above PageBody with a subtle bottom divider.
+   * "scroll": borderless header placed inside PageBody so it scrolls off screen with content.
+   */
+  variant?: "fixed" | "scroll";
 }
 
 /**
- * Fixed 64px page header separated from the scrolling content below by a subtle
- * hairline border, matching the Artists rail header without sticky blur layers.
+ * 64px page header. Defaults to a fixed bar with a hairline divider matching
+ * the Artists rail; pass variant="scroll" inside PageBody to scroll off screen
+ * without a divider.
  */
-export function PageHeader({ children, className }: PageHeaderProps) {
+export function PageHeader({ children, className, variant = "fixed" }: PageHeaderProps) {
   return (
     <div
       className={cn(
-        "flex min-h-16 shrink-0 items-center border-b border-white/[0.06] px-4 sm:px-8",
+        "flex min-h-16 shrink-0 items-center px-4 sm:px-8",
+        variant === "fixed" && "border-b border-white/[0.06]",
         className,
       )}
     >

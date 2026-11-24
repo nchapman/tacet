@@ -100,14 +100,14 @@ export const HomeView = memo(function HomeView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PageHeader>
-        <div className="mx-auto w-full max-w-7xl">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Home</h1>
-        </div>
-      </PageHeader>
-
       <PageBody>
-        <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6 space-y-10">
+        <PageHeader variant="scroll">
+          <div className="mx-auto w-full max-w-7xl">
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Home</h1>
+          </div>
+        </PageHeader>
+
+        <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-3 space-y-10">
 
         {errMsg && (
           <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
