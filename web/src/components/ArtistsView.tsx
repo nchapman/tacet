@@ -1,6 +1,6 @@
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, SkipForward, Sparkles } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TacetAPIError, tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtCount, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type {
@@ -11,7 +11,7 @@ import type {
   QueuePosition,
   QueueSource,
 } from "@/api/types";
-import { AlbumArt } from "@/components/ui/artwork";
+import { AlbumArt, resolveArtworkSrc } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EditorialNote } from "@/components/ui/EditorialNote";
@@ -25,6 +25,10 @@ import { useVirtualWindow } from "@/lib/virtualWindow";
 const ARTIST_PAGE_SIZE = 100;
 const ARTIST_ROW_HEIGHT = 56;
 const ARTIST_LIST_PADDING_TOP = 8;
+/** Hold switching the detail pane briefly so SQLite-cached Qobuz artist data paints atomically with zero flash. */
+const REVEAL_GRACE_MS = 160;
+/** Debounce rail hover prefetch so quick pointer sweeps don't fire wasted requests. */
+const HOVER_PREFETCH_MS = 65;
 
 function artistPageQueryOptions(page: number) {
   const offset = page * ARTIST_PAGE_SIZE;
@@ -33,6 +37,57 @@ function artistPageQueryOptions(page: number) {
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       tacetClient.listLibraryArtists({ limit: ARTIST_PAGE_SIZE, offset }, { signal }),
   };
+}
+
+function artistAlbumsQueryOptions(artistName: string) {
+  return {
+    queryKey: queryKeys.library.albums({
+      artist: artistName.toLowerCase(),
+      groupVersions: true,
+      sort: "year",
+      limit: 200,
+    }),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      tacetClient.listLibraryAlbums(
+        {
+          artist: artistName,
+          groupVersions: true,
+          sort: "year",
+          limit: 200,
+        },
+        { signal },
+      ),
+  };
+}
+
+function qobuzArtistQueryOptions(target: { id: number } | { name: string }) {
+  return {
+    queryKey: queryKeys.qobuz.artist(target),
+    queryFn: async ({ signal }: { signal: AbortSignal }): Promise<QobuzArtistDetail | null> => {
+      try {
+        return await tacetClient.qobuzArtist(
+          "id" in target ? { id: target.id, limit: 50 } : { name: target.name, limit: 50 },
+          { signal },
+        );
+      } catch (err) {
+        // 404 is expected for local-only artists not on Qobuz; cache null to avoid repeat 404s.
+        if (err instanceof TacetAPIError && err.status === 404) return null;
+        throw err;
+      }
+    },
+    staleTime: QOBUZ_ARTIST_STALE_TIME_MS,
+    gcTime: QOBUZ_ARTIST_GC_TIME_MS,
+  };
+}
+
+interface ArtistDetailSnapshot {
+  artist: string;
+  summary?: ArtistSummary;
+  albums: Album[];
+  remoteDetail: QobuzArtistDetail | null;
+  remoteOnlyAlbums: Album[];
+  similarArtists: QobuzArtistDetail["similarArtists"];
+  heroArt?: string;
 }
 
 interface ArtistsViewProps {
@@ -152,8 +207,16 @@ export function ArtistsView({
   // Default to the first artist on desktop when no artist is selected yet.
   const effectiveArtist = selectedArtist || artistsPage0Query.data?.items?.[0]?.name || "";
 
+  const hoverTimerRef = useRef<number | null>(null);
+  const [graceExpiredForKey, setGraceExpiredForKey] = useState("");
+  const [heldSnapshot, setHeldSnapshot] = useState<ArtistDetailSnapshot | null>(null);
+
   const handleSelectArtist = useCallback(
     (name: string) => {
+      if (hoverTimerRef.current !== null) {
+        window.clearTimeout(hoverTimerRef.current);
+        hoverTimerRef.current = null;
+      }
       setSelectedArtist(name);
       setSelectedQobuzId(undefined);
       setMobileDetailOpen(true);
@@ -162,50 +225,44 @@ export function ArtistsView({
     [onSelectArtist],
   );
 
+  const handleCancelPrefetch = useCallback(() => {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }, []);
+
+  const handlePrefetchArtist = useCallback(
+    (name: string) => {
+      handleCancelPrefetch();
+      hoverTimerRef.current = window.setTimeout(() => {
+        hoverTimerRef.current = null;
+        void queryClient.prefetchQuery(artistAlbumsQueryOptions(name));
+        if (qobuzConnected) {
+          void queryClient.prefetchQuery(qobuzArtistQueryOptions({ name }));
+        }
+      }, HOVER_PREFETCH_MS);
+    },
+    [handleCancelPrefetch, queryClient, qobuzConnected],
+  );
+
+  useEffect(() => handleCancelPrefetch, [handleCancelPrefetch]);
+
   useEffect(() => {
     setShowAllPopular(false);
   }, [effectiveArtist, selectedQobuzId]);
 
   // Fetch library albums for the selected artist.
   const albumsQuery = useQuery({
-    queryKey: queryKeys.library.albums({
-      artist: effectiveArtist.toLowerCase(),
-      groupVersions: true,
-      sort: "year",
-      limit: 200,
-    }),
-    queryFn: ({ signal }) =>
-      tacetClient.listLibraryAlbums(
-        {
-          artist: effectiveArtist,
-          groupVersions: true,
-          sort: "year",
-          limit: 200,
-        },
-        { signal },
-      ),
+    ...artistAlbumsQueryOptions(effectiveArtist),
     enabled: Boolean(effectiveArtist),
   });
   const albums: Album[] = useMemo(() => albumsQuery.data?.items ?? [], [albumsQuery.data]);
 
   // Progressively fetch remote Qobuz discography for the selected artist (cached 1h).
   const remoteQuery = useQuery<QobuzArtistDetail | null>({
-    queryKey: queryKeys.qobuz.artist(selectedQobuzId ? { id: selectedQobuzId } : { name: effectiveArtist }),
-    queryFn: async ({ signal }) => {
-      try {
-        return await tacetClient.qobuzArtist(
-          selectedQobuzId ? { id: selectedQobuzId, limit: 50 } : { name: effectiveArtist, limit: 50 },
-          { signal },
-        );
-      } catch (err) {
-        // 404 is expected for local-only artists not on Qobuz; cache null to avoid repeat 404s.
-        if (err instanceof TacetAPIError && err.status === 404) return null;
-        throw err;
-      }
-    },
+    ...qobuzArtistQueryOptions(selectedQobuzId ? { id: selectedQobuzId } : { name: effectiveArtist }),
     enabled: Boolean(effectiveArtist && qobuzConnected),
-    staleTime: QOBUZ_ARTIST_STALE_TIME_MS,
-    gcTime: QOBUZ_ARTIST_GC_TIME_MS,
   });
 
   const loadingArtists = artistsPage0Query.isPending;
@@ -229,9 +286,13 @@ export function ArtistsView({
     staleTime: QOBUZ_ARTIST_STALE_TIME_MS,
     gcTime: QOBUZ_ARTIST_GC_TIME_MS,
   });
-  const similarArtists = (inlineSimilar.length > 0 ? inlineSimilar : (similarArtistsQuery.data?.items ?? []))
-    .filter((a) => a.id !== similarArtistId)
-    .slice(0, 10);
+  const similarArtists = useMemo(
+    () =>
+      (inlineSimilar.length > 0 ? inlineSimilar : (similarArtistsQuery.data?.items ?? []))
+        .filter((a) => a.id !== similarArtistId)
+        .slice(0, 10),
+    [inlineSimilar, similarArtistsQuery.data?.items, similarArtistId],
+  );
 
   // Deduplicate Qobuz albums already present in the library section above.
   const remoteOnlyAlbums = useMemo(() => {
@@ -260,11 +321,71 @@ export function ArtistsView({
     }
     return list;
   }, [railWin.startIndex, railWin.endIndex]);
+
   const heroArt =
     remoteDetail?.artist.artworkUrl ||
     albums[0]?.artworkUrl ||
     currentSummary?.artworkUrl ||
     remoteOnlyAlbums[0]?.artworkUrl;
+
+  // Bounded paint-hold: when switching artists while connected to Qobuz, wait up to
+  // REVEAL_GRACE_MS (160ms) for both SQLite albums and Qobuz metadata so cached artists
+  // paint once atomically with zero flash, while slow uncached Qobuz lookups still reveal
+  // local library albums promptly and smoothly glide in Qobuz enrichment when it arrives.
+  const artistKey = effectiveArtist ? `${effectiveArtist.toLowerCase()}:${selectedQobuzId ?? ""}` : "";
+  const targetReady = Boolean(effectiveArtist) && !loadingAlbums && (!qobuzConnected || !loadingRemote);
+
+  useEffect(() => {
+    if (!artistKey || targetReady) return;
+    const timer = window.setTimeout(() => {
+      setGraceExpiredForKey(artistKey);
+    }, REVEAL_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [artistKey, targetReady]);
+
+  const canRevealTarget = targetReady || graceExpiredForKey === artistKey;
+
+  useEffect(() => {
+    if (!effectiveArtist) return;
+    if (!canRevealTarget) return;
+    setHeldSnapshot({
+      artist: effectiveArtist,
+      summary: currentSummary,
+      albums,
+      remoteDetail,
+      remoteOnlyAlbums,
+      similarArtists,
+      heroArt,
+    });
+  }, [canRevealTarget, effectiveArtist, currentSummary, albums, remoteDetail, remoteOnlyAlbums, similarArtists, heroArt]);
+
+  useEffect(() => {
+    if (!mobileDetailOpen && !initialArtist) {
+      // Avoid flashing a previously viewed artist when drilling into a new one on mobile.
+      setHeldSnapshot((prev) => (prev && prev.artist.toLowerCase() !== effectiveArtist.toLowerCase() ? null : prev));
+    }
+  }, [mobileDetailOpen, initialArtist, effectiveArtist]);
+
+  const isHoldingPrevious = Boolean(!canRevealTarget && heldSnapshot && effectiveArtist);
+  const isHoldingCold = Boolean(!canRevealTarget && !heldSnapshot && effectiveArtist);
+
+  const view: ArtistDetailSnapshot | null = isHoldingPrevious
+    ? heldSnapshot
+    : isHoldingCold || !effectiveArtist
+      ? null
+      : {
+          artist: effectiveArtist,
+          summary: currentSummary,
+          albums,
+          remoteDetail,
+          remoteOnlyAlbums,
+          similarArtists,
+          heroArt,
+        };
+  const viewLoadingAlbums = isHoldingPrevious ? false : loadingAlbums;
+  const viewLoadingRemote = isHoldingPrevious ? false : loadingRemote;
+  const viewErrMsg = isHoldingPrevious ? "" : errMsg;
+  const viewRemoteErr = isHoldingPrevious ? "" : remoteErr;
 
   return (
     <div className="flex h-full min-h-0">
@@ -304,13 +425,16 @@ export function ArtistsView({
                     return <ArtistRailSkeleton key={`slot-${idx}`} />;
                   }
                   const active = artist.name.toLowerCase() === effectiveArtist.toLowerCase();
+                  const committedMatch = view?.artist.toLowerCase() === artist.name.toLowerCase();
                   return (
                     <ArtistRailRow
                       key={artist.name}
                       artist={artist}
                       active={active}
-                      artworkUrl={(active ? heroArt : undefined) || artist.artworkUrl}
+                      artworkUrl={(committedMatch ? view?.heroArt : undefined) || artist.artworkUrl}
                       onSelect={handleSelectArtist}
+                      onPrefetch={handlePrefetchArtist}
+                      onCancelPrefetch={handleCancelPrefetch}
                     />
                   );
                 })}
@@ -346,30 +470,35 @@ export function ArtistsView({
         )}
 
         <div ref={detailRef} data-scroll-stage="" className="relative flex-1 min-h-0 overflow-y-auto">
-          {effectiveArtist ? (
-            <div className="mx-auto max-w-4xl px-4 sm:px-8 pt-6 sm:pt-8 pb-12">
+          {view ? (
+            <div
+              key={view.artist}
+              className={cn(
+                "mx-auto max-w-4xl px-4 sm:px-8 pt-6 sm:pt-8 pb-12 transition-opacity duration-150 motion-reduce:transition-none",
+                isHoldingPrevious ? "opacity-70 pointer-events-none" : "opacity-100",
+              )}
+            >
               <div className="flex items-end gap-4 pb-6 border-b border-white/[0.07]">
-                <AlbumArt
-                  artworkUrl={heroArt}
-                  alt={effectiveArtist}
+                <ArtistAvatar
+                  artworkUrl={view.heroArt}
+                  alt={view.artist}
                   className="h-16 w-16 sm:h-20 sm:w-20 shrink-0 rounded-full shadow-xl ring-1 ring-white/15"
-                  priority
                 />
                 <div className="min-w-0">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                     Artist
                   </div>
                   <h2 className="truncate text-2xl sm:text-3xl font-bold tracking-tight text-white">
-                    {effectiveArtist}
+                    {view.artist}
                   </h2>
                   <p className="text-xs text-muted-foreground mt-1">
-                    {currentSummary ? (
+                    {view.summary ? (
                       <>
-                        {fmtCount(currentSummary.albumCount)} {currentSummary.albumCount === 1 ? "album" : "albums"} ·{" "}
-                        {fmtCount(currentSummary.trackCount)} tracks in library
+                        {fmtCount(view.summary.albumCount)} {view.summary.albumCount === 1 ? "album" : "albums"} ·{" "}
+                        {fmtCount(view.summary.trackCount)} tracks in library
                       </>
-                    ) : remoteDetail ? (
-                      <>Qobuz Artist · {fmtCount(remoteDetail.albums.length)} releases</>
+                    ) : view.remoteDetail ? (
+                      <>Qobuz Artist · {fmtCount(view.remoteDetail.albums.length)} releases</>
                     ) : (
                       <>In your library</>
                     )}
@@ -377,119 +506,125 @@ export function ArtistsView({
                 </div>
               </div>
 
-              {remoteDetail?.artist.biography && (
-                <EditorialNote
-                  text={remoteDetail.artist.biography}
-                  title={`About ${effectiveArtist}`}
-                  targetWords={30}
-                  className="mt-4 max-w-3xl"
-                />
-              )}
+              <SmoothReveal open={Boolean(view.remoteDetail?.artist.biography)}>
+                {view.remoteDetail?.artist.biography && (
+                  <div className="pt-4">
+                    <EditorialNote
+                      text={view.remoteDetail.artist.biography}
+                      title={`About ${view.artist}`}
+                      targetWords={30}
+                      className="max-w-3xl"
+                    />
+                  </div>
+                )}
+              </SmoothReveal>
 
-              {errMsg && (
+              {viewErrMsg && (
                 <div role="alert" className="mt-4 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
-                  {errMsg}
+                  {viewErrMsg}
                 </div>
               )}
 
-              {/* Popular Tracks from Qobuz */}
-              {qobuzConnected && (remoteDetail?.tracks?.length ?? 0) > 0 && (() => {
-                const popularTracks = remoteDetail!.tracks!;
-                const visibleTracks = showAllPopular ? popularTracks : popularTracks.slice(0, 5);
-                const popularIds = popularTracks.map((t) => t.id);
-                return (
-                  <section aria-label="Popular tracks" className="mt-6">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                        Popular
-                      </h3>
-                      {popularTracks.length > 5 && (
-                        <button
-                          type="button"
-                          onClick={() => setShowAllPopular((v) => !v)}
-                          className="text-xs font-medium text-muted-foreground hover:text-white focus:outline-none focus-visible:underline transition-colors cursor-pointer"
-                        >
-                          {showAllPopular ? "Show less" : `Show all ${fmtCount(popularTracks.length)}`}
-                        </button>
-                      )}
-                    </div>
-                    <div className="space-y-0.5">
-                      {visibleTracks.map((tr, idx) => {
-                        const qual = fmtQuality(tr);
-                        return (
-                          <div
-                            key={tr.id}
-                            onClick={() => onPlay({ type: "tracks", trackIds: popularIds }, idx)}
-                            className="group grid grid-cols-[24px_40px_1fr_auto] sm:grid-cols-[24px_40px_1fr_172px_48px_68px] items-center gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-white/[0.06] cursor-pointer"
+              {/* Popular Tracks from Qobuz — smoothly glides in if Qobuz resolves after grace window */}
+              <SmoothReveal open={Boolean(qobuzConnected && (view.remoteDetail?.tracks?.length ?? 0) > 0)}>
+                {qobuzConnected && (view.remoteDetail?.tracks?.length ?? 0) > 0 && (() => {
+                  const popularTracks = view.remoteDetail!.tracks!;
+                  const visibleTracks = showAllPopular ? popularTracks : popularTracks.slice(0, 5);
+                  const popularIds = popularTracks.map((t) => t.id);
+                  return (
+                    <section aria-label="Popular tracks" className="pt-6">
+                      <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                          Popular
+                        </h3>
+                        {popularTracks.length > 5 && (
+                          <button
+                            type="button"
+                            onClick={() => setShowAllPopular((v) => !v)}
+                            className="text-xs font-medium text-muted-foreground hover:text-white focus:outline-none focus-visible:underline transition-colors cursor-pointer"
                           >
-                            <div className="flex items-center justify-center">
-                              <span className="font-mono text-xs text-muted-foreground group-hover:hidden">
-                                {idx + 1}
-                              </span>
-                              <Play className="hidden h-3.5 w-3.5 fill-white text-white group-hover:block" />
-                            </div>
-                            <AlbumArt
-                              artworkUrl={tr.artworkUrl}
-                              alt={tr.album || tr.title}
-                              className="h-10 w-10 rounded-lg ring-1 ring-white/10"
-                            />
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <span className="truncate text-sm font-medium text-foreground">{tr.title}</span>
-                                {tr.explicit && <ExplicitBadge />}
+                            {showAllPopular ? "Show less" : `Show all ${fmtCount(popularTracks.length)}`}
+                          </button>
+                        )}
+                      </div>
+                      <div className="space-y-0.5">
+                        {visibleTracks.map((tr, idx) => {
+                          const qual = fmtQuality(tr);
+                          return (
+                            <div
+                              key={tr.id}
+                              onClick={() => onPlay({ type: "tracks", trackIds: popularIds }, idx)}
+                              className="group grid grid-cols-[24px_40px_1fr_auto] sm:grid-cols-[24px_40px_1fr_172px_48px_68px] items-center gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-white/[0.06] cursor-pointer"
+                            >
+                              <div className="flex items-center justify-center">
+                                <span className="font-mono text-xs text-muted-foreground group-hover:hidden">
+                                  {idx + 1}
+                                </span>
+                                <Play className="hidden h-3.5 w-3.5 fill-white text-white group-hover:block" />
                               </div>
-                              {tr.album && (
-                                <div className="truncate text-xs text-muted-foreground">{tr.album}</div>
-                              )}
+                              <AlbumArt
+                                artworkUrl={tr.artworkUrl}
+                                alt={tr.album || tr.title}
+                                className="h-10 w-10 rounded-lg ring-1 ring-white/10"
+                              />
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="truncate text-sm font-medium text-foreground">{tr.title}</span>
+                                  {tr.explicit && <ExplicitBadge />}
+                                </div>
+                                {tr.album && (
+                                  <div className="truncate text-xs text-muted-foreground">{tr.album}</div>
+                                )}
+                              </div>
+                              <div className="hidden sm:flex items-center justify-start whitespace-nowrap">
+                                {qual && <span className="font-mono text-[11px] text-muted-foreground/75">{qual}</span>}
+                              </div>
+                              <div className="hidden sm:block text-right font-mono text-xs text-muted-foreground">
+                                {fmtDuration(tr.durationSec)}
+                              </div>
+                              <div className="flex items-center justify-end gap-0.5">
+                                <button
+                                  type="button"
+                                  title="Play Next"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onAdd({ type: "tracks", trackIds: [tr.id] }, "next");
+                                  }}
+                                  className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer sm:opacity-0 sm:group-hover:opacity-100"
+                                >
+                                  <SkipForward className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Append to Queue"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onAdd({ type: "tracks", trackIds: [tr.id] }, "end");
+                                  }}
+                                  className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer sm:opacity-0 sm:group-hover:opacity-100"
+                                >
+                                  <ListPlus className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
                             </div>
-                            <div className="hidden sm:flex items-center justify-start whitespace-nowrap">
-                              {qual && <span className="font-mono text-[11px] text-muted-foreground/75">{qual}</span>}
-                            </div>
-                            <div className="hidden sm:block text-right font-mono text-xs text-muted-foreground">
-                              {fmtDuration(tr.durationSec)}
-                            </div>
-                            <div className="flex items-center justify-end gap-0.5">
-                              <button
-                                type="button"
-                                title="Play Next"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onAdd({ type: "tracks", trackIds: [tr.id] }, "next");
-                                }}
-                                className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer sm:opacity-0 sm:group-hover:opacity-100"
-                              >
-                                <SkipForward className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                title="Append to Queue"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onAdd({ type: "tracks", trackIds: [tr.id] }, "end");
-                                }}
-                                className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer sm:opacity-0 sm:group-hover:opacity-100"
-                              >
-                                <ListPlus className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </section>
-                );
-              })()}
+                          );
+                        })}
+                      </div>
+                    </section>
+                  );
+                })()}
+              </SmoothReveal>
 
-              {/* Library Albums (always anchored on top so remote fetch never shifts them) */}
-              {(loadingAlbums || albums.length > 0) && (
+              {/* Library Albums */}
+              {(viewLoadingAlbums || view.albums.length > 0) && (
                 <section aria-label="Library albums" className="mt-6 space-y-4">
-                  {qobuzConnected && (remoteOnlyAlbums.length > 0 || loadingRemote) && albums.length > 0 && (
+                  {qobuzConnected && (view.remoteOnlyAlbums.length > 0 || viewLoadingRemote) && view.albums.length > 0 && (
                     <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                       In Your Library
                     </h3>
                   )}
 
-                  {loadingAlbums && albums.length === 0 ? (
+                  {viewLoadingAlbums && view.albums.length === 0 ? (
                     Array.from({ length: 3 }).map((_, i) => (
                       <div
                         key={i}
@@ -503,7 +638,7 @@ export function ArtistsView({
                       </div>
                     ))
                   ) : (
-                    albums.map((alb) => (
+                    view.albums.map((alb) => (
                       <StackedAlbumCard
                         key={alb.id}
                         album={alb}
@@ -517,31 +652,31 @@ export function ArtistsView({
               )}
 
               {/* Subtle divider + More on Qobuz remote albums below */}
-              {qobuzConnected && (loadingRemote || remoteOnlyAlbums.length > 0 || remoteErr) && (
+              {qobuzConnected && (viewLoadingRemote || view.remoteOnlyAlbums.length > 0 || viewRemoteErr) && (
                 <section
                   aria-label="More on Qobuz"
                   className={cn(
                     "space-y-4",
-                    albums.length > 0 ? "mt-8 border-t border-white/[0.08] pt-6" : "mt-6",
+                    view.albums.length > 0 ? "mt-8 border-t border-white/[0.08] pt-6" : "mt-6",
                   )}
                 >
                   <div className="flex items-center gap-2">
                     <Sparkles className="h-3.5 w-3.5 text-sky-400" />
                     <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      {albums.length > 0 ? "More on Qobuz" : "On Qobuz"}
+                      {view.albums.length > 0 ? "More on Qobuz" : "On Qobuz"}
                     </h3>
-                    {loadingRemote && <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />}
+                    {viewLoadingRemote && <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />}
                   </div>
 
-                  {remoteErr && (
+                  {viewRemoteErr && (
                     <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/40 px-4 py-3 text-xs text-red-200">
-                      Couldn’t load Qobuz releases: {remoteErr}
+                      Couldn’t load Qobuz releases: {viewRemoteErr}
                     </div>
                   )}
 
-                  {remoteOnlyAlbums.length > 0 && (
+                  {view.remoteOnlyAlbums.length > 0 && (
                     <div className="space-y-4">
-                      {remoteOnlyAlbums.map((alb) => (
+                      {view.remoteOnlyAlbums.map((alb) => (
                         <StackedAlbumCard
                           key={alb.id}
                           album={alb}
@@ -555,18 +690,18 @@ export function ArtistsView({
                 </section>
               )}
 
-              {!loadingAlbums && !loadingRemote && albums.length === 0 && remoteOnlyAlbums.length === 0 && (
-                <p className="mt-8 text-sm text-muted-foreground">No albums found for {effectiveArtist}.</p>
+              {!viewLoadingAlbums && !viewLoadingRemote && view.albums.length === 0 && view.remoteOnlyAlbums.length === 0 && (
+                <p className="mt-8 text-sm text-muted-foreground">No albums found for {view.artist}.</p>
               )}
 
               {/* Contextual Similar Artists */}
-              {similarArtists.length > 0 && (
+              {(view.similarArtists?.length ?? 0) > 0 && (
                 <section aria-label="Similar Artists" className="mt-10 border-t border-white/[0.08] pt-6 space-y-4">
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Similar Artists
                   </h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-                    {similarArtists.map((sim) => (
+                    {view.similarArtists!.map((sim) => (
                       <button
                         key={sim.id}
                         type="button"
@@ -587,6 +722,8 @@ export function ArtistsView({
                 </section>
               )}
             </div>
+          ) : isHoldingCold ? (
+            <div className="h-full" />
           ) : (
             <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
               Select an artist to explore their albums.
@@ -709,6 +846,8 @@ interface ArtistRailRowProps {
   active: boolean;
   artworkUrl?: string;
   onSelect: (name: string) => void;
+  onPrefetch: (name: string) => void;
+  onCancelPrefetch: () => void;
 }
 
 const ArtistRailRow = memo(function ArtistRailRow({
@@ -716,11 +855,16 @@ const ArtistRailRow = memo(function ArtistRailRow({
   active,
   artworkUrl,
   onSelect,
+  onPrefetch,
+  onCancelPrefetch,
 }: ArtistRailRowProps) {
   return (
     <button
       type="button"
       onClick={() => onSelect(artist.name)}
+      onMouseEnter={() => onPrefetch(artist.name)}
+      onMouseLeave={onCancelPrefetch}
+      onFocus={() => onPrefetch(artist.name)}
       className={cn(
         "flex h-14 w-full items-center gap-3 rounded-xl px-2.5 text-left transition-colors cursor-pointer",
         active ? "md:bg-white/[0.1] md:text-white text-foreground/90" : "text-foreground/85 hover:bg-white/[0.04]",
@@ -753,3 +897,89 @@ const ArtistRailSkeleton = memo(function ArtistRailSkeleton() {
     </div>
   );
 });
+
+/**
+ * Smoothly expands late-arriving enrichment (biography, popular tracks) without a harsh snap,
+ * while rendering instantaneously open on frame 1 when data is already cached.
+ */
+function SmoothReveal({ open, children }: { open: boolean; children: ReactNode }) {
+  return (
+    <div
+      className={cn(
+        "grid transition-[grid-template-rows,opacity] duration-300 ease-out motion-reduce:transition-none",
+        open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+      )}
+    >
+      <div className="min-h-0 overflow-hidden">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Hero artist avatar that keeps showing the current loaded cover while a higher-priority
+ * portrait image downloads, then crossfades smoothly instead of flashing blank.
+ */
+function ArtistAvatar({ artworkUrl, alt, className }: { artworkUrl?: string; alt: string; className?: string }) {
+  const nextSrc = resolveArtworkSrc(artworkUrl, "sm");
+  const [baseSrc, setBaseSrc] = useState(nextSrc);
+  const [incomingLoaded, setIncomingLoaded] = useState(false);
+
+  const isUpgrading = Boolean(nextSrc && baseSrc && nextSrc !== baseSrc);
+
+  useEffect(() => {
+    if (!nextSrc) {
+      setBaseSrc("");
+      setIncomingLoaded(false);
+      return;
+    }
+    if (!baseSrc) {
+      setBaseSrc(nextSrc);
+      setIncomingLoaded(false);
+      return;
+    }
+    if (nextSrc !== baseSrc) {
+      setIncomingLoaded(false);
+    }
+  }, [nextSrc, baseSrc]);
+
+  useEffect(() => {
+    if (!isUpgrading || !incomingLoaded) return;
+    const timer = window.setTimeout(() => {
+      setBaseSrc(nextSrc);
+      setIncomingLoaded(false);
+    }, 310);
+    return () => window.clearTimeout(timer);
+  }, [isUpgrading, incomingLoaded, nextSrc]);
+
+  if (!baseSrc && !nextSrc) {
+    return <AlbumArt artworkUrl={undefined} alt={alt} className={className} priority />;
+  }
+
+  return (
+    <div className={cn("relative overflow-hidden bg-white/[0.05]", className)}>
+      {baseSrc && (
+        <img
+          src={baseSrc}
+          alt={alt}
+          loading="eager"
+          decoding="async"
+          className="h-full w-full object-cover"
+        />
+      )}
+      {isUpgrading && (
+        <img
+          key={nextSrc}
+          src={nextSrc}
+          alt={alt}
+          loading="eager"
+          decoding="async"
+          onLoad={() => setIncomingLoaded(true)}
+          className={cn(
+            "absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ease-out motion-reduce:transition-none",
+            incomingLoaded ? "opacity-100" : "opacity-0",
+          )}
+        />
+      )}
+    </div>
+  );
+}
