@@ -42,6 +42,7 @@ export function resolveActiveZone(
   zones: ZoneSnapshot[],
   savedZoneId: string,
   defaultZoneId?: string | null,
+  preferLocalPending = false,
 ): ZoneSnapshot | null {
   if (!zones.length) return null;
   if (savedZoneId) {
@@ -52,10 +53,27 @@ export function resolveActiveZone(
     const fallbackLocal = zones.find((z) => z.zoneId === defaultZoneId);
     if (fallbackLocal) return fallbackLocal;
   }
+  // While the local browser player is still connecting/registering on startup
+  // or after a server restart, avoid briefly jumping to an arbitrary UPnP/Cast
+  // speaker in another room.
+  if (preferLocalPending) {
+    return null;
+  }
   return zones[0];
 }
 
-export function useTacet(defaultZoneId?: string | null) {
+export interface UseTacetOptions {
+  defaultZoneId?: string | null;
+  preferLocalPending?: boolean;
+  onSnapshotZones?: (zones: ZoneSnapshot[]) => void;
+}
+
+export function useTacet(options?: UseTacetOptions | string | null) {
+  const opts: UseTacetOptions =
+    typeof options === "string" || options == null ? { defaultZoneId: options } : options;
+  const { defaultZoneId, preferLocalPending = false, onSnapshotZones } = opts;
+  const onSnapshotZonesRef = useRef(onSnapshotZones);
+  onSnapshotZonesRef.current = onSnapshotZones;
   const [zones, setZones] = useState<ZoneSnapshot[]>([]);
   const [selectedZoneId, setSelectedZoneId] = useState<string>(readSavedZoneId);
   const [settings, setSettings] = useState<Settings>({
@@ -143,7 +161,9 @@ export function useTacet(defaultZoneId?: string | null) {
       onResync: resyncAll,
       onSnapshot: (snap) => {
         syncClockOffset(snap.serverTime);
-        replaceZones(snap.zones ?? [], true);
+        const snapZones = snap.zones ?? [];
+        replaceZones(snapZones, true);
+        onSnapshotZonesRef.current?.(snapZones);
         if (snap.settings) setSettings(snap.settings);
         if (snap.qobuz) setQobuzStatus(snap.qobuz);
         if (snap.library) setLibraryStatus(snap.library);
@@ -224,8 +244,8 @@ export function useTacet(defaultZoneId?: string | null) {
   }, [replaceZones, syncClockOffset]);
 
   const activeZone = useMemo<ZoneSnapshot | null>(
-    () => resolveActiveZone(zones, selectedZoneId, defaultZoneId),
-    [zones, selectedZoneId, defaultZoneId],
+    () => resolveActiveZone(zones, selectedZoneId, defaultZoneId, preferLocalPending),
+    [zones, selectedZoneId, defaultZoneId, preferLocalPending],
   );
   activeZoneIdRef.current = activeZone?.zoneId ?? "";
 
@@ -233,6 +253,16 @@ export function useTacet(defaultZoneId?: string | null) {
     setSelectedZoneId(zoneId);
     saveZoneId(zoneId);
     setError("");
+  }, []);
+
+  const replaceSelectedZoneIfMatches = useCallback((previousZoneId: string, nextZoneId: string) => {
+    setSelectedZoneId((prev) => {
+      if (prev === previousZoneId) {
+        saveZoneId(nextZoneId);
+        return nextZoneId;
+      }
+      return prev;
+    });
   }, []);
 
   const discoverZones = useCallback(async () => {
@@ -397,6 +427,7 @@ export function useTacet(defaultZoneId?: string | null) {
     clearError,
     discovering,
     selectZone,
+    replaceSelectedZoneIfMatches,
     discoverZones,
     connectZone,
     setStreamMode,

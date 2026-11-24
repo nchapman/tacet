@@ -47,8 +47,32 @@ interface AlbumLocationState {
 }
 
 export function App() {
-  const browserPlayer = useBrowserPlayer();
-  const tacet = useTacet(browserPlayer.zoneId);
+  const replaceSelectedZoneRef = useRef<((prevId: string, nextId: string) => void) | null>(null);
+  const browserPlayer = useBrowserPlayer({
+    onZoneRotated: (prevId, nextId) => replaceSelectedZoneRef.current?.(prevId, nextId),
+  });
+  const browserZoneIdRef = useRef(browserPlayer.zoneId);
+  browserZoneIdRef.current = browserPlayer.zoneId;
+  const browserEnabledRef = useRef(browserPlayer.enabled);
+  browserEnabledRef.current = browserPlayer.enabled;
+  const browserReconnectRef = useRef(browserPlayer.reconnectNow);
+  browserReconnectRef.current = browserPlayer.reconnectNow;
+
+  const preferLocalPending =
+    browserPlayer.enabled &&
+    (browserPlayer.status === "connecting" || browserPlayer.status === "reconnecting");
+
+  const tacet = useTacet({
+    defaultZoneId: browserPlayer.zoneId,
+    preferLocalPending,
+    onSnapshotZones: (snapZones) => {
+      const zid = browserZoneIdRef.current;
+      if (browserEnabledRef.current && zid && !snapZones.some((z) => z.zoneId === zid)) {
+        browserReconnectRef.current();
+      }
+    },
+  });
+  replaceSelectedZoneRef.current = tacet.replaceSelectedZoneIfMatches;
 
   const location = useLocation();
   const routerNavigate = useNavigate();

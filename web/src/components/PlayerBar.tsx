@@ -181,7 +181,9 @@ export const PlayerBar = memo(function PlayerBar({
     ? isBrowserActive
       ? "This Browser"
       : activeZone.renderer.name
-    : "No Device";
+    : browserPlayer.enabled && (browserPlayer.status === "connecting" || browserPlayer.status === "reconnecting")
+      ? "Connecting…"
+      : "No Device";
   const qualLabel = track
     ? fmtOutputQuality(track, activeZone?.activeQuality, rendererLossyCodec(activeZone?.renderer) ?? "opus")
     : "";

@@ -150,6 +150,7 @@ export function DeviceList({
 }: DeviceListProps) {
   const [editingZoneId, setEditingZoneId] = useState<string | null>(null);
 
+  const localBrowserZoneId = browserPlayer.zoneId ?? (browserPlayer.enabled ? browserPlayer.expectedZoneId : null);
   const browserZone = browserPlayer.zoneId ? zones.find((z) => z.zoneId === browserPlayer.zoneId) : undefined;
   const browserQualityStop = browserZone ? audioQualityStop(browserZone.audioQuality) : null;
   const browserNonOriginal = Boolean(browserZone?.audioQuality && browserZone.audioQuality !== "original");
@@ -267,10 +268,10 @@ export function DeviceList({
       </div>
 
       {/* Discovered UPnP & remote player zones (excluding the local browser zone already rendered above) */}
-      {zones.filter((z) => z.zoneId !== browserPlayer.zoneId).length > 0 && (
+      {zones.filter((z) => z.zoneId !== localBrowserZoneId).length > 0 && (
         <div className="my-1 border-t border-white/[0.06] pt-1 space-y-0.5 max-h-80 overflow-y-auto">
           {zones
-            .filter((z) => z.zoneId !== browserPlayer.zoneId)
+            .filter((z) => z.zoneId !== localBrowserZoneId)
             .map((z) => {
               const active = z.zoneId === activeZoneId;
               const playing = z.state === "playing";

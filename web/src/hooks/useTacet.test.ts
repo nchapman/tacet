@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ZoneSnapshot } from "../api/types";
-import { shouldEnableBrowserPlayer } from "./useBrowserPlayer";
+import { loadPlayerToken, savePlayerToken, shouldEnableBrowserPlayer } from "./useBrowserPlayer";
 import { resolveActiveZone } from "./useTacet";
 
 function makeZone(zoneId: string, name: string, kind: "upnp" | "player" = "upnp"): ZoneSnapshot {
@@ -59,6 +59,60 @@ describe("resolveActiveZone", () => {
 
   it("falls back to the first zone when browser player is disabled and nothing is saved", () => {
     expect(resolveActiveZone([wiim, xbox], "", null)?.zoneId).toBe(wiim.zoneId);
+  });
+
+  it("waits instead of jumping to an arbitrary UPnP speaker while the local browser player is still connecting", () => {
+    // Nothing saved + browser still registering -> wait instead of selecting wiim.
+    expect(resolveActiveZone([wiim, xbox], "", null, true)).toBeNull();
+    // Saved browser player not registered yet -> wait instead of selecting wiim.
+    expect(resolveActiveZone([wiim, xbox], local.zoneId, null, true)).toBeNull();
+    // Once local browser registers -> selects local immediately.
+    expect(resolveActiveZone([wiim, xbox, local], "", local.zoneId, false)?.zoneId).toBe(local.zoneId);
+  });
+
+  it("still selects an explicitly saved online UPnP speaker immediately even while browser player is connecting", () => {
+    expect(resolveActiveZone([xbox, wiim], wiim.zoneId, null, true)?.zoneId).toBe(wiim.zoneId);
+  });
+});
+
+describe("player token persistence", () => {
+  const makeStorage = () => {
+    const store = new Map<string, string>();
+    return {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    };
+  };
+
+  afterEach(() => {
+    delete (globalThis as { window?: unknown }).window;
+  });
+
+  it("stores the player token in localStorage and migrates any legacy sessionStorage token", () => {
+    const localStorage = makeStorage();
+    const sessionStorage = makeStorage();
+    (globalThis as { window?: unknown }).window = { localStorage, sessionStorage };
+
+    // Legacy tab had token in sessionStorage -> migrates cleanly to localStorage.
+    sessionStorage.setItem("tacet.browserPlayerToken", "tok-legacy");
+    expect(loadPlayerToken()).toBe("tok-legacy");
+    expect(localStorage.getItem("tacet.browserPlayerToken")).toBe("tok-legacy");
+    expect(sessionStorage.getItem("tacet.browserPlayerToken")).toBeNull();
+
+    // New writes persist in localStorage so new tabs share the auth token.
+    savePlayerToken("tok-fresh");
+    expect(localStorage.getItem("tacet.browserPlayerToken")).toBe("tok-fresh");
+    expect(loadPlayerToken()).toBe("tok-fresh");
+
+    // Clearing removes from both storages.
+    savePlayerToken("");
+    expect(loadPlayerToken()).toBe("");
+    expect(localStorage.getItem("tacet.browserPlayerToken")).toBeNull();
   });
 });
 
