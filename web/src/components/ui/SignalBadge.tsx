@@ -27,7 +27,7 @@ export function SignalBadge({ provider, format, size = "md", showTitle = true, c
 
   const title = [
     isQobuz ? "Streaming from Qobuz" : isLocal ? "Local library" : srcLabel,
-    format,
+    displayFormat,
   ]
     .filter(Boolean)
     .join(" · ");

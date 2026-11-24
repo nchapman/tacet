@@ -78,6 +78,7 @@ export const AlbumArt = memo(function AlbumArt({
   const isFailed = Boolean(src) && failedSrc === src;
 
   useLayoutEffect(() => {
+    setFailedSrc("");
     const img = imgRef.current;
     if (src && img && img.complete && img.naturalWidth > 0) {
       markArtworkLoaded(src);
