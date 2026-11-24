@@ -3,6 +3,7 @@ import { memo } from "react";
 import { fmtAlbumQuality, fmtCount, isHiRes } from "@/api/format";
 import type { Album, QueueSource } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
+import { useAlbumHoverPrefetch } from "@/lib/prefetch";
 import { cn } from "@/lib/utils";
 
 interface AlbumCardProps {
@@ -32,9 +33,11 @@ export const AlbumCard = memo(function AlbumCard({
 }: AlbumCardProps) {
   const hiRes = isHiRes(album.maxBitDepth, album.maxSampleRate);
   const hiResLabel = hiRes ? shortHiRes(album) : "";
+  const hoverPrefetch = useAlbumHoverPrefetch(album);
 
   return (
     <div
+      {...hoverPrefetch}
       className={cn(
         "group relative flex flex-col rounded-xl p-2.5 -m-2.5 transition-colors hover:bg-white/[0.045]",
         className,

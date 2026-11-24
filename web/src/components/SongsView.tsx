@@ -8,6 +8,7 @@ import type { GenreSummary, QueuePosition, QueueSource, Track } from "@/api/type
 import { AlbumArt } from "@/components/ui/artwork";
 import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useAlbumHoverPrefetch, useArtistHoverPrefetch } from "@/lib/prefetch";
 import { queryErrorMessage, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 import { useVirtualWindow } from "@/lib/virtualWindow";
@@ -281,6 +282,8 @@ const SongRow = memo(function SongRow({
   onAdd,
 }: SongRowProps) {
   const qual = fmtQuality(tr);
+  const artistPrefetch = useArtistHoverPrefetch(tr.artist);
+  const albumPrefetch = useAlbumHoverPrefetch(tr.albumId);
 
   return (
     <div
@@ -315,6 +318,7 @@ const SongRow = memo(function SongRow({
           </button>
           <button
             type="button"
+            {...artistPrefetch}
             onClick={() => onOpenArtist(tr.artist)}
             className="block max-w-full truncate text-xs text-muted-foreground hover:text-foreground hover:underline text-left cursor-pointer"
           >
@@ -328,6 +332,7 @@ const SongRow = memo(function SongRow({
         {tr.albumId ? (
           <button
             type="button"
+            {...albumPrefetch}
             onClick={() => onOpenAlbumId(tr.albumId!)}
             className="block max-w-full truncate text-xs text-muted-foreground hover:text-foreground hover:underline text-left cursor-pointer"
           >

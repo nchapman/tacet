@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { ExplicitBadge } from "@/components/ui/ExplicitBadge";
 import { Button } from "@/components/ui/button";
 import { PageBody, PageHeader } from "@/components/ui/PageHeader";
+import { useAlbumHoverPrefetch, useArtistHoverPrefetch } from "@/lib/prefetch";
 import {
   QOBUZ_SEARCH_GC_TIME_MS,
   QOBUZ_SEARCH_STALE_TIME_MS,
@@ -336,6 +337,7 @@ export function SearchView({
                             <ArtistResultCard
                               key={artist.id}
                               name={artist.name}
+                              qobuzArtistId={artist.id}
                               subtitle={
                                 artist.albumsCount
                                   ? `${fmtCount(artist.albumsCount)} ${artist.albumsCount === 1 ? "release" : "releases"}`
@@ -408,12 +410,16 @@ function TopResultCard({
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
 }) {
+  const artistPrefetch = useArtistHoverPrefetch(result.type === "artist" ? result.artist?.name : undefined);
+  const albumPrefetch = useAlbumHoverPrefetch(result.type === "album" ? result.album : undefined);
+
   if (result.type === "artist" && result.artist) {
     const a: ArtistSummary = result.artist;
     return (
       <div
         role="button"
         tabIndex={0}
+        {...artistPrefetch}
         onClick={() => onOpenArtist(a.name)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -460,6 +466,7 @@ function TopResultCard({
       <div
         role="button"
         tabIndex={0}
+        {...albumPrefetch}
         onClick={() => onOpenAlbum(alb)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -578,18 +585,23 @@ function TopResultCard({
 
 function ArtistResultCard({
   name,
+  qobuzArtistId,
   subtitle,
   artworkUrl,
   onClick,
 }: {
   name: string;
+  qobuzArtistId?: number;
   subtitle: string;
   artworkUrl?: string;
   onClick: () => void;
 }) {
+  const hoverPrefetch = useArtistHoverPrefetch(name, qobuzArtistId);
+
   return (
     <button
       type="button"
+      {...hoverPrefetch}
       onClick={onClick}
       className="group flex flex-col items-center rounded-xl border border-white/[0.06] bg-white/[0.03] p-4 text-center transition-colors hover:bg-white/[0.07] cursor-pointer"
     >

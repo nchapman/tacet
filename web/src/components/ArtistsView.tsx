@@ -1,7 +1,7 @@
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, SkipForward, Sparkles } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { TacetAPIError, tacetClient } from "@/api/client";
+import { tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtCount, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type {
   Album,
@@ -17,6 +17,12 @@ import { Button } from "@/components/ui/button";
 import { EditorialNote } from "@/components/ui/EditorialNote";
 import { ExplicitBadge } from "@/components/ui/ExplicitBadge";
 import { PageHeader } from "@/components/ui/PageHeader";
+import {
+  artistAlbumsQueryOptions,
+  qobuzArtistQueryOptions,
+  useAlbumHoverPrefetch,
+  useArtistHoverPrefetch,
+} from "@/lib/prefetch";
 import { QOBUZ_ARTIST_GC_TIME_MS, QOBUZ_ARTIST_STALE_TIME_MS, queryErrorMessage, queryKeys } from "@/lib/query";
 import { useScrollRestoration } from "@/lib/scroll";
 import { cn } from "@/lib/utils";
@@ -27,8 +33,6 @@ const ARTIST_ROW_HEIGHT = 56;
 const ARTIST_LIST_PADDING_TOP = 8;
 /** Hold switching the detail pane briefly so SQLite-cached Qobuz artist data paints atomically with zero flash. */
 const REVEAL_GRACE_MS = 160;
-/** Debounce rail hover prefetch so quick pointer sweeps don't fire wasted requests. */
-const HOVER_PREFETCH_MS = 65;
 
 function artistPageQueryOptions(page: number) {
   const offset = page * ARTIST_PAGE_SIZE;
@@ -36,47 +40,6 @@ function artistPageQueryOptions(page: number) {
     queryKey: queryKeys.library.artists({ limit: ARTIST_PAGE_SIZE, offset }),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       tacetClient.listLibraryArtists({ limit: ARTIST_PAGE_SIZE, offset }, { signal }),
-  };
-}
-
-function artistAlbumsQueryOptions(artistName: string) {
-  return {
-    queryKey: queryKeys.library.albums({
-      artist: artistName.toLowerCase(),
-      groupVersions: true,
-      sort: "year",
-      limit: 200,
-    }),
-    queryFn: ({ signal }: { signal: AbortSignal }) =>
-      tacetClient.listLibraryAlbums(
-        {
-          artist: artistName,
-          groupVersions: true,
-          sort: "year",
-          limit: 200,
-        },
-        { signal },
-      ),
-  };
-}
-
-function qobuzArtistQueryOptions(target: { id: number } | { name: string }) {
-  return {
-    queryKey: queryKeys.qobuz.artist(target),
-    queryFn: async ({ signal }: { signal: AbortSignal }): Promise<QobuzArtistDetail | null> => {
-      try {
-        return await tacetClient.qobuzArtist(
-          "id" in target ? { id: target.id, limit: 50 } : { name: target.name, limit: 50 },
-          { signal },
-        );
-      } catch (err) {
-        // 404 is expected for local-only artists not on Qobuz; cache null to avoid repeat 404s.
-        if (err instanceof TacetAPIError && err.status === 404) return null;
-        throw err;
-      }
-    },
-    staleTime: QOBUZ_ARTIST_STALE_TIME_MS,
-    gcTime: QOBUZ_ARTIST_GC_TIME_MS,
   };
 }
 
@@ -207,16 +170,11 @@ export function ArtistsView({
   // Default to the first artist on desktop when no artist is selected yet.
   const effectiveArtist = selectedArtist || artistsPage0Query.data?.items?.[0]?.name || "";
 
-  const hoverTimerRef = useRef<number | null>(null);
   const [graceExpiredForKey, setGraceExpiredForKey] = useState("");
   const [heldSnapshot, setHeldSnapshot] = useState<ArtistDetailSnapshot | null>(null);
 
   const handleSelectArtist = useCallback(
     (name: string) => {
-      if (hoverTimerRef.current !== null) {
-        window.clearTimeout(hoverTimerRef.current);
-        hoverTimerRef.current = null;
-      }
       setSelectedArtist(name);
       setSelectedQobuzId(undefined);
       setMobileDetailOpen(true);
@@ -224,29 +182,6 @@ export function ArtistsView({
     },
     [onSelectArtist],
   );
-
-  const handleCancelPrefetch = useCallback(() => {
-    if (hoverTimerRef.current !== null) {
-      window.clearTimeout(hoverTimerRef.current);
-      hoverTimerRef.current = null;
-    }
-  }, []);
-
-  const handlePrefetchArtist = useCallback(
-    (name: string) => {
-      handleCancelPrefetch();
-      hoverTimerRef.current = window.setTimeout(() => {
-        hoverTimerRef.current = null;
-        void queryClient.prefetchQuery(artistAlbumsQueryOptions(name));
-        if (qobuzConnected) {
-          void queryClient.prefetchQuery(qobuzArtistQueryOptions({ name }));
-        }
-      }, HOVER_PREFETCH_MS);
-    },
-    [handleCancelPrefetch, queryClient, qobuzConnected],
-  );
-
-  useEffect(() => handleCancelPrefetch, [handleCancelPrefetch]);
 
   useEffect(() => {
     setShowAllPopular(false);
@@ -433,8 +368,6 @@ export function ArtistsView({
                       active={active}
                       artworkUrl={(committedMatch ? view?.heroArt : undefined) || artist.artworkUrl}
                       onSelect={handleSelectArtist}
-                      onPrefetch={handlePrefetchArtist}
-                      onCancelPrefetch={handleCancelPrefetch}
                     />
                   );
                 })}
@@ -702,21 +635,13 @@ export function ArtistsView({
                   </h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
                     {view.similarArtists!.map((sim) => (
-                      <button
+                      <SimilarArtistCard
                         key={sim.id}
-                        type="button"
-                        onClick={() => onSelectArtist?.(sim.name, sim.id)}
-                        className="group flex flex-col items-center gap-2 rounded-xl border border-white/[0.06] bg-white/[0.025] p-3 text-center transition-colors hover:border-white/[0.14] hover:bg-white/[0.05] cursor-pointer"
-                      >
-                        <AlbumArt
-                          artworkUrl={sim.artworkUrl}
-                          alt={sim.name}
-                          className="h-16 w-16 rounded-full ring-1 ring-white/10"
-                        />
-                        <div className="w-full truncate text-xs font-medium text-foreground group-hover:text-white">
-                          {sim.name}
-                        </div>
-                      </button>
+                        id={sim.id}
+                        name={sim.name}
+                        artworkUrl={sim.artworkUrl}
+                        onSelect={onSelectArtist}
+                      />
                     ))}
                   </div>
                 </section>
@@ -746,6 +671,7 @@ function StackedAlbumCard({
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
 }) {
+  const hoverPrefetch = useAlbumHoverPrefetch(alb);
   const qLabel = fmtAlbumQuality(alb);
   const hiRes = isHiRes(alb.maxBitDepth, alb.maxSampleRate);
   const isDSD =
@@ -756,6 +682,7 @@ function StackedAlbumCard({
 
   return (
     <div
+      {...hoverPrefetch}
       onClick={() => onOpenAlbum(alb)}
       className="group flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-5 rounded-2xl border border-white/[0.07] bg-white/[0.025] p-3.5 sm:p-4 transition-all hover:border-white/[0.14] hover:bg-white/[0.045] cursor-pointer"
     >
@@ -846,8 +773,6 @@ interface ArtistRailRowProps {
   active: boolean;
   artworkUrl?: string;
   onSelect: (name: string) => void;
-  onPrefetch: (name: string) => void;
-  onCancelPrefetch: () => void;
 }
 
 const ArtistRailRow = memo(function ArtistRailRow({
@@ -855,16 +780,14 @@ const ArtistRailRow = memo(function ArtistRailRow({
   active,
   artworkUrl,
   onSelect,
-  onPrefetch,
-  onCancelPrefetch,
 }: ArtistRailRowProps) {
+  const hoverPrefetch = useArtistHoverPrefetch(artist.name);
+
   return (
     <button
       type="button"
+      {...hoverPrefetch}
       onClick={() => onSelect(artist.name)}
-      onMouseEnter={() => onPrefetch(artist.name)}
-      onMouseLeave={onCancelPrefetch}
-      onFocus={() => onPrefetch(artist.name)}
       className={cn(
         "flex h-14 w-full items-center gap-3 rounded-xl px-2.5 text-left transition-colors cursor-pointer",
         active ? "md:bg-white/[0.1] md:text-white text-foreground/90" : "text-foreground/85 hover:bg-white/[0.04]",
@@ -882,6 +805,37 @@ const ArtistRailRow = memo(function ArtistRailRow({
         </div>
       </div>
       <ChevronRight className="h-4 w-4 text-muted-foreground/50 md:hidden shrink-0" />
+    </button>
+  );
+});
+
+const SimilarArtistCard = memo(function SimilarArtistCard({
+  id,
+  name,
+  artworkUrl,
+  onSelect,
+}: {
+  id: number;
+  name: string;
+  artworkUrl?: string;
+  onSelect?: (artistName: string, qobuzArtistId?: number) => void;
+}) {
+  const hoverPrefetch = useArtistHoverPrefetch(name, id);
+  return (
+    <button
+      type="button"
+      {...hoverPrefetch}
+      onClick={() => onSelect?.(name, id)}
+      className="group flex flex-col items-center gap-2 rounded-xl border border-white/[0.06] bg-white/[0.025] p-3 text-center transition-colors hover:border-white/[0.14] hover:bg-white/[0.05] cursor-pointer"
+    >
+      <AlbumArt
+        artworkUrl={artworkUrl}
+        alt={name}
+        className="h-16 w-16 rounded-full ring-1 ring-white/10"
+      />
+      <div className="w-full truncate text-xs font-medium text-foreground group-hover:text-white">
+        {name}
+      </div>
     </button>
   );
 });

@@ -10,7 +10,6 @@ import {
   useParams,
   useSearchParams,
 } from "react-router";
-import { TacetAPIError, tacetClient } from "@/api/client";
 import type { Album, QueueItem, QueuePosition, QueueSource } from "@/api/types";
 import { AlbumView } from "@/components/AlbumView";
 import { AlbumsView } from "@/components/AlbumsView";
@@ -30,12 +29,10 @@ import { AmbientBackdrop } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
 import { useBrowserPlayer } from "@/hooks/useBrowserPlayer";
 import { useTacet } from "@/hooks/useTacet";
+import { albumDetailQueryOptions, setPrefetchQobuzConnected } from "@/lib/prefetch";
 import {
-  DEFAULT_GC_TIME_MS,
   invalidateLibraryQueries,
   invalidateQobuzLogout,
-  QOBUZ_ALBUM_GC_TIME_MS,
-  QOBUZ_ALBUM_STALE_TIME_MS,
   queryErrorMessage,
   queryKeys,
 } from "@/lib/query";
@@ -334,6 +331,10 @@ export function App() {
   const isAlbumPage = location.pathname.startsWith("/albums/");
   const ambientArtwork = (isAlbumPage && albumAmbientArt) || tacet.activeZone?.currentTrack?.artworkUrl;
   const ambientIntensity = isAlbumPage && albumAmbientArt ? "hero" : "subtle";
+
+  useEffect(() => {
+    setPrefetchQobuzConnected(Boolean(tacet.qobuzStatus?.authenticated));
+  }, [tacet.qobuzStatus?.authenticated]);
 
   return (
     <div className="relative flex h-dvh w-full flex-col overflow-hidden bg-[#09090b] text-foreground">
@@ -744,35 +745,9 @@ function AlbumRoute({
   const state = (location.state as AlbumLocationState | null) ?? null;
   const hint = state?.album && state.album.id === albumId ? state.album : undefined;
 
-  const isOutOfLibraryQobuz = Boolean(hint && hint.source === "qobuz" && hint.inLibrary === false);
-
-  const isQobuzAlbum = Boolean(albumId?.startsWith("qobuz:"));
-
   const albumQuery = useQuery<Album>({
-    queryKey: queryKeys.album(albumId ?? ""),
-    queryFn: ({ signal }) => {
-      if (!albumId) return Promise.reject(new Error("Missing album id"));
-      // Always fetch Qobuz albums via qobuzAlbum when connected (served from Go catalogCache
-      // with live SQLite inLibrary/versions/playCount overlay) so partial 1-track SQLite albums
-      // never hide the rest of the album's tracklist.
-      if (isOutOfLibraryQobuz || (isQobuzAlbum && qobuzConnected)) {
-        return tacetClient.qobuzAlbum(albumId, { signal }).catch((err) => {
-          if (err instanceof TacetAPIError && err.status === 404 && !isOutOfLibraryQobuz) {
-            return tacetClient.getLibraryAlbum(albumId, { signal });
-          }
-          throw err;
-        });
-      }
-      return tacetClient.getLibraryAlbum(albumId, { signal }).catch((err) => {
-        if (err instanceof TacetAPIError && err.status === 404 && isQobuzAlbum) {
-          return tacetClient.qobuzAlbum(albumId, { signal });
-        }
-        throw err;
-      });
-    },
+    ...albumDetailQueryOptions(albumId ?? "", { qobuzConnected, hint }),
     enabled: Boolean(albumId),
-    staleTime: isQobuzAlbum ? QOBUZ_ALBUM_STALE_TIME_MS : 60_000,
-    gcTime: isQobuzAlbum ? QOBUZ_ALBUM_GC_TIME_MS : DEFAULT_GC_TIME_MS,
     placeholderData: hint,
   });
 

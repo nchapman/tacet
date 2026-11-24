@@ -13,6 +13,7 @@ import { ExplicitBadge } from "@/components/ui/ExplicitBadge";
 import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { PlayingBars } from "@/components/ui/PlayingBars";
 import { SignalBadge } from "@/components/ui/SignalBadge";
+import { useArtistHoverPrefetch } from "@/lib/prefetch";
 import { QOBUZ_ALBUM_GC_TIME_MS, QOBUZ_ALBUM_STALE_TIME_MS, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -85,6 +86,7 @@ export function AlbumView({
   onAdd,
 }: AlbumViewProps) {
   const queryClient = useQueryClient();
+  const artistHoverPrefetch = useArtistHoverPrefetch(album.artist);
   const canSuggest = qobuzConnected && Boolean(album.id);
   const similarQuery = useQuery({
     queryKey: queryKeys.discover.similarAlbums(album.id),
@@ -207,6 +209,7 @@ export function AlbumView({
               {onOpenArtist ? (
                 <button
                   type="button"
+                  {...artistHoverPrefetch}
                   onClick={() => onOpenArtist(album.artist)}
                   className="font-semibold text-white hover:underline cursor-pointer"
                 >
