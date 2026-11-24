@@ -12,6 +12,7 @@ interface AlbumCardProps {
   album: Album;
   subtitle?: string;
   showInLibraryBadge?: boolean;
+  priority?: boolean;
   onOpen: (album: Album) => void;
   onOpenArtist?: (artist: string) => void;
   onPlay?: (source: QueueSource, startIndex?: number) => void;
@@ -30,6 +31,7 @@ export const AlbumCard = memo(function AlbumCard({
   album,
   subtitle,
   showInLibraryBadge = false,
+  priority = false,
   onOpen,
   onOpenArtist,
   onPlay,
@@ -59,6 +61,7 @@ export const AlbumCard = memo(function AlbumCard({
           <AlbumArt
             artworkUrl={album.artworkUrl}
             alt={album.title}
+            priority={priority}
             className="h-full w-full transition-transform duration-300 group-hover:scale-[1.03]"
           />
         </button>

@@ -300,7 +300,7 @@ const SongRow = memo(function SongRow({
           aria-label={`Play ${tr.title}`}
           className="relative h-10 w-10 shrink-0 overflow-hidden rounded-md ring-1 ring-white/10 cursor-pointer"
         >
-          <AlbumArt artworkUrl={tr.artworkUrl} alt={tr.album || tr.title} className="h-full w-full" />
+          <AlbumArt artworkUrl={tr.artworkUrl} alt={tr.album || tr.title} priority className="h-full w-full" />
           <span className="absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 group-hover:opacity-100 transition-opacity">
             <Play className="h-3.5 w-3.5 fill-white text-white" />
           </span>

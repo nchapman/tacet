@@ -224,7 +224,7 @@ export const PlayerBar = memo(function PlayerBar({
             className="group relative h-13 w-13 shrink-0 rounded-lg overflow-hidden shadow-lg ring-1 ring-white/10 cursor-pointer disabled:cursor-default"
             title={track ? "Open full screen player" : undefined}
           >
-            <AlbumArt artworkUrl={track?.artworkUrl} alt={track?.album || track?.title || "No track"} className="h-full w-full" />
+            <AlbumArt artworkUrl={track?.artworkUrl} alt={track?.album || track?.title || "No track"} priority className="h-full w-full" />
             {track && (
               <span className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
                 <Maximize2 className="h-4 w-4 text-white" />
@@ -495,6 +495,7 @@ export const PlayerBar = memo(function PlayerBar({
               <AlbumArt
                 artworkUrl={track?.artworkUrl}
                 alt={track?.title || "Now Playing"}
+                priority
                 className="h-11 w-11 shrink-0 rounded-lg ring-1 ring-white/10"
               />
               <div className="min-w-0 flex-1">

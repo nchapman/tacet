@@ -1,5 +1,5 @@
 import { Disc3 } from "lucide-react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { tacetClient } from "@/api/client";
 import {
   extractUltraBlurPalette,
@@ -9,6 +9,22 @@ import {
 import { cn } from "@/lib/utils";
 
 export type ArtworkSize = "sm" | "lg";
+
+const MAX_LOADED_ART_CACHE = 2000;
+const loadedArtUrls = new Set<string>();
+
+export function isArtworkLoaded(src: string): boolean {
+  return Boolean(src) && loadedArtUrls.has(src);
+}
+
+export function markArtworkLoaded(src: string): void {
+  if (!src) return;
+  if (loadedArtUrls.size >= MAX_LOADED_ART_CACHE && !loadedArtUrls.has(src)) {
+    const oldest = loadedArtUrls.values().next().value;
+    if (oldest) loadedArtUrls.delete(oldest);
+  }
+  loadedArtUrls.add(src);
+}
 
 /**
  * Resolves cover art URLs and appends a fixed width bucket (?w=400 or ?w=1000)
@@ -32,25 +48,89 @@ interface AlbumArtProps {
   priority?: boolean;
 }
 
-/** Crisp cover artwork with a quiet dark vinyl fallback. */
-export function AlbumArt({ artworkUrl, alt, size = "sm", className, iconClassName, priority }: AlbumArtProps) {
+/**
+ * Crisp, zero-blink cover artwork:
+ * - Already-loaded / memory-cached images paint synchronously on Frame 1 at full opacity.
+ * - Large /media/art/ heroes reuse any already-loaded small thumbnail as an instant base layer
+ *   while the high-res bucket loads so opening an album never flashes a blank square.
+ * - Cold network images stay hidden until decoded and fade in over 150ms (no progressive tearing).
+ */
+export const AlbumArt = memo(function AlbumArt({
+  artworkUrl,
+  alt,
+  size = "sm",
+  className,
+  iconClassName,
+  priority,
+}: AlbumArtProps) {
   const src = resolveArtworkSrc(artworkUrl, size);
+  const smFallbackSrc =
+    size === "lg" && src && artworkUrl?.includes("/media/art/")
+      ? resolveArtworkSrc(artworkUrl, "sm")
+      : "";
+  const hasCachedFallback = Boolean(smFallbackSrc && smFallbackSrc !== src && loadedArtUrls.has(smFallbackSrc));
+
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const [loadedSrc, setLoadedSrc] = useState<string>(() => (src && loadedArtUrls.has(src) ? src : ""));
+  const [failedSrc, setFailedSrc] = useState<string>("");
+
+  const isLoaded = Boolean(src) && (loadedArtUrls.has(src) || loadedSrc === src);
+  const isFailed = Boolean(src) && failedSrc === src;
+
+  useLayoutEffect(() => {
+    const img = imgRef.current;
+    if (src && img && img.complete && img.naturalWidth > 0) {
+      markArtworkLoaded(src);
+      setLoadedSrc(src);
+    }
+  }, [src]);
+
+  const eager = Boolean(priority || isLoaded);
+
   return (
     <div className={cn("relative overflow-hidden bg-white/[0.05] flex items-center justify-center", className)}>
-      {src ? (
-        <img
-          src={src}
-          alt={alt}
-          loading={priority ? "eager" : "lazy"}
-          decoding="async"
-          className="h-full w-full object-cover"
-        />
+      {src && !isFailed ? (
+        <>
+          {hasCachedFallback && !isLoaded && (
+            <img
+              src={smFallbackSrc}
+              alt=""
+              aria-hidden="true"
+              loading="eager"
+              decoding="sync"
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+          )}
+          <img
+            ref={imgRef}
+            src={src}
+            alt={alt}
+            loading={eager ? "eager" : "lazy"}
+            decoding={eager ? "sync" : "async"}
+            onLoad={() => {
+              markArtworkLoaded(src);
+              setLoadedSrc(src);
+            }}
+            onError={() => setFailedSrc(src)}
+            className={cn(
+              "relative h-full w-full object-cover",
+              hasCachedFallback
+                ? isLoaded
+                  ? "opacity-100"
+                  : "opacity-0"
+                : cn(
+                    "transition-opacity duration-150 ease-out motion-reduce:transition-none",
+                    isLoaded ? "opacity-100" : "opacity-0",
+                  ),
+            )}
+          />
+        </>
       ) : (
         <Disc3 className={cn("h-1/3 w-1/3 text-white/20", iconClassName)} />
       )}
     </div>
   );
-}
+});
 
 const DEFAULT_PALETTE: UltraBlurPalette = {
   primary: "rgb(42, 98, 128)",

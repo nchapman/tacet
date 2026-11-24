@@ -182,6 +182,7 @@ export const VirtualAlbumGrid = memo(function VirtualAlbumGrid({
             <AlbumCard
               key={alb.id}
               album={alb}
+              priority
               onOpen={onOpenAlbum}
               onPlay={onPlay}
             />

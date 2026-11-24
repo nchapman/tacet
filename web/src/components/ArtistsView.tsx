@@ -12,7 +12,7 @@ import type {
   QueueSource,
   Track,
 } from "@/api/types";
-import { AlbumArt, resolveArtworkSrc } from "@/components/ui/artwork";
+import { AlbumArt, isArtworkLoaded, markArtworkLoaded, resolveArtworkSrc } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EditorialNote } from "@/components/ui/EditorialNote";
@@ -749,6 +749,7 @@ const ArtistRailRow = memo(function ArtistRailRow({
       <AlbumArt
         artworkUrl={artworkUrl}
         alt={artist.name}
+        priority
         className="h-10 w-10 shrink-0 rounded-full ring-1 ring-white/10"
       />
       <div className="min-w-0 flex-1">
@@ -959,7 +960,8 @@ function ArtistAvatar({ artworkUrl, alt, className }: { artworkUrl?: string; alt
           src={baseSrc}
           alt={alt}
           loading="eager"
-          decoding="async"
+          decoding={isArtworkLoaded(baseSrc) ? "sync" : "async"}
+          onLoad={() => markArtworkLoaded(baseSrc)}
           className="h-full w-full object-cover"
         />
       )}
@@ -969,8 +971,11 @@ function ArtistAvatar({ artworkUrl, alt, className }: { artworkUrl?: string; alt
           src={nextSrc}
           alt={alt}
           loading="eager"
-          decoding="async"
-          onLoad={() => setIncomingLoaded(true)}
+          decoding={isArtworkLoaded(nextSrc) ? "sync" : "async"}
+          onLoad={() => {
+            markArtworkLoaded(nextSrc);
+            setIncomingLoaded(true);
+          }}
           className={cn(
             "absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ease-out motion-reduce:transition-none",
             incomingLoaded ? "opacity-100" : "opacity-0",
