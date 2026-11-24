@@ -3,7 +3,7 @@ import { ListPlus, Play, SkipForward } from "lucide-react";
 import { memo, useCallback } from "react";
 import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
-import { fmtDuration, fmtQuality } from "@/api/format";
+import { fmtCount, fmtDuration, fmtQuality } from "@/api/format";
 import type { GenreSummary, QueuePosition, QueueSource, Track } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
 import { PageBody, PageHeader } from "@/components/ui/PageHeader";
@@ -88,7 +88,7 @@ export const SongsView = memo(function SongsView({
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           <div className="flex items-baseline gap-2.5">
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Songs</h1>
-            <span className="text-xs font-mono text-muted-foreground">{total}</span>
+            <span className="text-xs font-mono text-muted-foreground">{fmtCount(total)}</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
@@ -104,7 +104,7 @@ export const SongsView = memo(function SongsView({
                   <SelectItem value="__all__">All genres</SelectItem>
                   {genres.map((g) => (
                     <SelectItem key={g.name} value={g.name}>
-                      {g.name} ({g.trackCount})
+                      {g.name} ({fmtCount(g.trackCount)})
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -250,7 +250,7 @@ export const SongsView = memo(function SongsView({
 
         {total > tracks.length && (
           <p className="mt-6 text-center text-xs text-muted-foreground">
-            Showing {tracks.length} of {total} tracks — refine with search or genre filter.
+            Showing {fmtCount(tracks.length)} of {fmtCount(total)} tracks — refine with search or genre filter.
           </p>
         )}
         </div>

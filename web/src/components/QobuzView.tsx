@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Compass, Search, Sparkles } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 import { tacetClient } from "@/api/client";
+import { fmtCount } from "@/api/format";
 import type { Album, QobuzStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { Button } from "@/components/ui/button";
@@ -195,7 +196,7 @@ export function QobuzView({
           <section className="space-y-4">
             <div className="flex items-baseline gap-2">
               <h2 className="text-base font-semibold tracking-tight text-white">Synced Qobuz Favorites</h2>
-              <span className="text-xs font-mono text-muted-foreground">{albums.length}</span>
+              <span className="text-xs font-mono text-muted-foreground">{fmtCount(albums.length)}</span>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-x-5 gap-y-7">
               {albums.map((alb) => (

@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Disc3, ListPlus, Loader2, Play, Search, SkipForward, Sparkles, UserRound, X } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { tacetClient } from "@/api/client";
-import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
+import { fmtAlbumQuality, fmtCount, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type {
   Album,
   ArtistSummary,
@@ -284,7 +284,7 @@ export function SearchView({
                           <ArtistResultCard
                             key={artist.name}
                             name={artist.name}
-                            subtitle={`${artist.albumCount} ${artist.albumCount === 1 ? "album" : "albums"}`}
+                            subtitle={`${fmtCount(artist.albumCount)} ${artist.albumCount === 1 ? "album" : "albums"}`}
                             artworkUrl={artist.artworkUrl}
                             onClick={() => onOpenArtist(artist.name)}
                           />
@@ -338,7 +338,7 @@ export function SearchView({
                               name={artist.name}
                               subtitle={
                                 artist.albumsCount
-                                  ? `${artist.albumsCount} ${artist.albumsCount === 1 ? "release" : "releases"}`
+                                  ? `${fmtCount(artist.albumsCount)} ${artist.albumsCount === 1 ? "release" : "releases"}`
                                   : "Qobuz Artist"
                               }
                               artworkUrl={artist.artworkUrl}
@@ -439,7 +439,7 @@ function TopResultCard({
               Artist
             </Badge>
             <span>
-              {a.albumCount} {a.albumCount === 1 ? "album" : "albums"} · {a.trackCount} tracks
+              {fmtCount(a.albumCount)} {a.albumCount === 1 ? "album" : "albums"} · {fmtCount(a.trackCount)} tracks
             </span>
           </div>
         </div>

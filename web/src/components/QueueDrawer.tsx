@@ -1,6 +1,6 @@
 import { ListMusic, Play, Trash2, X } from "lucide-react";
 import { memo, useEffect, useState } from "react";
-import { fmtDuration } from "@/api/format";
+import { fmtCount, fmtDuration } from "@/api/format";
 import type { QueueItem } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
@@ -30,7 +30,7 @@ export function QueueContent({ items, currentItemId, onJump, onRemove, onClear, 
           <h2 className="text-sm font-semibold tracking-tight">Queue</h2>
           {items.length > 0 && (
             <span className="rounded-full bg-white/[0.07] px-2 py-0.5 text-[11px] font-mono text-muted-foreground">
-              {items.length}
+              {fmtCount(items.length)}
             </span>
           )}
         </div>

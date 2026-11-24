@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, CheckCircle2, Compass, HardDrive, Plus, Radio, RefreshCw, Speaker } from "lucide-react";
 import { useState } from "react";
 import { tacetClient } from "@/api/client";
+import { fmtCount } from "@/api/format";
 import type { LibraryStatus, QobuzStatus, StreamMode, ZoneSnapshot } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -142,7 +143,7 @@ export function SettingsView({
                 <h2 className="text-base font-semibold text-white">Library</h2>
                 <p className="text-xs text-muted-foreground">
                   {libraryStatus
-                    ? `${libraryStatus.albums} albums · ${libraryStatus.tracks} tracks (${libraryStatus.localAlbums ?? 0} local, ${libraryStatus.remoteAlbums ?? 0} Qobuz)`
+                    ? `${fmtCount(libraryStatus.albums)} albums · ${fmtCount(libraryStatus.tracks)} tracks (${fmtCount(libraryStatus.localAlbums)} local, ${fmtCount(libraryStatus.remoteAlbums)} Qobuz)`
                     : "Loading status…"}
                 </p>
               </div>
@@ -152,7 +153,7 @@ export function SettingsView({
 
           {(libraryStatus?.missingTracks ?? 0) > 0 && (
             <p className="text-xs text-muted-foreground">
-              {libraryStatus!.missingTracks} missing local track(s) are soft-deleted and will restore automatically if
+              {fmtCount(libraryStatus!.missingTracks)} missing local track(s) are soft-deleted and will restore automatically if
               their drive reconnects within the retention window.
             </p>
           )}
@@ -347,7 +348,7 @@ export function SettingsView({
                   <p className="text-xs text-muted-foreground">
                     {discoverGenreIds.length === 0
                       ? "Showing editorial picks across all genres on Home"
-                      : `Filtering Home discovery shelves to ${discoverGenreIds.length} favorite ${discoverGenreIds.length === 1 ? "genre" : "genres"}`}
+                      : `Filtering Home discovery shelves to ${fmtCount(discoverGenreIds.length)} favorite ${discoverGenreIds.length === 1 ? "genre" : "genres"}`}
                   </p>
                 </div>
               </div>
@@ -412,7 +413,7 @@ export function SettingsView({
               <div>
                 <h2 className="text-base font-semibold text-white">Playback Devices</h2>
                 <p className="text-xs text-muted-foreground">
-                  {zones.length} {zones.length === 1 ? "zone" : "zones"} available · monitored automatically
+                  {fmtCount(zones.length)} {zones.length === 1 ? "zone" : "zones"} available · monitored automatically
                 </p>
               </div>
             </div>

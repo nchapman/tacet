@@ -1,6 +1,6 @@
 import { Check, Layers, Play } from "lucide-react";
 import { memo } from "react";
-import { fmtAlbumQuality, isHiRes } from "@/api/format";
+import { fmtAlbumQuality, fmtCount, isHiRes } from "@/api/format";
 import type { Album, QueueSource } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
 import { cn } from "@/lib/utils";
@@ -66,7 +66,7 @@ export const AlbumCard = memo(function AlbumCard({
         {(album.versionCount ?? 1) > 1 && (
           <span className="pointer-events-none absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-black/75 px-2 py-0.5 text-[10px] font-medium text-white/90 backdrop-blur-md border border-white/10">
             <Layers className="h-2.5 w-2.5" />
-            {album.versionCount}
+            {fmtCount(album.versionCount)}
           </span>
         )}
 

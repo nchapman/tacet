@@ -1,6 +1,7 @@
 import { Disc3, Home, ListMusic, Loader2, Search, Settings, Users } from "lucide-react";
 import { memo } from "react";
 import { Link } from "react-router";
+import { fmtCount } from "@/api/format";
 import type { LibraryStatus } from "@/api/types";
 import { cn } from "@/lib/utils";
 import { SECTION_PATHS } from "@/routes";
@@ -93,7 +94,7 @@ export const Sidebar = memo(function Sidebar({ activeSection, libraryStatus, onN
       {libraryStatus && (
         <div className="flex items-center justify-between px-[22px] py-3 text-[11px] text-muted-foreground/55 shrink-0">
           <span className="truncate">
-            {libraryStatus.albums} albums · {libraryStatus.tracks} tracks
+            {fmtCount(libraryStatus.albums)} albums · {fmtCount(libraryStatus.tracks)} tracks
           </span>
           {libraryStatus.scanning && <Loader2 className="h-3 w-3 animate-spin text-emerald-400 shrink-0" />}
         </div>

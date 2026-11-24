@@ -2,6 +2,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { memo, useCallback } from "react";
 import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
+import { fmtCount } from "@/api/format";
 import type { Album, LibraryStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { PageBody, PageHeader } from "@/components/ui/PageHeader";
@@ -74,7 +75,7 @@ export const AlbumsView = memo(function AlbumsView({ libraryStatus, groupVersion
         <div className="mx-auto w-full max-w-7xl flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-baseline gap-2.5">
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Albums</h1>
-            <span className="text-xs font-mono text-muted-foreground">{total}</span>
+            <span className="text-xs font-mono text-muted-foreground">{fmtCount(total)}</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">

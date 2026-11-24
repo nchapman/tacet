@@ -1,5 +1,13 @@
 import type { Album, AudioQuality, StreamMode, Track } from "./types";
 
+const countFormatter = new Intl.NumberFormat();
+
+/** Formats a non-negative integer count with locale grouping delimiters (e.g. 1,234). */
+export function fmtCount(n?: number | null): string {
+  if (n == null || !Number.isFinite(n)) return "0";
+  return countFormatter.format(Math.max(0, Math.trunc(n)));
+}
+
 export function fmtDuration(seconds?: number): string {
   const total = Math.max(0, Math.floor(seconds ?? 0));
   const hrs = Math.floor(total / 3600);

@@ -16,7 +16,7 @@ import {
   VolumeX,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { fmtDuration } from "@/api/format";
+import { fmtCount, fmtDuration } from "@/api/format";
 import type { AudioQuality, RepeatMode, StreamMode, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
 import { SignalPathPopover } from "@/components/SignalPathPopover";
@@ -216,7 +216,7 @@ export function NowPlayingOverlay({
             <ListMusic className="h-4 w-4" />
             <span>Up Next</span>
             {upcoming.length > 0 && (
-              <span className="font-mono text-[10px] text-muted-foreground">({upcoming.length})</span>
+              <span className="font-mono text-[10px] text-muted-foreground">({fmtCount(upcoming.length)})</span>
             )}
           </Button>
 
@@ -508,7 +508,7 @@ export function NowPlayingOverlay({
             <aside className="hidden lg:flex h-[min(70vh,560px)] w-80 xl:w-96 shrink-0 flex-col rounded-2xl border border-white/[0.09] bg-black/35 overflow-hidden">
               <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.07] shrink-0">
                 <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Up Next</span>
-                <span className="font-mono text-[11px] text-muted-foreground">{queue.length} in queue</span>
+                <span className="font-mono text-[11px] text-muted-foreground">{fmtCount(queue.length)} in queue</span>
               </div>
               <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
                 {queue.length === 0 ? (

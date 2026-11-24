@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, SkipForward, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TacetAPIError, tacetClient } from "@/api/client";
-import { fmtAlbumQuality, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
+import { fmtAlbumQuality, fmtCount, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type {
   Album,
   ArtistSummary,
@@ -196,7 +196,7 @@ export function ArtistsView({
         <div className="flex h-16 items-center border-b border-white/[0.06] px-4 shrink-0">
           <div className="flex w-full items-baseline justify-between">
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Artists</h1>
-            <span className="text-xs font-mono text-muted-foreground">{artists.length}</span>
+            <span className="text-xs font-mono text-muted-foreground">{fmtCount(artists.length)}</span>
           </div>
         </div>
 
@@ -241,7 +241,7 @@ export function ArtistsView({
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[13.5px] font-medium leading-tight">{artist.name}</div>
                     <div className="truncate text-xs text-muted-foreground mt-0.5">
-                      {artist.albumCount} {artist.albumCount === 1 ? "album" : "albums"} · {artist.trackCount} tracks
+                      {fmtCount(artist.albumCount)} {artist.albumCount === 1 ? "album" : "albums"} · {fmtCount(artist.trackCount)} tracks
                     </div>
                   </div>
                   <ChevronRight className="h-4 w-4 text-muted-foreground/50 md:hidden shrink-0" />
@@ -297,11 +297,11 @@ export function ArtistsView({
                   <p className="text-xs text-muted-foreground mt-1">
                     {currentSummary ? (
                       <>
-                        {currentSummary.albumCount} {currentSummary.albumCount === 1 ? "album" : "albums"} ·{" "}
-                        {currentSummary.trackCount} tracks in library
+                        {fmtCount(currentSummary.albumCount)} {currentSummary.albumCount === 1 ? "album" : "albums"} ·{" "}
+                        {fmtCount(currentSummary.trackCount)} tracks in library
                       </>
                     ) : remoteDetail ? (
-                      <>Qobuz Artist · {remoteDetail.albums.length} releases</>
+                      <>Qobuz Artist · {fmtCount(remoteDetail.albums.length)} releases</>
                     ) : (
                       <>In your library</>
                     )}
@@ -341,7 +341,7 @@ export function ArtistsView({
                           onClick={() => setShowAllPopular((v) => !v)}
                           className="text-xs font-medium text-muted-foreground hover:text-white focus:outline-none focus-visible:underline transition-colors cursor-pointer"
                         >
-                          {showAllPopular ? "Show less" : `Show all ${popularTracks.length}`}
+                          {showAllPopular ? "Show less" : `Show all ${fmtCount(popularTracks.length)}`}
                         </button>
                       )}
                     </div>
@@ -581,7 +581,7 @@ function StackedAlbumCard({
           )}
           {(alb.versionCount ?? 1) > 1 && (
             <Badge variant="muted" className="text-[10.5px]">
-              {alb.versionCount} versions
+              {fmtCount(alb.versionCount)} versions
             </Badge>
           )}
         </div>
@@ -598,9 +598,9 @@ function StackedAlbumCard({
             {alb.title}
           </h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            {alb.trackCount} {alb.trackCount === 1 ? "track" : "tracks"}
+            {fmtCount(alb.trackCount)} {alb.trackCount === 1 ? "track" : "tracks"}
             {alb.genre ? ` · ${alb.genre}` : ""}
-            {alb.playCount ? ` · ${alb.playCount} plays` : ""}
+            {alb.playCount ? ` · ${fmtCount(alb.playCount)} plays` : ""}
           </p>
         </button>
 

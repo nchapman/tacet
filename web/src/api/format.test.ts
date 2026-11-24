@@ -2,10 +2,27 @@ import { describe, expect, it } from "vitest";
 import {
   AUDIO_QUALITY_STOPS,
   audioQualityIndex,
+  fmtCount,
   fmtOutputQuality,
   isHiResOutput,
   truncateAtSentence,
 } from "./format";
+
+describe("fmtCount", () => {
+  const expected = (n: number) => new Intl.NumberFormat().format(n);
+
+  it("formats counts with grouping delimiters and handles empty/edge values", () => {
+    expect(fmtCount(0)).toBe("0");
+    expect(fmtCount(42)).toBe("42");
+    expect(fmtCount(1234)).toBe(expected(1234));
+    expect(fmtCount(1234567)).toBe(expected(1234567));
+    expect(fmtCount(undefined)).toBe("0");
+    expect(fmtCount(null)).toBe("0");
+    expect(fmtCount(-5)).toBe("0");
+    expect(fmtCount(Number.NaN)).toBe("0");
+    expect(fmtCount(1000.9)).toBe(expected(1000));
+  });
+});
 
 describe("audio quality helpers", () => {
   it("orders 6 stops with Original at index 4 and WAV on the far right", () => {

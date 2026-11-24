@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Award, Check, Clock3, FileText, Layers, ListPlus, Pause, Play, Plus, SkipForward, Sparkles, Users } from "lucide-react";
 import { useState } from "react";
 import { tacetClient } from "@/api/client";
-import { fmtAlbumQuality, fmtDuration, fmtQuality } from "@/api/format";
+import { fmtAlbumQuality, fmtCount, fmtDuration, fmtQuality } from "@/api/format";
 import type { Album, AlbumVersion, QueuePosition, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
@@ -216,10 +216,10 @@ export function AlbumView({
                 <span className="font-semibold text-white">{album.artist}</span>
               )}
               {album.year ? <span className="text-muted-foreground">· {album.year}</span> : null}
-              <span className="text-muted-foreground">· {album.trackCount || tracks.length} tracks</span>
+              <span className="text-muted-foreground">· {fmtCount(album.trackCount || tracks.length)} tracks</span>
               {totalTime && <span className="text-muted-foreground">· {totalTime}</span>}
               {album.label && <span className="text-muted-foreground">· {album.label}</span>}
-              {album.playCount ? <span className="text-muted-foreground">· {album.playCount} plays</span> : null}
+              {album.playCount ? <span className="text-muted-foreground">· {fmtCount(album.playCount)} plays</span> : null}
             </div>
 
             {/* Primary Action Bar */}
@@ -313,7 +313,7 @@ export function AlbumView({
           <div className="mt-7 flex flex-wrap items-center gap-2 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3">
             <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground mr-1">
               <Layers className="h-3.5 w-3.5" />
-              Versions ({versions.length})
+              Versions ({fmtCount(versions.length)})
             </span>
             {versions.map((v) => {
               const active = v.id === album.id;
@@ -338,7 +338,7 @@ export function AlbumView({
                   />
                   <span>{sourceLabel(v.provider, v.source)}</span>
                   {formatVersionSpec(v) && <span className="font-mono text-[11px] opacity-80">{formatVersionSpec(v)}</span>}
-                  <span className="opacity-60">{v.trackCount}t</span>
+                  <span className="opacity-60">{fmtCount(v.trackCount)}t</span>
                   {v.isPrimary && (
                     <span className="rounded-full bg-emerald-400/15 px-1.5 py-0.2 text-[10px] text-emerald-300">
                       Primary
