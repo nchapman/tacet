@@ -2,7 +2,7 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, SkipForward, Sparkles } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { tacetClient } from "@/api/client";
-import { fmtAlbumQuality, fmtCount, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
+import { fmtAlbumQuality, fmtCount, fmtDuration, isHiRes } from "@/api/format";
 import type {
   Album,
   ArtistSummary,
@@ -32,6 +32,7 @@ import { useVirtualWindow } from "@/lib/virtualWindow";
 const ARTIST_PAGE_SIZE = 100;
 const ARTIST_ROW_HEIGHT = 56;
 const ARTIST_LIST_PADDING_TOP = 8;
+const POPULAR_TRACK_LIMIT = 8;
 /** Hold switching the detail pane briefly so SQLite-cached Qobuz artist data paints atomically with zero flash. */
 const REVEAL_GRACE_MS = 160;
 
@@ -96,7 +97,6 @@ export function ArtistsView({
   const queryClient = useQueryClient();
   const [selectedArtist, setSelectedArtist] = useState(initialArtist ?? "");
   const [selectedQobuzId, setSelectedQobuzId] = useState<number | undefined>(initialQobuzArtistId);
-  const [showAllPopular, setShowAllPopular] = useState(false);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(Boolean(initialArtist));
 
   const railRef = useRef<HTMLDivElement | null>(null);
@@ -185,10 +185,6 @@ export function ArtistsView({
     },
     [onSelectArtist],
   );
-
-  useEffect(() => {
-    setShowAllPopular(false);
-  }, [effectiveArtist, selectedQobuzId]);
 
   // Fetch library albums for the selected artist.
   const albumsQuery = useQuery({
@@ -464,26 +460,14 @@ export function ArtistsView({
               {/* Popular Tracks from Qobuz — smoothly glides in if Qobuz resolves after grace window */}
               <SmoothReveal open={Boolean(qobuzConnected && (view.remoteDetail?.tracks?.length ?? 0) > 0)}>
                 {qobuzConnected && (view.remoteDetail?.tracks?.length ?? 0) > 0 && (() => {
-                  const popularTracks = view.remoteDetail!.tracks!;
-                  const visibleTracks = showAllPopular ? popularTracks : popularTracks.slice(0, 5);
-                  const popularIds = popularTracks.map((t) => t.id);
+                  const visibleTracks = view.remoteDetail!.tracks!.slice(0, POPULAR_TRACK_LIMIT);
+                  const popularIds = visibleTracks.map((t) => t.id);
                   return (
-                    <section aria-label="Popular tracks" className="pt-6">
-                      <div className="flex items-center justify-between mb-3">
-                        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                          Popular
-                        </h3>
-                        {popularTracks.length > 5 && (
-                          <button
-                            type="button"
-                            onClick={() => setShowAllPopular((v) => !v)}
-                            className="text-xs font-medium text-muted-foreground hover:text-white focus:outline-none focus-visible:underline transition-colors cursor-pointer"
-                          >
-                            {showAllPopular ? "Show less" : `Show all ${fmtCount(popularTracks.length)}`}
-                          </button>
-                        )}
-                      </div>
-                      <div className="space-y-0.5">
+                    <section aria-label="Popular tracks" className="pt-5">
+                      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        Popular
+                      </h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5">
                         {visibleTracks.map((tr, idx) => (
                           <PopularTrackRow
                             key={tr.id}
@@ -811,26 +795,25 @@ const PopularTrackRow = memo(function PopularTrackRow({
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
 }) {
-  const qual = fmtQuality(tr);
   const albumPrefetch = useAlbumHoverPrefetch(tr.albumId);
 
   return (
     <div
       onClick={() => onPlay({ type: "tracks", trackIds: popularIds }, idx)}
-      className="group grid grid-cols-[24px_40px_1fr_auto] sm:grid-cols-[24px_40px_1fr_172px_48px_68px] items-center gap-3 rounded-xl px-2.5 py-2 hover:bg-white/[0.06] cursor-pointer"
+      className="group flex items-center gap-3 rounded-xl px-2 py-1.5 hover:bg-white/[0.06] cursor-pointer min-w-0"
     >
-      <div className="flex items-center justify-center">
-        <span className="font-mono text-xs text-muted-foreground group-hover:hidden">
-          {idx + 1}
+      <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg ring-1 ring-white/10">
+        <AlbumArt
+          artworkUrl={tr.artworkUrl}
+          alt={tr.album || tr.title}
+          priority
+          className="h-full w-full"
+        />
+        <span className="absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 group-hover:opacity-100">
+          <Play className="h-3.5 w-3.5 fill-white text-white" />
         </span>
-        <Play className="hidden h-3.5 w-3.5 fill-white text-white group-hover:block" />
       </div>
-      <AlbumArt
-        artworkUrl={tr.artworkUrl}
-        alt={tr.album || tr.title}
-        className="h-10 w-10 rounded-lg ring-1 ring-white/10"
-      />
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="truncate text-sm font-medium text-foreground">{tr.title}</span>
           {tr.explicit && <ExplicitBadge />}
@@ -852,35 +835,36 @@ const PopularTrackRow = memo(function PopularTrackRow({
             <div className="truncate text-xs text-muted-foreground">{tr.album}</div>
           ))}
       </div>
-      <div className="hidden sm:flex items-center justify-start whitespace-nowrap">
-        {qual && <span className="font-mono text-[11px] text-muted-foreground/75">{qual}</span>}
-      </div>
-      <div className="hidden sm:block text-right font-mono text-xs text-muted-foreground">
-        {fmtDuration(tr.durationSec)}
-      </div>
-      <div className="flex items-center justify-end gap-0.5">
-        <button
-          type="button"
-          title="Play Next"
-          onClick={(e) => {
-            e.stopPropagation();
-            onAdd({ type: "tracks", trackIds: [tr.id] }, "next");
-          }}
-          className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer sm:opacity-0 sm:group-hover:opacity-100"
-        >
-          <SkipForward className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
-          title="Append to Queue"
-          onClick={(e) => {
-            e.stopPropagation();
-            onAdd({ type: "tracks", trackIds: [tr.id] }, "end");
-          }}
-          className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer sm:opacity-0 sm:group-hover:opacity-100"
-        >
-          <ListPlus className="h-3.5 w-3.5" />
-        </button>
+      <div className="flex items-center justify-end shrink-0">
+        {tr.durationSec > 0 && (
+          <span className="hidden sm:inline group-hover:hidden group-focus-within:hidden pr-1 font-mono text-xs tabular-nums text-muted-foreground/80">
+            {fmtDuration(tr.durationSec)}
+          </span>
+        )}
+        <div className="flex sm:hidden sm:group-hover:flex sm:group-focus-within:flex items-center gap-0.5">
+          <button
+            type="button"
+            title="Play Next"
+            onClick={(e) => {
+              e.stopPropagation();
+              onAdd({ type: "tracks", trackIds: [tr.id] }, "next");
+            }}
+            className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground cursor-pointer"
+          >
+            <SkipForward className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            title="Append to Queue"
+            onClick={(e) => {
+              e.stopPropagation();
+              onAdd({ type: "tracks", trackIds: [tr.id] }, "end");
+            }}
+            className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground cursor-pointer"
+          >
+            <ListPlus className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
     </div>
   );
