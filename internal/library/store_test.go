@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -749,5 +750,53 @@ func TestPreferLocalAlbumsAndTracks(t *testing.T) {
 	}
 	if gotTracks[1].ID != "qobuz:888" || gotTracks[1].Source != SourceQobuz {
 		t.Fatalf("expected unmatched remote track untouched, got %+v", gotTracks[1])
+	}
+}
+
+func TestQueryTracksDeterministicPagination(t *testing.T) {
+	musicDir := t.TempDir()
+	// Create 7 tracks with identical quality/title sort keys to exercise tie-breaking across pages.
+	for i := 1; i <= 7; i++ {
+		name := fmt.Sprintf("Artist/Album/%02d - Same Title.flac", i)
+		writeTaggedFLAC(t, musicDir, name, 24, 96000, map[string]string{
+			"ARTIST":      "Artist",
+			"ALBUMARTIST": "Artist",
+			"ALBUM":       "Album",
+			"TITLE":       "Same Title",
+		})
+	}
+
+	cat, err := NewCatalogWithDB(":memory:", musicDir)
+	if err != nil {
+		t.Fatalf("NewCatalogWithDB: %v", err)
+	}
+	defer func() { _ = cat.Close() }()
+
+	if n, scanErr := cat.Scan(); scanErr != nil || n != 7 {
+		t.Fatalf("Scan = (%d, %v), want (7, nil)", n, scanErr)
+	}
+
+	for _, sort := range []string{"artist", "title", "album", "added", "plays", "quality"} {
+		full, total, err := cat.QueryTracks(TrackFilter{Sort: sort, SortDir: "desc", Limit: 50, Offset: 0})
+		if err != nil || total != 7 || len(full) != 7 {
+			t.Fatalf("sort=%s full = (%d/%d, %v)", sort, len(full), total, err)
+		}
+
+		var paged []Track
+		for offset := 0; offset < total; offset += 2 {
+			page, pageTotal, pErr := cat.QueryTracks(TrackFilter{Sort: sort, SortDir: "desc", Limit: 2, Offset: offset})
+			if pErr != nil || pageTotal != 7 {
+				t.Fatalf("sort=%s offset=%d = (%d/%d, %v)", sort, offset, len(page), pageTotal, pErr)
+			}
+			paged = append(paged, page...)
+		}
+		if len(paged) != len(full) {
+			t.Fatalf("sort=%s paged len=%d want %d", sort, len(paged), len(full))
+		}
+		for i := range full {
+			if paged[i].ID != full[i].ID {
+				t.Fatalf("sort=%s mismatch at index %d: paged=%q full=%q", sort, i, paged[i].ID, full[i].ID)
+			}
+		}
 	}
 }

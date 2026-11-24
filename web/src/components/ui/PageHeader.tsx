@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from "react";
+import { useRef, type ReactNode, type RefObject } from "react";
 import { useScrollRestoration } from "@/lib/scroll";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +34,8 @@ export function PageHeader({ children, className, variant = "fixed" }: PageHeade
 interface PageBodyProps {
   children: ReactNode;
   className?: string;
+  /** Optional external ref to observe the scrollable container (e.g. virtualized lists). */
+  scrollRef?: RefObject<HTMLDivElement | null>;
   /** Scroll restoration namespace (defaults to "stage"). Pass false to disable. */
   scrollNamespace?: string | false;
 }
@@ -42,8 +44,9 @@ interface PageBodyProps {
  * Independently scrollable page viewport positioned below a fixed PageHeader,
  * with automatic Back/Forward scroll restoration.
  */
-export function PageBody({ children, className, scrollNamespace = "stage" }: PageBodyProps) {
-  const ref = useRef<HTMLDivElement>(null);
+export function PageBody({ children, className, scrollRef, scrollNamespace = "stage" }: PageBodyProps) {
+  const internalRef = useRef<HTMLDivElement>(null);
+  const ref = scrollRef ?? internalRef;
   useScrollRestoration(ref, {
     namespace: scrollNamespace === false ? "stage" : scrollNamespace,
     enabled: scrollNamespace !== false,

@@ -1470,6 +1470,9 @@ func (s *libraryStore) queryTracks(ctx context.Context, f TrackFilter) ([]Track,
 	case "quality":
 		orderBy = "t.bit_depth " + dir + ", t.sample_rate " + dir + ", t.sort_title ASC"
 	}
+	// Deterministic tie-breaker so random-access OFFSET/LIMIT pagination never
+	// duplicates or skips rows when sort keys collide.
+	orderBy += ", t.id ASC"
 
 	limit := f.Limit
 	if limit <= 0 {
