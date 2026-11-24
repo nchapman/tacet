@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { EditorialNote } from "@/components/ui/EditorialNote";
 import { ExplicitBadge } from "@/components/ui/ExplicitBadge";
-import { PageHeader } from "@/components/ui/PageHeader";
+import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { PlayingBars } from "@/components/ui/PlayingBars";
 import { SignalBadge } from "@/components/ui/SignalBadge";
 import { QOBUZ_ALBUM_GC_TIME_MS, QOBUZ_ALBUM_STALE_TIME_MS, queryKeys } from "@/lib/query";
@@ -21,6 +21,7 @@ interface AlbumViewProps {
   backLabel: string;
   qobuzConnected?: boolean;
   loadingTracks?: boolean;
+  loadError?: string;
   currentTrackId?: string;
   isPlaying?: boolean;
   onBack: () => void;
@@ -72,6 +73,7 @@ export function AlbumView({
   backLabel,
   qobuzConnected = false,
   loadingTracks = false,
+  loadError,
   currentTrackId,
   isPlaying,
   onBack,
@@ -165,8 +167,7 @@ export function AlbumView({
   };
 
   return (
-    <div className="relative min-h-full pb-12">
-      {/* Sticky frosted back bar */}
+    <div className="flex h-full min-h-0 flex-col">
       <PageHeader className="justify-between py-3">
         <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 text-foreground/85">
           <ArrowLeft className="h-4 w-4" />
@@ -175,12 +176,18 @@ export function AlbumView({
         <SignalBadge provider={album.provider || album.source} format={fullFormat} size="md" />
       </PageHeader>
 
-      <div className="relative z-10 px-4 sm:px-8 pt-6 sm:pt-8">
-        {actionErr && (
-          <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-2.5 text-sm text-red-200">
-            {actionErr}
-          </div>
-        )}
+      <PageBody>
+        <div className="px-4 sm:px-8 pt-6 sm:pt-8">
+          {loadError && (
+            <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
+              {loadError}
+            </div>
+          )}
+          {actionErr && (
+            <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-2.5 text-sm text-red-200">
+              {actionErr}
+            </div>
+          )}
 
         {/* Hero header: Cover + Typography + Actions */}
         <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6 sm:gap-8">
@@ -577,7 +584,8 @@ export function AlbumView({
             </div>
           </section>
         )}
-      </div>
+        </div>
+      </PageBody>
     </div>
   );
 }

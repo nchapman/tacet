@@ -19,7 +19,7 @@ import { AlbumArt } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { ExplicitBadge } from "@/components/ui/ExplicitBadge";
 import { Button } from "@/components/ui/button";
-import { PageHeader } from "@/components/ui/PageHeader";
+import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import {
   QOBUZ_SEARCH_GC_TIME_MS,
   QOBUZ_SEARCH_STALE_TIME_MS,
@@ -143,7 +143,7 @@ export function SearchView({
     (dedupedQobuz!.artists.length > 0 || dedupedQobuz!.albums.length > 0 || dedupedQobuz!.tracks.length > 0);
 
   return (
-    <div className="relative flex min-h-full flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       {/* Spotify-style large centered search bar pinned at top */}
       <PageHeader>
         <div className="mx-auto w-full max-w-2xl">
@@ -185,9 +185,10 @@ export function SearchView({
         </div>
       </PageHeader>
 
+      <PageBody className="flex flex-col pb-0">
       {/* Results body */}
       {!trimmed ? (
-        <div className="relative z-10 flex flex-1 flex-col items-center justify-center px-4 sm:px-8 py-12 pb-16 text-center">
+        <div className="flex flex-1 flex-col items-center justify-center px-4 sm:px-8 py-12 pb-16 text-center">
           <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-muted-foreground">
             <Search className="h-6 w-6" />
           </div>
@@ -389,6 +390,7 @@ export function SearchView({
             )}
         </div>
       )}
+      </PageBody>
     </div>
   );
 }

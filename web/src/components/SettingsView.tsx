@@ -5,7 +5,7 @@ import { tacetClient } from "@/api/client";
 import type { LibraryStatus, QobuzStatus, StreamMode, ZoneSnapshot } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { PageHeader } from "@/components/ui/PageHeader";
+import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { Switch } from "@/components/ui/switch";
 import { invalidateQobuzLogout, QOBUZ_SEARCH_GC_TIME_MS, QOBUZ_SEARCH_STALE_TIME_MS, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
@@ -110,14 +110,15 @@ export function SettingsView({
   };
 
   return (
-    <div className="min-h-full pb-12">
+    <div className="flex h-full min-h-0 flex-col">
       <PageHeader>
         <div className="w-full max-w-3xl">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Settings</h1>
         </div>
       </PageHeader>
 
-      <div className="max-w-3xl px-4 sm:px-8 pt-6 space-y-6">
+      <PageBody>
+        <div className="max-w-3xl px-4 sm:px-8 pt-6 space-y-6">
         {msg && (
           <div className="flex items-center gap-2 rounded-xl border border-emerald-400/25 bg-emerald-400/10 px-4 py-2.5 text-sm text-emerald-200">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
@@ -467,7 +468,8 @@ export function SettingsView({
             )}
           </div>
         </section>
-      </div>
+        </div>
+      </PageBody>
     </div>
   );
 }

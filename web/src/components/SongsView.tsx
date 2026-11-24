@@ -6,7 +6,7 @@ import { tacetClient } from "@/api/client";
 import { fmtDuration, fmtQuality } from "@/api/format";
 import type { GenreSummary, QueuePosition, QueueSource, Track } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
-import { PageHeader } from "@/components/ui/PageHeader";
+import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { queryErrorMessage, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
@@ -83,7 +83,7 @@ export const SongsView = memo(function SongsView({
   const errMsg = queryErrorMessage(tracksQuery.error);
 
   return (
-    <div className="min-h-full pb-12">
+    <div className="flex h-full min-h-0 flex-col">
       <PageHeader className="py-2.5">
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           <div className="flex items-baseline gap-2.5">
@@ -128,7 +128,8 @@ export const SongsView = memo(function SongsView({
         </div>
       </PageHeader>
 
-      <div className="px-3 sm:px-8 pt-3">
+      <PageBody>
+        <div className="px-3 sm:px-8 pt-3">
         {errMsg && (
           <div role="alert" className="my-4 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
             {errMsg}
@@ -252,7 +253,8 @@ export const SongsView = memo(function SongsView({
             Showing {tracks.length} of {total} tracks — refine with search or genre filter.
           </p>
         )}
-      </div>
+        </div>
+      </PageBody>
     </div>
   );
 });

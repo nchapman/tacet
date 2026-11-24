@@ -5,7 +5,7 @@ import { Link } from "react-router";
 import { tacetClient } from "@/api/client";
 import type { Album, HeavyRotationAlbum, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
-import { PageHeader } from "@/components/ui/PageHeader";
+import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { queryErrorMessage, queryKeys } from "@/lib/query";
 
 interface HeavyRotationViewProps {
@@ -26,7 +26,7 @@ export const HeavyRotationView = memo(function HeavyRotationView({
   const errMsg = queryErrorMessage(rotationQuery.error);
 
   return (
-    <div className="min-h-full pb-12">
+    <div className="flex h-full min-h-0 flex-col">
       <PageHeader>
         <Link
           to="/"
@@ -37,7 +37,8 @@ export const HeavyRotationView = memo(function HeavyRotationView({
         </Link>
       </PageHeader>
 
-      <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6 space-y-6">
+      <PageBody>
+        <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6 space-y-6">
         <div className="space-y-1.5">
           <div className="flex items-center gap-2.5">
             <Flame className="h-5 w-5 text-amber-400" />
@@ -80,7 +81,8 @@ export const HeavyRotationView = memo(function HeavyRotationView({
           ))}
         </div>
       )}
-      </div>
+        </div>
+      </PageBody>
     </div>
   );
 });

@@ -200,7 +200,7 @@ export function ArtistsView({
           </div>
         </div>
 
-        <div ref={railRef} className="flex-1 overflow-y-auto p-2 space-y-0.5">
+        <div ref={railRef} data-scroll-stage="" className="flex-1 overflow-y-auto p-2 space-y-0.5">
           {loadingArtists && artists.length === 0 ? (
             <div className="space-y-2 p-2">
               {Array.from({ length: 10 }).map((_, i) => (
@@ -254,32 +254,32 @@ export function ArtistsView({
 
       {/* Right Unified Discography Showcase (Library on top -> subtle divider -> More on Qobuz below) */}
       <div
-        ref={detailRef}
         className={cn(
-          "relative flex-1 min-w-0 overflow-y-auto",
-          mobileDetailOpen ? "block" : "hidden md:block",
+          "relative flex-1 min-w-0 min-h-0 flex-col",
+          mobileDetailOpen ? "flex" : "hidden md:flex",
         )}
       >
-        {effectiveArtist ? (
-          <div className="relative min-h-full pb-12">
-            {/* Mobile back bar */}
-            <PageHeader className="min-h-0 gap-2 px-4 py-3 md:hidden">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="-ml-2"
-                onClick={() => {
-                  setMobileDetailOpen(false);
-                  onBackToArtists?.();
-                }}
-              >
-                <ArrowLeft className="h-4 w-4" />
-                Artists
-              </Button>
-            </PageHeader>
+        {effectiveArtist && (
+          <PageHeader className="min-h-0 gap-2 px-4 py-3 md:hidden">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="-ml-2"
+              onClick={() => {
+                setMobileDetailOpen(false);
+                onBackToArtists?.();
+              }}
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Artists
+            </Button>
+          </PageHeader>
+        )}
 
-            <div className="relative z-10 mx-auto max-w-4xl px-4 sm:px-8 pt-6 sm:pt-8">
+        <div ref={detailRef} data-scroll-stage="" className="relative flex-1 min-h-0 overflow-y-auto">
+          {effectiveArtist ? (
+            <div className="mx-auto max-w-4xl px-4 sm:px-8 pt-6 sm:pt-8 pb-12">
               <div className="flex items-end gap-4 pb-6 border-b border-white/[0.07]">
                 <AlbumArt
                   artworkUrl={heroArt}
@@ -519,12 +519,12 @@ export function ArtistsView({
                 </section>
               )}
             </div>
-          </div>
-        ) : (
-          <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
-            Select an artist to explore their albums.
-          </div>
-        )}
+          ) : (
+            <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
+              Select an artist to explore their albums.
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

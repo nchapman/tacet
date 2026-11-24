@@ -6,6 +6,7 @@ import type { Album, QobuzStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { queryErrorMessage, queryKeys } from "@/lib/query";
 
 interface QobuzViewProps {
@@ -84,7 +85,7 @@ export function QobuzView({
 
   if (!status.authenticated) {
     return (
-      <div className="flex min-h-full items-center justify-center p-6">
+      <div data-scroll-stage="" className="flex h-full overflow-y-auto items-center justify-center p-6">
         <div className="w-full max-w-md rounded-2xl border border-white/[0.09] bg-white/[0.03] p-6 sm:p-8 shadow-2xl space-y-5">
           <div className="flex items-center gap-3">
             <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-sky-500/15 border border-sky-400/25 text-sky-300">
@@ -156,9 +157,9 @@ export function QobuzView({
   }
 
   return (
-    <div className="min-h-full pb-12">
-      <div className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/45 px-4 sm:px-8 py-4 backdrop-blur-2xl">
-        <div className="mx-auto max-w-7xl flex flex-wrap items-center justify-between gap-3">
+    <div className="flex h-full min-h-0 flex-col">
+      <PageHeader className="py-3">
+        <div className="mx-auto w-full max-w-7xl flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Qobuz</h1>
             <p className="text-xs text-muted-foreground mt-0.5">
@@ -171,9 +172,10 @@ export function QobuzView({
             Search Qobuz
           </Button>
         </div>
-      </div>
+      </PageHeader>
 
-      <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6 space-y-6">
+      <PageBody>
+        <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6 space-y-6">
         {errMsg && (
           <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
             {errMsg}
@@ -214,7 +216,8 @@ export function QobuzView({
             </Button>
           </div>
         )}
-      </div>
+        </div>
+      </PageBody>
     </div>
   );
 }

@@ -4,7 +4,7 @@ import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
 import type { Album, LibraryStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
-import { PageHeader } from "@/components/ui/PageHeader";
+import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { queryErrorMessage, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
@@ -69,8 +69,7 @@ export const AlbumsView = memo(function AlbumsView({ libraryStatus, groupVersion
   const hasRemote = (libraryStatus?.remoteAlbums ?? 0) > 0;
 
   return (
-    <div className="min-h-full pb-12">
-      {/* Sticky sleek filter header */}
+    <div className="flex h-full min-h-0 flex-col">
       <PageHeader className="py-2.5">
         <div className="mx-auto w-full max-w-7xl flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-baseline gap-2.5">
@@ -113,7 +112,8 @@ export const AlbumsView = memo(function AlbumsView({ libraryStatus, groupVersion
         </div>
       </PageHeader>
 
-      <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6">
+      <PageBody>
+        <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6">
         {errMsg && (
           <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
             {errMsg}
@@ -144,7 +144,8 @@ export const AlbumsView = memo(function AlbumsView({ libraryStatus, groupVersion
             ))}
           </div>
         )}
-      </div>
+        </div>
+      </PageBody>
     </div>
   );
 });

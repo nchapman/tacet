@@ -6,7 +6,7 @@ import { tacetClient } from "@/api/client";
 import type { Album, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { Button } from "@/components/ui/button";
-import { PageHeader } from "@/components/ui/PageHeader";
+import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { QOBUZ_SEARCH_GC_TIME_MS, QOBUZ_SEARCH_STALE_TIME_MS, queryErrorMessage, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -64,7 +64,7 @@ export const DiscoverShelfView = memo(function DiscoverShelfView({
   }, [shelfQuery.data?.pages]);
 
   return (
-    <div className="min-h-full pb-12">
+    <div className="flex h-full min-h-0 flex-col">
       <PageHeader>
         <Link
           to="/"
@@ -75,7 +75,8 @@ export const DiscoverShelfView = memo(function DiscoverShelfView({
         </Link>
       </PageHeader>
 
-      <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6 space-y-6">
+      <PageBody>
+        <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6 space-y-6">
         <div className="space-y-1.5">
           <div className="flex items-center gap-3">
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
@@ -149,7 +150,8 @@ export const DiscoverShelfView = memo(function DiscoverShelfView({
           </Button>
         </div>
       )}
-      </div>
+        </div>
+      </PageBody>
     </div>
   );
 });

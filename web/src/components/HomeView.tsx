@@ -17,7 +17,7 @@ import { Link } from "react-router";
 import { tacetClient } from "@/api/client";
 import type { Album, DiscoverShelf, HeavyRotationAlbum, LibraryStatus, QueueSource } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
-import { PageHeader } from "@/components/ui/PageHeader";
+import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import type { AppSection } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { QOBUZ_SEARCH_GC_TIME_MS, QOBUZ_SEARCH_STALE_TIME_MS, queryErrorMessage, queryKeys } from "@/lib/query";
@@ -99,14 +99,15 @@ export const HomeView = memo(function HomeView({
   const libraryEmpty = !loading && recent.length === 0 && (libraryStatus?.albums ?? 0) === 0;
 
   return (
-    <div className="relative min-h-full pb-12">
+    <div className="flex h-full min-h-0 flex-col">
       <PageHeader>
         <div className="mx-auto w-full max-w-7xl">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Home</h1>
         </div>
       </PageHeader>
 
-      <div className="relative z-10 mx-auto max-w-7xl px-4 sm:px-8 pt-6 space-y-10">
+      <PageBody>
+        <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6 space-y-10">
 
         {errMsg && (
           <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
@@ -241,7 +242,8 @@ export const HomeView = memo(function HomeView({
             })}
           </div>
         )}
-      </div>
+        </div>
+      </PageBody>
     </div>
   );
 });

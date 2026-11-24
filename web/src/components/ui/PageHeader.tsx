@@ -1,15 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
+import { useScrollRestoration } from "@/lib/scroll";
 import { cn } from "@/lib/utils";
-
-function findScrollParent(el: HTMLElement | null): HTMLElement | null {
-  let node = el?.parentElement ?? null;
-  while (node) {
-    const oy = window.getComputedStyle(node).overflowY;
-    if (oy === "auto" || oy === "scroll") return node;
-    node = node.parentElement;
-  }
-  return null;
-}
 
 interface PageHeaderProps {
   children: ReactNode;
@@ -17,43 +8,47 @@ interface PageHeaderProps {
 }
 
 /**
- * Shared 64px sticky page header that stays transparent at the top of the page
- * so the UltraBlur gradient flows uninterrupted, then crossfades in a dark
- * frosted-glass backdrop layer once content scrolls underneath.
+ * Fixed 64px page header separated from the scrolling content below by a subtle
+ * hairline border, matching the Artists rail header without sticky blur layers.
  */
 export function PageHeader({ children, className }: PageHeaderProps) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [scrolled, setScrolled] = useState(false);
+  return (
+    <div
+      className={cn(
+        "flex min-h-16 shrink-0 items-center border-b border-white/[0.06] px-4 sm:px-8",
+        className,
+      )}
+    >
+      <div className="flex w-full items-center justify-between">{children}</div>
+    </div>
+  );
+}
 
-  useEffect(() => {
-    const scroller = findScrollParent(ref.current);
-    if (!scroller) return;
-    const onScroll = () => {
-      const next = scroller.scrollTop > 8;
-      setScrolled((prev) => (prev === next ? prev : next));
-    };
-    onScroll();
-    scroller.addEventListener("scroll", onScroll, { passive: true });
-    return () => scroller.removeEventListener("scroll", onScroll);
-  }, []);
+interface PageBodyProps {
+  children: ReactNode;
+  className?: string;
+  /** Scroll restoration namespace (defaults to "stage"). Pass false to disable. */
+  scrollNamespace?: string | false;
+}
+
+/**
+ * Independently scrollable page viewport positioned below a fixed PageHeader,
+ * with automatic Back/Forward scroll restoration.
+ */
+export function PageBody({ children, className, scrollNamespace = "stage" }: PageBodyProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  useScrollRestoration(ref, {
+    namespace: scrollNamespace === false ? "stage" : scrollNamespace,
+    enabled: scrollNamespace !== false,
+  });
 
   return (
     <div
       ref={ref}
-      className={cn(
-        "sticky top-0 z-20 flex min-h-16 items-center border-b px-4 sm:px-8 transition-colors duration-200",
-        scrolled ? "border-white/[0.08]" : "border-white/[0.06]",
-        className,
-      )}
+      data-scroll-stage=""
+      className={cn("relative flex-1 min-h-0 overflow-y-auto pb-12", className)}
     >
-      <div
-        aria-hidden="true"
-        className={cn(
-          "pointer-events-none absolute inset-0 bg-[#09090b]/75 backdrop-blur-2xl backdrop-saturate-150 transition-opacity duration-200 ease-out",
-          scrolled ? "opacity-100" : "opacity-0",
-        )}
-      />
-      <div className="relative z-10 flex w-full items-center justify-between">{children}</div>
+      {children}
     </div>
   );
 }

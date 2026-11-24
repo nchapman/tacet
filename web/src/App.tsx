@@ -39,7 +39,6 @@ import {
   queryErrorMessage,
   queryKeys,
 } from "@/lib/query";
-import { useScrollRestoration } from "@/lib/scroll";
 import { albumPath, artistPath, decodeAlbumKey, SECTION_LABELS, SECTION_PATHS, sectionFromPathname } from "@/routes";
 
 const EMPTY_QUEUE: QueueItem[] = [];
@@ -143,10 +142,11 @@ export function App() {
     prevQobuzRef.current = { authenticated: qobuzAuth, userName: qobuzUser };
   }, [qobuzAuth, qobuzUser, queryClient]);
 
-  const isSplitPane = location.pathname === "/artists" || location.pathname.startsWith("/artists/");
-
-  // Preserve & restore main-stage scroll position across Back/Forward and in-app back navigation.
-  useScrollRestoration(stageRef, { namespace: "stage", enabled: !isSplitPane });
+  const scrollStageToTop = useCallback(() => {
+    stageRef.current?.querySelectorAll<HTMLElement>("[data-scroll-stage]").forEach((el) => {
+      el.scrollTo({ top: 0 });
+    });
+  }, []);
 
   // Clear album-page UltraBlur override when leaving an album route.
   useEffect(() => {
@@ -164,10 +164,10 @@ export function App() {
       if (location.pathname !== target) {
         void routerNavigate(target);
       } else {
-        stageRef.current?.scrollTo({ top: 0 });
+        scrollStageToTop();
       }
     },
-    [location.pathname, routerNavigate],
+    [location.pathname, routerNavigate, scrollStageToTop],
   );
 
   // Global keyboard shortcuts: Space toggles play/pause, Cmd/Ctrl+K or '/' opens Search.
@@ -258,10 +258,10 @@ export function App() {
     (next: AppSection) => {
       if (next === "search") setSearchFocusNonce((n) => n + 1);
       if (location.pathname === SECTION_PATHS[next]) {
-        stageRef.current?.scrollTo({ top: 0 });
+        scrollStageToTop();
       }
     },
-    [location.pathname],
+    [location.pathname, scrollStageToTop],
   );
   const handleTransport = useCallback(
     (action: Parameters<typeof tacet.transport>[0]) => {
@@ -364,14 +364,7 @@ export function App() {
           onNavigate={handleSidebarNavigate}
         />
 
-        <main
-          ref={stageRef}
-          className={
-            isSplitPane
-              ? "flex-1 min-w-0 min-h-0 overflow-hidden"
-              : "flex-1 min-w-0 min-h-0 overflow-y-auto"
-          }
-        >
+        <main ref={stageRef} className="flex-1 min-w-0 min-h-0 overflow-hidden">
           <Routes>
             <Route
               path="/"
@@ -821,7 +814,7 @@ function AlbumRoute({
 
   if (errMsg && !album) {
     return (
-      <div className="p-6 sm:p-8 space-y-4">
+      <div className="h-full overflow-y-auto p-6 sm:p-8 space-y-4">
         <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
           {errMsg}
         </div>
@@ -841,28 +834,22 @@ function AlbumRoute({
   }
 
   return (
-    <>
-      {errMsg && (
-        <div role="alert" className="m-4 sm:mx-8 sm:mt-4 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
-          {errMsg}
-        </div>
-      )}
-      <AlbumView
-        key={album.id}
-        album={album}
-        backLabel={state?.backLabel ?? "Albums"}
-        qobuzConnected={qobuzConnected}
-        loadingTracks={albumQuery.isFetching && (album.tracks?.length ?? 0) === 0}
-        currentTrackId={currentTrackId}
-        isPlaying={isPlaying}
-        onBack={handleBack}
-        onOpenAlbum={onOpenAlbum}
-        onOpenArtist={onOpenArtist}
-        onAlbumUpdated={handleAlbumUpdated}
-        onPlay={onPlay}
-        onTogglePlayPause={onTogglePlayPause}
-        onAdd={onAdd}
-      />
-    </>
+    <AlbumView
+      key={album.id}
+      album={album}
+      backLabel={state?.backLabel ?? "Albums"}
+      qobuzConnected={qobuzConnected}
+      loadingTracks={albumQuery.isFetching && (album.tracks?.length ?? 0) === 0}
+      loadError={errMsg}
+      currentTrackId={currentTrackId}
+      isPlaying={isPlaying}
+      onBack={handleBack}
+      onOpenAlbum={onOpenAlbum}
+      onOpenArtist={onOpenArtist}
+      onAlbumUpdated={handleAlbumUpdated}
+      onPlay={onPlay}
+      onTogglePlayPause={onTogglePlayPause}
+      onAdd={onAdd}
+    />
   );
 }
