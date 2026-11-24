@@ -29,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
 import type { BrowserPlayerController } from "@/hooks/useBrowserPlayer";
+import { useAlbumHoverPrefetch, useArtistHoverPrefetch } from "@/lib/prefetch";
 import { cn } from "@/lib/utils";
 
 interface PlayerBarProps {
@@ -155,6 +156,8 @@ export const PlayerBar = memo(function PlayerBar({
   }, [activeZone, getClockOffsetMs]);
 
   const track = activeZone?.currentTrack;
+  const trackAlbumPrefetch = useAlbumHoverPrefetch(track?.albumId);
+  const trackArtistPrefetch = useArtistHoverPrefetch(track?.artist);
   const shuffle = Boolean(activeZone?.shuffle);
   const repeat: RepeatMode = activeZone?.repeat ?? "off";
   const nextRepeatMode: RepeatMode = repeat === "off" ? "all" : repeat === "all" ? "one" : "off";
@@ -234,6 +237,7 @@ export const PlayerBar = memo(function PlayerBar({
                 <div className="flex items-center gap-2 min-w-0">
                   <button
                     type="button"
+                    {...trackAlbumPrefetch}
                     onClick={() => track.albumId && onOpenAlbum?.(track.albumId)}
                     className="truncate text-[13.5px] font-medium text-foreground hover:underline cursor-pointer text-left"
                   >
@@ -243,6 +247,7 @@ export const PlayerBar = memo(function PlayerBar({
                 <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
                   <button
                     type="button"
+                    {...trackArtistPrefetch}
                     onClick={() => track.artist && onOpenArtist?.(track.artist)}
                     className="truncate text-xs text-muted-foreground hover:text-foreground hover:underline cursor-pointer text-left"
                   >

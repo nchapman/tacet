@@ -37,6 +37,7 @@ interface SearchViewProps {
   qobuzStatus: QobuzStatus | null;
   currentTrackId?: string;
   onOpenAlbum: (album: Album) => void;
+  onOpenAlbumId?: (albumId: string) => void;
   onOpenArtist: (name: string, qobuzArtistId?: number) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
@@ -56,6 +57,7 @@ export function SearchView({
   qobuzStatus,
   currentTrackId,
   onOpenAlbum,
+  onOpenAlbumId,
   onOpenArtist,
   onPlay,
   onAdd,
@@ -237,6 +239,7 @@ export function SearchView({
                         <TopResultCard
                           result={libRes.topResult}
                           onOpenAlbum={onOpenAlbum}
+                          onOpenAlbumId={onOpenAlbumId}
                           onOpenArtist={(name) => onOpenArtist(name)}
                           onPlay={onPlay}
                           onAdd={onAdd}
@@ -257,6 +260,7 @@ export function SearchView({
                               onPlayNext={() => onAdd({ type: "tracks", trackIds: [tr.id] }, "next")}
                               onQueue={() => onAdd({ type: "tracks", trackIds: [tr.id] }, "end")}
                               onOpenArtist={() => onOpenArtist(tr.albumArtist || tr.artist)}
+                              onOpenAlbumId={onOpenAlbumId}
                             />
                           ))}
                         </div>
@@ -381,6 +385,7 @@ export function SearchView({
                               onPlayNext={() => onAdd({ type: "tracks", trackIds: [tr.id] }, "next")}
                               onQueue={() => onAdd({ type: "tracks", trackIds: [tr.id] }, "end")}
                               onOpenArtist={() => onOpenArtist(tr.albumArtist || tr.artist)}
+                              onOpenAlbumId={onOpenAlbumId}
                             />
                           ))}
                         </div>
@@ -400,18 +405,30 @@ export function SearchView({
 function TopResultCard({
   result,
   onOpenAlbum,
+  onOpenAlbumId,
   onOpenArtist,
   onPlay,
   onAdd,
 }: {
   result: NonNullable<LibrarySearchResult["topResult"]>;
   onOpenAlbum: (album: Album) => void;
+  onOpenAlbumId?: (albumId: string) => void;
   onOpenArtist: (name: string) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
 }) {
-  const artistPrefetch = useArtistHoverPrefetch(result.type === "artist" ? result.artist?.name : undefined);
-  const albumPrefetch = useAlbumHoverPrefetch(result.type === "album" ? result.album : undefined);
+  const artistName =
+    result.type === "artist"
+      ? result.artist?.name
+      : result.type === "album"
+        ? result.album?.artist
+        : result.type === "track"
+          ? result.track?.albumArtist || result.track?.artist
+          : undefined;
+  const artistPrefetch = useArtistHoverPrefetch(artistName);
+  const albumPrefetch = useAlbumHoverPrefetch(
+    result.type === "album" ? result.album : result.type === "track" ? result.track?.albumId : undefined,
+  );
 
   if (result.type === "artist" && result.artist) {
     const a: ArtistSummary = result.artist;
@@ -519,7 +536,19 @@ function TopResultCard({
             <Badge variant="muted" className="text-[10px]">
               Album
             </Badge>
-            <span className="truncate text-foreground/85">{alb.artist}</span>
+            {alb.artist && (
+              <button
+                type="button"
+                {...artistPrefetch}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenArtist(alb.artist);
+                }}
+                className="truncate text-foreground/85 hover:text-white hover:underline cursor-pointer"
+              >
+                {alb.artist}
+              </button>
+            )}
             {alb.year ? <span>· {alb.year}</span> : null}
             {qLabel && <span className="font-mono text-[11px] text-muted-foreground">· {qLabel}</span>}
           </div>
@@ -563,12 +592,28 @@ function TopResultCard({
             </Badge>
             <button
               type="button"
+              {...artistPrefetch}
               onClick={() => onOpenArtist(tr.albumArtist || tr.artist)}
-              className="truncate text-foreground/85 hover:underline cursor-pointer"
+              className="truncate text-foreground/85 hover:text-white hover:underline cursor-pointer"
             >
               {tr.artist}
             </button>
-            {tr.album && <span className="truncate">· {tr.album}</span>}
+            {tr.album &&
+              (tr.albumId && onOpenAlbumId ? (
+                <span className="inline-flex items-center gap-1 min-w-0 truncate">
+                  <span>·</span>
+                  <button
+                    type="button"
+                    {...albumPrefetch}
+                    onClick={() => onOpenAlbumId(tr.albumId!)}
+                    className="truncate hover:text-foreground hover:underline cursor-pointer"
+                  >
+                    {tr.album}
+                  </button>
+                </span>
+              ) : (
+                <span className="truncate">· {tr.album}</span>
+              ))}
             {qLabel && (
               <span className="inline-flex items-center font-mono text-[11px] text-muted-foreground">
                 <span>· {qLabel}</span>
@@ -627,6 +672,7 @@ function TrackResultRow({
   onPlayNext,
   onQueue,
   onOpenArtist,
+  onOpenAlbumId,
 }: {
   track: Track;
   active: boolean;
@@ -634,8 +680,11 @@ function TrackResultRow({
   onPlayNext: () => void;
   onQueue: () => void;
   onOpenArtist: () => void;
+  onOpenAlbumId?: (albumId: string) => void;
 }) {
   const qual = fmtQuality(track);
+  const artistPrefetch = useArtistHoverPrefetch(track.albumArtist || track.artist);
+  const albumPrefetch = useAlbumHoverPrefetch(track.albumId);
   return (
     <div
       className={cn(
@@ -670,12 +719,28 @@ function TrackResultRow({
         <div className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
           <button
             type="button"
+            {...artistPrefetch}
             onClick={onOpenArtist}
             className="truncate hover:text-foreground hover:underline cursor-pointer"
           >
             {track.artist}
           </button>
-          {track.album && <span className="truncate text-muted-foreground/70">· {track.album}</span>}
+          {track.album &&
+            (track.albumId && onOpenAlbumId ? (
+              <>
+                <span className="text-muted-foreground/50 shrink-0">·</span>
+                <button
+                  type="button"
+                  {...albumPrefetch}
+                  onClick={() => onOpenAlbumId(track.albumId!)}
+                  className="truncate text-muted-foreground/75 hover:text-foreground hover:underline cursor-pointer"
+                >
+                  {track.album}
+                </button>
+              </>
+            ) : (
+              <span className="truncate text-muted-foreground/70">· {track.album}</span>
+            ))}
         </div>
       </div>
 

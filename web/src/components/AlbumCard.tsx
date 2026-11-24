@@ -1,9 +1,11 @@
 import { Check, Layers, Play } from "lucide-react";
 import { memo } from "react";
+import { useNavigate } from "react-router";
 import { fmtAlbumQuality, fmtCount, isHiRes } from "@/api/format";
 import type { Album, QueueSource } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
-import { useAlbumHoverPrefetch } from "@/lib/prefetch";
+import { useAlbumHoverPrefetch, useArtistHoverPrefetch } from "@/lib/prefetch";
+import { artistPath } from "@/routes";
 import { cn } from "@/lib/utils";
 
 interface AlbumCardProps {
@@ -11,6 +13,7 @@ interface AlbumCardProps {
   subtitle?: string;
   showInLibraryBadge?: boolean;
   onOpen: (album: Album) => void;
+  onOpenArtist?: (artist: string) => void;
   onPlay?: (source: QueueSource, startIndex?: number) => void;
   className?: string;
 }
@@ -28,12 +31,15 @@ export const AlbumCard = memo(function AlbumCard({
   subtitle,
   showInLibraryBadge = false,
   onOpen,
+  onOpenArtist,
   onPlay,
   className,
 }: AlbumCardProps) {
+  const navigate = useNavigate();
   const hiRes = isHiRes(album.maxBitDepth, album.maxSampleRate);
   const hiResLabel = hiRes ? shortHiRes(album) : "";
   const hoverPrefetch = useAlbumHoverPrefetch(album);
+  const artistHoverPrefetch = useArtistHoverPrefetch(!subtitle ? album.artist : undefined);
 
   return (
     <div
@@ -102,18 +108,40 @@ export const AlbumCard = memo(function AlbumCard({
         )}
       </div>
 
-      <button
-        type="button"
-        onClick={() => onOpen(album)}
-        className="mt-2.5 text-left cursor-pointer focus-visible:outline-none min-w-0"
-      >
-        <div className="truncate text-[13.5px] font-medium leading-snug text-foreground group-hover:text-white">
+      <div className="mt-2.5 min-w-0">
+        <button
+          type="button"
+          onClick={() => onOpen(album)}
+          className="block max-w-full truncate text-left text-[13.5px] font-medium leading-snug text-foreground group-hover:text-white cursor-pointer focus-visible:outline-none"
+        >
           {album.title}
-        </div>
-        <div className="truncate text-xs text-muted-foreground mt-0.5">
-          {subtitle ?? album.artist}
-        </div>
-      </button>
+        </button>
+        {subtitle ? (
+          <button
+            type="button"
+            onClick={() => onOpen(album)}
+            className="mt-0.5 block max-w-full truncate text-left text-xs text-muted-foreground cursor-pointer focus-visible:outline-none"
+          >
+            {subtitle}
+          </button>
+        ) : album.artist ? (
+          <button
+            type="button"
+            {...artistHoverPrefetch}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onOpenArtist) {
+                onOpenArtist(album.artist);
+              } else {
+                void navigate(artistPath(album.artist));
+              }
+            }}
+            className="mt-0.5 block max-w-full truncate text-left text-xs text-muted-foreground hover:text-foreground hover:underline cursor-pointer focus-visible:outline-none"
+          >
+            {album.artist}
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 });

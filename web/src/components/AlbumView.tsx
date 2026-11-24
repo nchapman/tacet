@@ -441,18 +441,18 @@ export function AlbumView({
                   </button>
 
                   {/* Title & Artist */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (active && onTogglePlayPause) {
-                        onTogglePlayPause();
-                      } else {
-                        onPlay({ type: "album", albumId: album.id }, idx);
-                      }
-                    }}
-                    className="min-w-0 text-left cursor-pointer"
-                  >
-                    <div className="flex items-center gap-1.5 min-w-0">
+                  <div className="min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (active && onTogglePlayPause) {
+                          onTogglePlayPause();
+                        } else {
+                          onPlay({ type: "album", albumId: album.id }, idx);
+                        }
+                      }}
+                      className="flex max-w-full items-center gap-1.5 text-left cursor-pointer min-w-0"
+                    >
                       <span
                         className={cn(
                           "truncate text-[14px] font-medium leading-snug",
@@ -462,11 +462,15 @@ export function AlbumView({
                         {tr.title}
                       </span>
                       {tr.explicit && <ExplicitBadge />}
-                    </div>
+                    </button>
                     {tr.artist && tr.artist !== album.artist && (
-                      <div className="truncate text-xs text-muted-foreground mt-0.5">{tr.artist}</div>
+                      onOpenArtist ? (
+                        <TrackArtistLink artist={tr.artist} onOpenArtist={onOpenArtist} />
+                      ) : (
+                        <div className="truncate text-xs text-muted-foreground mt-0.5">{tr.artist}</div>
+                      )
                     )}
-                  </button>
+                  </div>
 
                   {/* Format badge (desktop) */}
                   <div className="hidden sm:flex items-center">
@@ -590,5 +594,19 @@ export function AlbumView({
         </div>
       </PageBody>
     </div>
+  );
+}
+
+function TrackArtistLink({ artist, onOpenArtist }: { artist: string; onOpenArtist: (artist: string) => void }) {
+  const hoverPrefetch = useArtistHoverPrefetch(artist);
+  return (
+    <button
+      type="button"
+      {...hoverPrefetch}
+      onClick={() => onOpenArtist(artist)}
+      className="mt-0.5 block max-w-full truncate text-left text-xs text-muted-foreground hover:text-foreground hover:underline cursor-pointer"
+    >
+      {artist}
+    </button>
   );
 }

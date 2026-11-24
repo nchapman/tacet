@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { PlayingBars } from "@/components/ui/PlayingBars";
 import { Slider } from "@/components/ui/slider";
 import type { BrowserPlayerController } from "@/hooks/useBrowserPlayer";
+import { useAlbumHoverPrefetch, useArtistHoverPrefetch } from "@/lib/prefetch";
 import { cn } from "@/lib/utils";
 
 interface NowPlayingOverlayProps {
@@ -97,6 +98,9 @@ export function NowPlayingOverlay({
   onOpenArtist,
 }: NowPlayingOverlayProps) {
   const [showQueue, setShowQueue] = useState(false);
+  const track = activeZone?.currentTrack ?? null;
+  const albumPrefetch = useAlbumHoverPrefetch(track?.albumId);
+  const artistPrefetch = useArtistHoverPrefetch(track?.artist);
 
   useEffect(() => {
     if (!open) return;
@@ -116,7 +120,6 @@ export function NowPlayingOverlay({
 
   if (!open) return null;
 
-  const track = activeZone?.currentTrack ?? null;
   const playing = activeZone?.state === "playing";
   const buffering = activeZone?.state === "buffering";
   const hasZone = activeZone !== null;
@@ -279,6 +282,7 @@ export function NowPlayingOverlay({
               <button
                 type="button"
                 disabled={!track?.albumId}
+                {...albumPrefetch}
                 onClick={() => {
                   if (track?.albumId) {
                     onOpenAlbum?.(track.albumId);
@@ -310,6 +314,7 @@ export function NowPlayingOverlay({
                     {track.artist && (
                       <button
                         type="button"
+                        {...artistPrefetch}
                         onClick={() => {
                           onOpenArtist?.(track.artist);
                         }}
@@ -323,6 +328,7 @@ export function NowPlayingOverlay({
                       <button
                         type="button"
                         disabled={!track.albumId}
+                        {...albumPrefetch}
                         onClick={() => {
                           if (track.albumId) {
                             onOpenAlbum?.(track.albumId);

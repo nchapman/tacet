@@ -5,6 +5,7 @@ import type { QueueItem } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { useArtistHoverPrefetch } from "@/lib/prefetch";
 import { cn } from "@/lib/utils";
 
 interface QueueContentProps {
@@ -13,10 +14,19 @@ interface QueueContentProps {
   onJump: (itemId: string) => void;
   onRemove: (itemId: string) => void;
   onClear: () => void;
+  onOpenArtist?: (artist: string) => void;
   onClose?: () => void;
 }
 
-export function QueueContent({ items, currentItemId, onJump, onRemove, onClear, onClose }: QueueContentProps) {
+export function QueueContent({
+  items,
+  currentItemId,
+  onJump,
+  onRemove,
+  onClear,
+  onOpenArtist,
+  onClose,
+}: QueueContentProps) {
   const currentIdx = items.findIndex((it) => it.itemId === currentItemId);
   const current = currentIdx >= 0 ? items[currentIdx] : undefined;
   const upNext = currentIdx >= 0 ? items.slice(currentIdx + 1) : items;
@@ -70,7 +80,7 @@ export function QueueContent({ items, currentItemId, onJump, onRemove, onClear, 
                 <div className="px-2 pb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                   Now Playing
                 </div>
-                <QueueRow item={current} active onJump={onJump} onRemove={onRemove} />
+                <QueueRow item={current} active onJump={onJump} onRemove={onRemove} onOpenArtist={onOpenArtist} />
               </div>
             )}
 
@@ -81,7 +91,7 @@ export function QueueContent({ items, currentItemId, onJump, onRemove, onClear, 
                 </div>
                 <div className="space-y-0.5">
                   {upNext.map((item) => (
-                    <QueueRow key={item.itemId} item={item} onJump={onJump} onRemove={onRemove} />
+                    <QueueRow key={item.itemId} item={item} onJump={onJump} onRemove={onRemove} onOpenArtist={onOpenArtist} />
                   ))}
                 </div>
               </div>
@@ -94,7 +104,7 @@ export function QueueContent({ items, currentItemId, onJump, onRemove, onClear, 
                 </div>
                 <div className="space-y-0.5 opacity-65 hover:opacity-100 transition-opacity">
                   {history.map((item) => (
-                    <QueueRow key={item.itemId} item={item} onJump={onJump} onRemove={onRemove} />
+                    <QueueRow key={item.itemId} item={item} onJump={onJump} onRemove={onRemove} onOpenArtist={onOpenArtist} />
                   ))}
                 </div>
               </div>
@@ -111,12 +121,16 @@ function QueueRow({
   active,
   onJump,
   onRemove,
+  onOpenArtist,
 }: {
   item: QueueItem;
   active?: boolean;
   onJump: (id: string) => void;
   onRemove: (id: string) => void;
+  onOpenArtist?: (artist: string) => void;
 }) {
+  const artistPrefetch = useArtistHoverPrefetch(item.track.artist);
+
   return (
     <div
       className={cn(
@@ -127,21 +141,39 @@ function QueueRow({
       <button
         type="button"
         onClick={() => onJump(item.itemId)}
-        className="flex min-w-0 flex-1 items-center gap-2.5 text-left cursor-pointer"
+        aria-label={`Play ${item.track.title}`}
+        className="relative h-10 w-10 shrink-0 rounded-md overflow-hidden cursor-pointer"
       >
-        <div className="relative h-10 w-10 shrink-0 rounded-md overflow-hidden">
-          <AlbumArt artworkUrl={item.track.artworkUrl} alt={item.track.album || item.track.title} className="h-full w-full" />
-          <div className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity">
-            <Play className="h-3.5 w-3.5 fill-white text-white" />
-          </div>
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className={cn("truncate text-[13px] font-medium leading-tight", active ? "text-emerald-400" : "text-foreground")}>
-            {item.track.title}
-          </div>
-          <div className="truncate text-xs text-muted-foreground mt-0.5">{item.track.artist}</div>
+        <AlbumArt artworkUrl={item.track.artworkUrl} alt={item.track.album || item.track.title} className="h-full w-full" />
+        <div className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Play className="h-3.5 w-3.5 fill-white text-white" />
         </div>
       </button>
+      <div className="min-w-0 flex-1">
+        <button
+          type="button"
+          onClick={() => onJump(item.itemId)}
+          className={cn(
+            "block max-w-full truncate text-left text-[13px] font-medium leading-tight cursor-pointer",
+            active ? "text-emerald-400" : "text-foreground hover:text-white",
+          )}
+        >
+          {item.track.title}
+        </button>
+        {item.track.artist &&
+          (onOpenArtist ? (
+            <button
+              type="button"
+              {...artistPrefetch}
+              onClick={() => onOpenArtist(item.track.artist)}
+              className="mt-0.5 block max-w-full truncate text-left text-xs text-muted-foreground hover:text-foreground hover:underline cursor-pointer"
+            >
+              {item.track.artist}
+            </button>
+          ) : (
+            <div className="truncate text-xs text-muted-foreground mt-0.5">{item.track.artist}</div>
+          ))}
+      </div>
       <span className="text-[11px] font-mono tabular-nums text-muted-foreground shrink-0 group-hover:hidden">
         {fmtDuration(item.track.durationSec)}
       </span>

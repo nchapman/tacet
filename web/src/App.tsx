@@ -406,6 +406,7 @@ export function App() {
                   qobuzStatus={tacet.qobuzStatus}
                   currentTrackId={tacet.activeZone?.currentTrack?.id}
                   onOpenAlbum={handleOpenAlbum}
+                  onOpenAlbumId={handleOpenAlbumId}
                   onOpenArtist={openArtist}
                   onPlay={handlePlay}
                   onAdd={handleAdd}
@@ -463,6 +464,7 @@ export function App() {
                   onSelectArtist={openArtist}
                   onBackToArtists={handleBackToArtists}
                   onOpenAlbum={handleOpenAlbum}
+                  onOpenAlbumId={handleOpenAlbumId}
                   onPlay={handlePlay}
                   onAdd={handleAdd}
                 />
@@ -476,6 +478,7 @@ export function App() {
                   onSelectArtist={openArtist}
                   onBackToArtists={handleBackToArtists}
                   onOpenAlbum={handleOpenAlbum}
+                  onOpenAlbumId={handleOpenAlbumId}
                   onPlay={handlePlay}
                   onAdd={handleAdd}
                 />
@@ -543,6 +546,7 @@ export function App() {
           onJump={handleJumpItem}
           onRemove={handleRemoveItem}
           onClear={handleClearQueue}
+          onOpenArtist={openArtist}
         />
       </div>
 
@@ -593,6 +597,10 @@ export function App() {
         onJump={(itemId) => void tacet.jumpItem(itemId)}
         onRemove={(itemId) => void tacet.removeItem(itemId)}
         onClear={() => void tacet.clearQueue()}
+        onOpenArtist={(artist) => {
+          setQueueOpen(false);
+          openArtist(artist);
+        }}
       />
 
       {/* Connect UPnP Renderer by URL Dialog */}
@@ -640,6 +648,7 @@ function SearchRoute({
   qobuzStatus,
   currentTrackId,
   onOpenAlbum,
+  onOpenAlbumId,
   onOpenArtist,
   onPlay,
   onAdd,
@@ -648,6 +657,7 @@ function SearchRoute({
   qobuzStatus: ReturnType<typeof useTacet>["qobuzStatus"];
   currentTrackId?: string;
   onOpenAlbum: (album: Album) => void;
+  onOpenAlbumId: (albumId: string) => void;
   onOpenArtist: (artistName: string, qobuzArtistId?: number) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
@@ -674,6 +684,7 @@ function SearchRoute({
       qobuzStatus={qobuzStatus}
       currentTrackId={currentTrackId}
       onOpenAlbum={onOpenAlbum}
+      onOpenAlbumId={onOpenAlbumId}
       onOpenArtist={onOpenArtist}
       onPlay={onPlay}
       onAdd={onAdd}
@@ -686,6 +697,7 @@ function ArtistsRoute({
   onSelectArtist,
   onBackToArtists,
   onOpenAlbum,
+  onOpenAlbumId,
   onPlay,
   onAdd,
 }: {
@@ -693,6 +705,7 @@ function ArtistsRoute({
   onSelectArtist: (artistName: string) => void;
   onBackToArtists: () => void;
   onOpenAlbum: (album: Album) => void;
+  onOpenAlbumId: (albumId: string) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
 }) {
@@ -710,6 +723,7 @@ function ArtistsRoute({
       onSelectArtist={onSelectArtist}
       onBackToArtists={onBackToArtists}
       onOpenAlbum={onOpenAlbum}
+      onOpenAlbumId={onOpenAlbumId}
       onPlay={onPlay}
       onAdd={onAdd}
     />
