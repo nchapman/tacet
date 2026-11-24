@@ -1,6 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, SkipForward, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TacetAPIError, tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtCount, fmtDuration, fmtQuality, isHiRes } from "@/api/format";
 import type {
@@ -20,6 +20,20 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { QOBUZ_ARTIST_GC_TIME_MS, QOBUZ_ARTIST_STALE_TIME_MS, queryErrorMessage, queryKeys } from "@/lib/query";
 import { useScrollRestoration } from "@/lib/scroll";
 import { cn } from "@/lib/utils";
+import { useVirtualWindow } from "@/lib/virtualWindow";
+
+const ARTIST_PAGE_SIZE = 100;
+const ARTIST_ROW_HEIGHT = 56;
+const ARTIST_LIST_PADDING_TOP = 8;
+
+function artistPageQueryOptions(page: number) {
+  const offset = page * ARTIST_PAGE_SIZE;
+  return {
+    queryKey: queryKeys.library.artists({ limit: ARTIST_PAGE_SIZE, offset }),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      tacetClient.listLibraryArtists({ limit: ARTIST_PAGE_SIZE, offset }, { signal }),
+  };
+}
 
 interface ArtistsViewProps {
   qobuzStatus: QobuzStatus | null;
@@ -58,6 +72,7 @@ export function ArtistsView({
   onPlay,
   onAdd,
 }: ArtistsViewProps) {
+  const queryClient = useQueryClient();
   const [selectedArtist, setSelectedArtist] = useState(initialArtist ?? "");
   const [selectedQobuzId, setSelectedQobuzId] = useState<number | undefined>(initialQobuzArtistId);
   const [showAllPopular, setShowAllPopular] = useState(false);
@@ -88,15 +103,64 @@ export function ArtistsView({
     }
   }, [initialArtist, initialQobuzArtistId]);
 
-  // Fetch unified library artist list.
-  const artistsQuery = useQuery({
-    queryKey: queryKeys.library.artists(500),
-    queryFn: ({ signal }) => tacetClient.listLibraryArtists({ limit: 500 }, { signal }),
+  // Page 0 establishes total artist count (full scrollbar height) and seeds rows 0..99.
+  const artistsPage0Query = useQuery(artistPageQueryOptions(0));
+  const totalArtists = artistsPage0Query.data?.total ?? 0;
+
+  const railWin = useVirtualWindow({
+    scrollRef: railRef,
+    totalCount: totalArtists,
+    rowHeight: ARTIST_ROW_HEIGHT,
+    pageSize: ARTIST_PAGE_SIZE,
+    overscan: 12,
+    prefetchMargin: 25,
+    paddingTop: ARTIST_LIST_PADDING_TOP,
   });
-  const artists: ArtistSummary[] = useMemo(() => artistsQuery.data?.items ?? [], [artistsQuery.data]);
+
+  const extraArtistPages = useMemo(
+    () => railWin.visiblePages.filter((p) => p > 0),
+    [railWin.visiblePages],
+  );
+
+  const artistPageQueries = useQueries({
+    queries: extraArtistPages.map((page) => ({
+      ...artistPageQueryOptions(page),
+      enabled: railWin.settled,
+    })),
+  });
+
+  useEffect(() => {
+    if (!railWin.settled) return;
+    for (const page of railWin.prefetchPages) {
+      if (page <= 0) continue;
+      void queryClient.prefetchQuery(artistPageQueryOptions(page));
+    }
+  }, [railWin.settled, railWin.prefetchPages, queryClient]);
+
+  const artistPagesByIndex = useMemo(() => {
+    const map = new Map<number, ArtistSummary[]>();
+    if (artistsPage0Query.data?.items) {
+      map.set(0, artistsPage0Query.data.items);
+    }
+    extraArtistPages.forEach((page, i) => {
+      const items = artistPageQueries[i]?.data?.items;
+      if (items) map.set(page, items);
+    });
+    return map;
+  }, [artistsPage0Query.data?.items, extraArtistPages, artistPageQueries]);
 
   // Default to the first artist on desktop when no artist is selected yet.
-  const effectiveArtist = selectedArtist || artists[0]?.name || "";
+  const effectiveArtist = selectedArtist || artistsPage0Query.data?.items?.[0]?.name || "";
+
+  const handleSelectArtist = useCallback(
+    (name: string) => {
+      setSelectedArtist(name);
+      setSelectedQobuzId(undefined);
+      setMobileDetailOpen(true);
+      onSelectArtist?.(name);
+    },
+    [onSelectArtist],
+  );
 
   useEffect(() => {
     setShowAllPopular(false);
@@ -144,9 +208,10 @@ export function ArtistsView({
     gcTime: QOBUZ_ARTIST_GC_TIME_MS,
   });
 
-  const loadingArtists = artistsQuery.isPending;
+  const loadingArtists = artistsPage0Query.isPending;
   const loadingAlbums = albumsQuery.isLoading;
-  const errMsg = queryErrorMessage(artistsQuery.error ?? albumsQuery.error);
+  const artistPageError = artistPageQueries.find((q) => q.error)?.error;
+  const errMsg = queryErrorMessage(artistsPage0Query.error ?? artistPageError ?? albumsQuery.error);
   const remoteDetail = remoteQuery.data ?? null;
   const loadingRemote = remoteQuery.isLoading;
   const remoteErr = queryErrorMessage(remoteQuery.error);
@@ -177,7 +242,24 @@ export function ArtistsView({
     return raw.filter((alb) => !alb.inLibrary && !libIds.has(alb.id) && !libTitles.has(normTitle(alb.title)));
   }, [remoteDetail, albums]);
 
-  const currentSummary = artists.find((a) => a.name.toLowerCase() === effectiveArtist.toLowerCase());
+  const currentSummary = useMemo(() => {
+    if (!effectiveArtist) return undefined;
+    const target = effectiveArtist.toLowerCase();
+    for (const pageItems of artistPagesByIndex.values()) {
+      const found = pageItems.find((a) => a.name.toLowerCase() === target);
+      if (found) return found;
+    }
+    return undefined;
+  }, [artistPagesByIndex, effectiveArtist]);
+
+  const visibleArtistIndices = useMemo(() => {
+    if (railWin.endIndex < railWin.startIndex) return [];
+    const list: number[] = [];
+    for (let i = railWin.startIndex; i <= railWin.endIndex; i++) {
+      list.push(i);
+    }
+    return list;
+  }, [railWin.startIndex, railWin.endIndex]);
   const heroArt =
     remoteDetail?.artist.artworkUrl ||
     albums[0]?.artworkUrl ||
@@ -196,58 +278,44 @@ export function ArtistsView({
         <div className="flex h-16 items-center border-b border-white/[0.06] px-4 shrink-0">
           <div className="flex w-full items-baseline justify-between">
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">Artists</h1>
-            <span className="text-xs font-mono text-muted-foreground">{fmtCount(artists.length)}</span>
+            <span className="text-xs font-mono text-muted-foreground">{fmtCount(totalArtists)}</span>
           </div>
         </div>
 
-        <div ref={railRef} data-scroll-stage="" className="flex-1 overflow-y-auto p-2 space-y-0.5">
-          {loadingArtists && artists.length === 0 ? (
-            <div className="space-y-2 p-2">
+        <div ref={railRef} data-scroll-stage="" className="flex-1 overflow-y-auto p-2">
+          {loadingArtists && totalArtists === 0 ? (
+            <div>
               {Array.from({ length: 10 }).map((_, i) => (
-                <div key={i} className="flex items-center gap-3 animate-pulse py-1.5">
-                  <div className="h-10 w-10 rounded-full bg-white/[0.06]" />
-                  <div className="space-y-1.5 flex-1">
-                    <div className="h-3.5 w-2/3 rounded bg-white/[0.06]" />
-                    <div className="h-2.5 w-1/3 rounded bg-white/[0.04]" />
-                  </div>
-                </div>
+                <ArtistRailSkeleton key={i} />
               ))}
             </div>
-          ) : artists.length === 0 ? (
+          ) : totalArtists === 0 ? (
             <p className="py-12 text-center text-xs text-muted-foreground">No artists in your library yet.</p>
           ) : (
-            artists.map((artist) => {
-              const active = artist.name.toLowerCase() === effectiveArtist.toLowerCase();
-              return (
-                <button
-                  key={artist.name}
-                  type="button"
-                  onClick={() => {
-                    setSelectedArtist(artist.name);
-                    setSelectedQobuzId(undefined);
-                    setMobileDetailOpen(true);
-                    onSelectArtist?.(artist.name);
-                  }}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors cursor-pointer",
-                    active ? "md:bg-white/[0.1] md:text-white text-foreground/90" : "text-foreground/85 hover:bg-white/[0.04]",
-                  )}
-                >
-                  <AlbumArt
-                    artworkUrl={(active ? heroArt : undefined) || artist.artworkUrl}
-                    alt={artist.name}
-                    className="h-10 w-10 shrink-0 rounded-full ring-1 ring-white/10"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13.5px] font-medium leading-tight">{artist.name}</div>
-                    <div className="truncate text-xs text-muted-foreground mt-0.5">
-                      {fmtCount(artist.albumCount)} {artist.albumCount === 1 ? "album" : "albums"} · {fmtCount(artist.trackCount)} tracks
-                    </div>
-                  </div>
-                  <ChevronRight className="h-4 w-4 text-muted-foreground/50 md:hidden shrink-0" />
-                </button>
-              );
-            })
+            <div className="relative" style={{ height: railWin.totalHeight }}>
+              <div
+                className="absolute inset-x-0 top-0"
+                style={{ transform: `translate3d(0, ${railWin.offsetY}px, 0)` }}
+              >
+                {visibleArtistIndices.map((idx) => {
+                  const page = Math.floor(idx / ARTIST_PAGE_SIZE);
+                  const artist = artistPagesByIndex.get(page)?.[idx - page * ARTIST_PAGE_SIZE];
+                  if (!artist) {
+                    return <ArtistRailSkeleton key={`slot-${idx}`} />;
+                  }
+                  const active = artist.name.toLowerCase() === effectiveArtist.toLowerCase();
+                  return (
+                    <ArtistRailRow
+                      key={artist.name}
+                      artist={artist}
+                      active={active}
+                      artworkUrl={(active ? heroArt : undefined) || artist.artworkUrl}
+                      onSelect={handleSelectArtist}
+                    />
+                  );
+                })}
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -635,3 +703,53 @@ function StackedAlbumCard({
     </div>
   );
 }
+
+interface ArtistRailRowProps {
+  artist: ArtistSummary;
+  active: boolean;
+  artworkUrl?: string;
+  onSelect: (name: string) => void;
+}
+
+const ArtistRailRow = memo(function ArtistRailRow({
+  artist,
+  active,
+  artworkUrl,
+  onSelect,
+}: ArtistRailRowProps) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(artist.name)}
+      className={cn(
+        "flex h-14 w-full items-center gap-3 rounded-xl px-2.5 text-left transition-colors cursor-pointer",
+        active ? "md:bg-white/[0.1] md:text-white text-foreground/90" : "text-foreground/85 hover:bg-white/[0.04]",
+      )}
+    >
+      <AlbumArt
+        artworkUrl={artworkUrl}
+        alt={artist.name}
+        className="h-10 w-10 shrink-0 rounded-full ring-1 ring-white/10"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13.5px] font-medium leading-tight">{artist.name}</div>
+        <div className="truncate text-xs text-muted-foreground mt-0.5">
+          {fmtCount(artist.albumCount)} {artist.albumCount === 1 ? "album" : "albums"} · {fmtCount(artist.trackCount)} tracks
+        </div>
+      </div>
+      <ChevronRight className="h-4 w-4 text-muted-foreground/50 md:hidden shrink-0" />
+    </button>
+  );
+});
+
+const ArtistRailSkeleton = memo(function ArtistRailSkeleton() {
+  return (
+    <div aria-hidden="true" className="flex h-14 items-center gap-3 px-2.5 animate-pulse">
+      <div className="h-10 w-10 shrink-0 rounded-full bg-white/[0.06]" />
+      <div className="space-y-1.5 flex-1 min-w-0">
+        <div className="h-3.5 w-2/3 rounded bg-white/[0.06]" />
+        <div className="h-2.5 w-1/3 rounded bg-white/[0.04]" />
+      </div>
+    </div>
+  );
+});

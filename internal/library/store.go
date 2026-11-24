@@ -1647,7 +1647,7 @@ SELECT MIN(a.artist) AS name,
        GROUP_CONCAT(DISTINCT a.provider) AS providers
 FROM albums a `+whereSQL+`
 GROUP BY LOWER(a.artist)
-ORDER BY MIN(a.sort_artist) ASC
+ORDER BY MIN(a.sort_artist) ASC, LOWER(a.artist) ASC
 LIMIT ? OFFSET ?`, qArgs...)
 	if err != nil {
 		return nil, 0, err

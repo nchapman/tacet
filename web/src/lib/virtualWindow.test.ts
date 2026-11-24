@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { computeRequiredPages, computeVirtualRange } from "./virtualWindow";
+import {
+  computeGridColumns,
+  computeRequiredPages,
+  computeVirtualGridRange,
+  computeVirtualRange,
+} from "./virtualWindow";
 
 describe("computeVirtualRange", () => {
   it("handles empty datasets cleanly", () => {
@@ -33,6 +38,51 @@ describe("computeVirtualRange", () => {
     expect(bottom.startIndex).toBe(30);
     expect(bottom.endIndex).toBe(49);
     expect(bottom.offsetY).toBe(30 * 56);
+  });
+});
+
+describe("computeGridColumns", () => {
+  it("maps container widths across mobile to wide desktop cleanly", () => {
+    expect(computeGridColumns(360)).toBe(2);
+    expect(computeGridColumns(480)).toBe(3);
+    expect(computeGridColumns(640)).toBe(4);
+    expect(computeGridColumns(820)).toBe(5);
+    expect(computeGridColumns(1100)).toBe(6);
+  });
+});
+
+describe("computeVirtualGridRange", () => {
+  it("handles empty grids cleanly", () => {
+    expect(computeVirtualGridRange(0, 800, 0, 6, 260, 28)).toEqual({
+      startRow: 0,
+      endRow: -1,
+      startIndex: 0,
+      endIndex: -1,
+      offsetY: 0,
+      totalHeight: 0,
+    });
+  });
+
+  it("virtualizes a huge 10,000-album 6-column grid by row stride", () => {
+    // 10,000 albums / 6 cols = 1,667 rows (last row has 4 albums).
+    // Row stride 260px (232px card + 28px gap), viewport 780px (3 rows), scrolled to row 500.
+    const range = computeVirtualGridRange(500 * 260, 780, 10_000, 6, 260, 28, 2, 0);
+    expect(range.totalHeight).toBe(1667 * 260 - 28);
+    expect(range.startRow).toBe(498);
+    expect(range.endRow).toBe(504);
+    expect(range.startIndex).toBe(498 * 6);
+    expect(range.endIndex).toBe(505 * 6 - 1);
+    expect(range.offsetY).toBe(498 * 260);
+  });
+
+  it("clamps endIndex cleanly on a partial final row", () => {
+    // 14 albums / 6 cols = 3 rows (last row has indices 12..13).
+    const range = computeVirtualGridRange(0, 800, 14, 6, 260, 28, 2, 0);
+    expect(range.startRow).toBe(0);
+    expect(range.endRow).toBe(2);
+    expect(range.startIndex).toBe(0);
+    expect(range.endIndex).toBe(13);
+    expect(range.totalHeight).toBe(3 * 260 - 28);
   });
 });
 

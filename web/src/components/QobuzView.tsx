@@ -1,14 +1,12 @@
-import { useQuery } from "@tanstack/react-query";
 import { Compass, Search, Sparkles } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtCount } from "@/api/format";
 import type { Album, QobuzStatus, QueueSource } from "@/api/types";
-import { AlbumCard } from "@/components/AlbumCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PageBody, PageHeader } from "@/components/ui/PageHeader";
-import { queryErrorMessage, queryKeys } from "@/lib/query";
+import { AlbumCardSkeleton, usePagedAlbumGrid, VirtualAlbumGrid } from "@/components/VirtualAlbumGrid";
 
 interface QobuzViewProps {
   status: QobuzStatus | null;
@@ -30,8 +28,10 @@ export function QobuzView({
   const [appSecret, setAppSecret] = useState("");
   const [showTokenForm, setShowTokenForm] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
-
   const [loginErr, setLoginErr] = useState("");
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (status !== null) return;
@@ -45,15 +45,14 @@ export function QobuzView({
     return () => ctrl.abort();
   }, [status, onStatusChange]);
 
-  const albumsQuery = useQuery({
-    queryKey: queryKeys.library.albums({ provider: "qobuz", sort: "added", limit: 200 }),
-    queryFn: ({ signal }) => tacetClient.listLibraryAlbums({ provider: "qobuz", sort: "added", limit: 200 }, { signal }),
+  const { total, initialLoading, errMsg: gridErr, win, pagesByIndex } = usePagedAlbumGrid({
+    scrollRef,
+    gridRef,
+    queryParams: { provider: "qobuz", sort: "added" },
     enabled: Boolean(status?.authenticated),
   });
 
-  const albums: Album[] = albumsQuery.data?.items ?? [];
-  const loading = albumsQuery.isLoading;
-  const errMsg = loginErr || queryErrorMessage(albumsQuery.error);
+  const errMsg = loginErr || gridErr;
 
   const handleTokenLogin = async (e: FormEvent) => {
     e.preventDefault();
@@ -175,48 +174,56 @@ export function QobuzView({
         </div>
       </PageHeader>
 
-      <PageBody>
+      <PageBody scrollRef={scrollRef}>
         <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6 space-y-6">
-        {errMsg && (
-          <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
-            {errMsg}
-          </div>
-        )}
+          {errMsg && (
+            <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
+              {errMsg}
+            </div>
+          )}
 
-        {loading && albums.length === 0 ? (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-x-5 gap-y-7">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="space-y-2.5 animate-pulse">
-                <div className="aspect-square rounded-lg bg-white/[0.05]" />
-                <div className="h-3.5 w-3/4 rounded bg-white/[0.05]" />
-              </div>
-            ))}
-          </div>
-        ) : albums.length > 0 ? (
-          <section className="space-y-4">
+          {total > 0 && (
             <div className="flex items-baseline gap-2">
               <h2 className="text-base font-semibold tracking-tight text-white">Synced Qobuz Favorites</h2>
-              <span className="text-xs font-mono text-muted-foreground">{fmtCount(albums.length)}</span>
+              <span className="text-xs font-mono text-muted-foreground">{fmtCount(total)}</span>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-x-5 gap-y-7">
-              {albums.map((alb) => (
-                <AlbumCard key={alb.id} album={alb} onOpen={onOpenAlbum} onPlay={onPlay} />
-              ))}
-            </div>
-          </section>
-        ) : (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <Compass className="h-10 w-10 text-white/20 mb-3" />
-            <p className="text-sm font-medium text-foreground/85">Explore the Qobuz catalog</p>
-            <p className="mt-1 text-xs text-muted-foreground max-w-sm">
-              Use Global Search to find any artist, album, or track on Qobuz alongside your local library.
-            </p>
-            <Button type="button" variant="secondary" size="sm" className="mt-4 rounded-full" onClick={onOpenSearch}>
-              <Search className="h-3.5 w-3.5" />
-              Open Search
-            </Button>
+          )}
+
+          <div ref={gridRef}>
+            {initialLoading && total === 0 ? (
+              <div
+                className="grid"
+                style={{
+                  gridTemplateColumns: `repeat(${win.columns}, minmax(0, 1fr))`,
+                  columnGap: "20px",
+                  rowGap: "28px",
+                }}
+              >
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <AlbumCardSkeleton key={i} />
+                ))}
+              </div>
+            ) : total > 0 ? (
+              <VirtualAlbumGrid
+                win={win}
+                pagesByIndex={pagesByIndex}
+                onOpenAlbum={onOpenAlbum}
+                onPlay={onPlay}
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <Compass className="h-10 w-10 text-white/20 mb-3" />
+                <p className="text-sm font-medium text-foreground/85">Explore the Qobuz catalog</p>
+                <p className="mt-1 text-xs text-muted-foreground max-w-sm">
+                  Use Global Search to find any artist, album, or track on Qobuz alongside your local library.
+                </p>
+                <Button type="button" variant="secondary" size="sm" className="mt-4 rounded-full" onClick={onOpenSearch}>
+                  <Search className="h-3.5 w-3.5" />
+                  Open Search
+                </Button>
+              </div>
+            )}
           </div>
-        )}
         </div>
       </PageBody>
     </div>

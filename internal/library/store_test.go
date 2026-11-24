@@ -800,3 +800,49 @@ func TestQueryTracksDeterministicPagination(t *testing.T) {
 		}
 	}
 }
+
+func TestListArtistsDeterministicPagination(t *testing.T) {
+	musicDir := t.TempDir()
+	// "The Band" and "Band" share sort_artist="band", exercising tie-breaking across pages.
+	for _, artist := range []string{"Alpha", "Band", "The Band", "Beta", "Gamma", "Delta"} {
+		path := fmt.Sprintf("%s/Album/01 - Track.flac", artist)
+		writeTaggedFLAC(t, musicDir, path, 16, 44100, map[string]string{
+			"ARTIST":      artist,
+			"ALBUMARTIST": artist,
+			"ALBUM":       "Album",
+			"TITLE":       "Track",
+		})
+	}
+
+	cat, err := NewCatalogWithDB(":memory:", musicDir)
+	if err != nil {
+		t.Fatalf("NewCatalogWithDB: %v", err)
+	}
+	defer func() { _ = cat.Close() }()
+
+	if n, scanErr := cat.Scan(); scanErr != nil || n != 6 {
+		t.Fatalf("Scan = (%d, %v), want (6, nil)", n, scanErr)
+	}
+
+	full, total, err := cat.ListArtists(FacetFilter{Limit: 50, Offset: 0})
+	if err != nil || total != 6 || len(full) != 6 {
+		t.Fatalf("full = (%d/%d, %v)", len(full), total, err)
+	}
+
+	var paged []ArtistSummary
+	for offset := 0; offset < total; offset += 2 {
+		page, pageTotal, pErr := cat.ListArtists(FacetFilter{Limit: 2, Offset: offset})
+		if pErr != nil || pageTotal != 6 {
+			t.Fatalf("offset=%d = (%d/%d, %v)", offset, len(page), pageTotal, pErr)
+		}
+		paged = append(paged, page...)
+	}
+	if len(paged) != len(full) {
+		t.Fatalf("paged len=%d want %d", len(paged), len(full))
+	}
+	for i := range full {
+		if paged[i].Name != full[i].Name {
+			t.Fatalf("mismatch at index %d: paged=%q full=%q", i, paged[i].Name, full[i].Name)
+		}
+	}
+}

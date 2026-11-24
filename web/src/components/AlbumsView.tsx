@@ -1,13 +1,10 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { memo, useCallback } from "react";
+import { memo, useCallback, useRef } from "react";
 import { useSearchParams } from "react-router";
-import { tacetClient } from "@/api/client";
 import { fmtCount } from "@/api/format";
 import type { Album, LibraryStatus, QueueSource } from "@/api/types";
-import { AlbumCard } from "@/components/AlbumCard";
 import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { queryErrorMessage, queryKeys } from "@/lib/query";
+import { AlbumCardSkeleton, usePagedAlbumGrid, VirtualAlbumGrid } from "@/components/VirtualAlbumGrid";
 import { cn } from "@/lib/utils";
 
 type SourceFilter = "all" | "local" | "remote";
@@ -25,6 +22,8 @@ interface AlbumsViewProps {
 
 export const AlbumsView = memo(function AlbumsView({ libraryStatus, groupVersions, onOpenAlbum, onPlay }: AlbumsViewProps) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
 
   const rawSource = searchParams.get("source") as SourceFilter | null;
   const source: SourceFilter = rawSource && VALID_SOURCES.has(rawSource) ? rawSource : "all";
@@ -42,30 +41,17 @@ export const AlbumsView = memo(function AlbumsView({ libraryStatus, groupVersion
         if (patch.sort === "artist") next.delete("sort");
         else next.set("sort", patch.sort);
       }
+      scrollRef.current?.scrollTo({ top: 0 });
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
   );
 
-  const albumsQuery = useQuery({
-    queryKey: queryKeys.library.albums({ source, sort, groupVersions, limit: 500 }),
-    queryFn: ({ signal }) =>
-      tacetClient.listLibraryAlbums(
-        {
-          source,
-          sort,
-          groupVersions,
-          limit: 500,
-        },
-        { signal },
-      ),
-    placeholderData: keepPreviousData,
+  const { total, initialLoading, errMsg, win, pagesByIndex } = usePagedAlbumGrid({
+    scrollRef,
+    gridRef,
+    queryParams: { source, sort, groupVersions },
   });
-
-  const albums = albumsQuery.data?.items ?? [];
-  const total = albumsQuery.data?.total ?? 0;
-  const loading = albumsQuery.isPending;
-  const errMsg = queryErrorMessage(albumsQuery.error);
 
   const hasRemote = (libraryStatus?.remoteAlbums ?? 0) > 0;
 
@@ -113,38 +99,39 @@ export const AlbumsView = memo(function AlbumsView({ libraryStatus, groupVersion
         </div>
       </PageHeader>
 
-      <PageBody>
+      <PageBody scrollRef={scrollRef}>
         <div className="mx-auto max-w-7xl px-4 sm:px-8 pt-6">
-        {errMsg && (
-          <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
-            {errMsg}
-          </div>
-        )}
+          {errMsg && (
+            <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-3 text-sm text-red-200">
+              {errMsg}
+            </div>
+          )}
 
-        {loading && albums.length === 0 ? (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-5">
-            {Array.from({ length: 18 }).map((_, i) => (
-              <div key={i} className="space-y-2.5 animate-pulse">
-                <div className="aspect-square w-full rounded-lg bg-white/[0.06]" />
-                <div className="h-3.5 w-3/4 rounded bg-white/[0.06]" />
-                <div className="h-3 w-1/2 rounded bg-white/[0.04]" />
+          <div ref={gridRef}>
+            {initialLoading && total === 0 ? (
+              <div
+                className="grid"
+                style={{
+                  gridTemplateColumns: `repeat(${win.columns}, minmax(0, 1fr))`,
+                  columnGap: "20px",
+                  rowGap: "28px",
+                }}
+              >
+                {Array.from({ length: 18 }).map((_, i) => (
+                  <AlbumCardSkeleton key={i} />
+                ))}
               </div>
-            ))}
-          </div>
-        ) : albums.length === 0 ? (
-          <p className="py-16 text-center text-sm text-muted-foreground">No matching albums in your library.</p>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-x-5 gap-y-7">
-            {albums.map((alb) => (
-              <AlbumCard
-                key={alb.id}
-                album={alb}
-                onOpen={onOpenAlbum}
+            ) : total === 0 ? (
+              <p className="py-16 text-center text-sm text-muted-foreground">No matching albums in your library.</p>
+            ) : (
+              <VirtualAlbumGrid
+                win={win}
+                pagesByIndex={pagesByIndex}
+                onOpenAlbum={onOpenAlbum}
                 onPlay={onPlay}
               />
-            ))}
+            )}
           </div>
-        )}
         </div>
       </PageBody>
     </div>

@@ -44,8 +44,9 @@ export const queryKeys = {
       sort?: string;
       groupVersions?: boolean;
       limit?: number;
+      offset?: number;
     }) => ["library", "albums", params] as const,
-    artists: (limit: number) => ["library", "artists", { limit }] as const,
+    artists: (params: { limit?: number; offset?: number }) => ["library", "artists", params] as const,
     genres: ["library", "genres"] as const,
     tracks: (params: { genre?: string; sort?: string; dir?: string; limit?: number; offset?: number }) =>
       ["library", "tracks", params] as const,
