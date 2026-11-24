@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -52,13 +51,16 @@ func TestAutoScanner_WatchesNewAlbumDirAndFiles(t *testing.T) {
 	}
 	defer func() { _ = cat.Close() }()
 
-	var callbackCount atomic.Int32
+	scanDone := make(chan int, 8)
 	auto := NewAutoScanner(cat, AutoScanConfig{
 		WatchEnabled: true,
 		Interval:     0,
 		Debounce:     100 * time.Millisecond,
-	}, func(_ context.Context, _ int) {
-		callbackCount.Add(1)
+	}, func(_ context.Context, trackCount int) {
+		select {
+		case scanDone <- trackCount:
+		default:
+		}
 	})
 	auto.Start(context.Background())
 	defer auto.Stop()
@@ -70,9 +72,20 @@ func TestAutoScanner_WatchesNewAlbumDirAndFiles(t *testing.T) {
 	}
 	writeTinyWAV(t, filepath.Join(albumDir, "01 Track One.wav"))
 
-	waitForTrackCount(t, cat, 1, 3*time.Second)
-	if callbackCount.Load() == 0 {
-		t.Fatalf("expected onScanDone callback to fire")
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case n := <-scanDone:
+			if n == 1 {
+				if got := cat.Status().LocalTracks; got != 1 {
+					t.Fatalf("LocalTracks = %d after onScanDone(1), want 1", got)
+				}
+				return
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for onScanDone(1) (LocalTracks=%d)", cat.Status().LocalTracks)
+		}
 	}
 }
 
