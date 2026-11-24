@@ -26,6 +26,7 @@ type fakeRenderer struct {
 	setNextCalls []string
 	playCalls    int
 	playErr      error
+	onPlay       func(uri string)
 	failSetNext  bool
 	setNextErr   error
 }
@@ -76,14 +77,21 @@ func (f *fakeRenderer) SetNextURI(_ context.Context, item upnp.MediaItem) error 
 
 func (f *fakeRenderer) Play(_ context.Context) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.playCalls++
 	if f.playErr != nil {
-		return f.playErr
+		err := f.playErr
+		f.mu.Unlock()
+		return err
 	}
 	f.state = "PLAYING"
 	if f.position == 0 {
 		f.position = time.Second
+	}
+	uri := f.currentURI
+	cb := f.onPlay
+	f.mu.Unlock()
+	if cb != nil {
+		cb(uri)
 	}
 	return nil
 }
@@ -568,5 +576,43 @@ func TestManager_ShuffleAndRepeat(t *testing.T) {
 	// Invalid repeat mode fails cleanly.
 	if _, err := mgr.SetRepeat(ctx, "uuid:sr", RepeatMode("bogus")); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument for bogus repeat mode, got %v", err)
+	}
+}
+
+func TestManager_PreservesImmediatePlayingConfirmedDuringPlay(t *testing.T) {
+	ctx := context.Background()
+	mgr := NewManager(8080, "http://192.168.1.10:8080", nil)
+	defer mgr.Close()
+
+	r := newFakeRenderer("player:browser1", "Mac Chrome")
+	r.onPlay = func(uri string) {
+		// Simulate RemotePlayer delivering PLAYING via HandleDeviceEvent before Play() returns.
+		mgr.HandleDeviceEvent(upnp.DeviceEvent{
+			RendererID:  "player:browser1",
+			Service:     upnp.ServiceAVTransport,
+			Seq:         1,
+			HasState:    true,
+			State:       "PLAYING",
+			HasPosition: true,
+			Position:    2 * time.Second,
+			HasTrackURI: true,
+			TrackURI:    uri,
+		})
+	}
+	mgr.RegisterRenderer(r)
+
+	tracks := []library.Track{
+		{ID: "t1", Source: library.SourceLocal, Title: "Instant", Ext: ".flac", MIME: "audio/flac", DurationSec: 180},
+	}
+
+	snap, err := mgr.ReplaceQueue(ctx, "player:browser1", tracks, 0)
+	if err != nil {
+		t.Fatalf("ReplaceQueue failed: %v", err)
+	}
+	if snap.State != StatePlaying {
+		t.Fatalf("expected immediate %q when renderer confirms PLAYING during Play(), got %q", StatePlaying, snap.State)
+	}
+	if snap.PositionSec != 2 {
+		t.Fatalf("expected confirmed position 2s to be preserved, got %d", snap.PositionSec)
 	}
 }

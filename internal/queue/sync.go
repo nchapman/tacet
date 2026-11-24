@@ -123,27 +123,12 @@ func (m *Manager) playPreparedMedia(
 		m.emitZoneError(zoneID, werr)
 		return werr
 	}
-	// Record currentURI immediately after SetURI succeeds so even if Play times out
-	// on a slow DAC and starts 300ms later, subsequent PLAYING reports are not treated
-	// as stale tracks.
-	m.mu.Lock()
-	if z.generation == gen {
-		if idx >= 0 && idx < len(z.queue) {
-			z.queue[idx].Track = resolvedTrack
-		}
-		z.currentURI = media.URL
-		z.activeQuality = effQuality
-		z.status.Duration = media.Duration
-		z.status.TrackURI = media.URL
-	}
-	m.mu.Unlock()
-
-	if err := ctrl.Play(ctx); err != nil {
-		werr := wrapRendererErr("Play", err)
-		m.emitZoneError(zoneID, werr)
-		return werr
-	}
-
+	// Record currentURI and TRANSITIONING immediately after SetURI succeeds so:
+	// 1. Even if Play times out on a slow DAC and starts 300ms later, subsequent
+	//    PLAYING reports are not treated as stale tracks.
+	// 2. If a fast push renderer (e.g. the browser player) confirms PLAYING
+	//    during ctrl.Play(ctx), we can preserve that fresh PLAYING state instead
+	//    of clobbering it back to TRANSITIONING after Play returns.
 	m.mu.Lock()
 	if z.generation == gen {
 		if idx >= 0 && idx < len(z.queue) {
@@ -157,17 +142,48 @@ func (m *Manager) playPreparedMedia(
 		z.status.TrackURI = media.URL
 		z.positionUpdatedAt = time.Now().UTC()
 		z.lastPlaybackEmit = z.positionUpdatedAt
-		// Do NOT mark wasPlaying=true until the renderer actually confirms PLAYING
-		// via Status() or GENA, otherwise brief STOPPED states during buffering
-		// trigger cascading auto-advances across the queue.
 		z.wasPlaying = false
 		z.loadedAt = time.Now()
-		z.revision++
+	}
+	m.mu.Unlock()
+
+	if err := ctrl.Play(ctx); err != nil {
+		werr := wrapRendererErr("Play", err)
+		m.emitZoneError(zoneID, werr)
+		return werr
+	}
+
+	m.mu.Lock()
+	alreadyPlaying := false
+	if z.generation == gen {
+		if idx >= 0 && idx < len(z.queue) {
+			z.queue[idx].Track = resolvedTrack
+		}
+		z.currentURI = media.URL
+		z.activeQuality = effQuality
+		alreadyPlaying = NormalizePlaybackState(z.status.State) == StatePlaying &&
+			z.status.TrackURI == media.URL
+		if !alreadyPlaying {
+			z.status.State = "TRANSITIONING"
+			z.status.Position = 0
+			z.status.Duration = media.Duration
+			z.status.TrackURI = media.URL
+			z.positionUpdatedAt = time.Now().UTC()
+			z.lastPlaybackEmit = z.positionUpdatedAt
+			// Do NOT mark wasPlaying=true until the renderer actually confirms PLAYING
+			// via Status() or GENA, otherwise brief STOPPED states during buffering
+			// trigger cascading auto-advances across the queue.
+			z.wasPlaying = false
+			z.loadedAt = time.Now()
+			z.revision++
+		}
 	}
 	pbEv := m.playbackEventLocked(z)
 	m.mu.Unlock()
 
-	m.emit("zone.playback", zoneID, pbEv)
+	if !alreadyPlaying {
+		m.emit("zone.playback", zoneID, pbEv)
+	}
 	return nil
 }
 

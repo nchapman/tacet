@@ -220,3 +220,68 @@ func TestRegistry_PartialUpdateAndStandbyClear(t *testing.T) {
 		t.Fatalf("SetNextAVTransportURI clear failed: %v", err)
 	}
 }
+
+func TestRemotePlayer_ReportStateEmitsEventBeforeUnblockingPlay(t *testing.T) {
+	var (
+		mu             sync.Mutex
+		eventSeen      bool
+		seenAtPlayExit bool
+	)
+	reg := NewRegistry(nil, nil, func(ev upnp.DeviceEvent) {
+		if ev.HasState && ev.State == "PLAYING" {
+			// Tiny delay to catch any race where Play() returns before onEvent finishes.
+			time.Sleep(15 * time.Millisecond)
+			mu.Lock()
+			eventSeen = true
+			mu.Unlock()
+		}
+	})
+
+	res, err := reg.Register(RegisterRequest{
+		PlayerID: "chrome_order",
+		Name:     "Mac Chrome",
+		Codecs:   []string{"audio/flac"},
+		Host:     "127.0.0.1",
+	}, "")
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+	rp, err := reg.Get(res.ZoneID, res.Token)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	stream := rp.AttachStream()
+	defer reg.DetachStream(rp, stream.ID)
+
+	done := make(chan error, 1)
+	go func() {
+		err := rp.Play(context.Background())
+		mu.Lock()
+		seenAtPlayExit = eventSeen
+		mu.Unlock()
+		done <- err
+	}()
+
+	cmd := <-stream.Commands
+	if cmd.Type != "play" {
+		t.Fatalf("expected play command, got %q", cmd.Type)
+	}
+	okTrue := true
+	pos := 0.25
+	rp.ReportState(StateReport{
+		CmdID:       cmd.ID,
+		OK:          &okTrue,
+		State:       "playing",
+		PositionSec: &pos,
+	})
+	if err := <-done; err != nil {
+		t.Fatalf("Play failed: %v", err)
+	}
+
+	mu.Lock()
+	seen := seenAtPlayExit
+	mu.Unlock()
+	if !seen {
+		t.Fatal("expected ReportState to deliver PLAYING event before unblocking Play()")
+	}
+}

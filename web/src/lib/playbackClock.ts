@@ -82,10 +82,14 @@ export function syncPlaybackClock(
   const current = prev.playing ? tickPlaybackClock(prev, nowMs).displayPos : prev.displayPos;
   const delta = estServer - current;
 
-  // Snap immediately on seeks/large jumps, or when paused/stopped with a real jump.
-  // For small jitter on the same playing track, keep displayPos monotonic and let
+  // Snap immediately when transitioning into playing (from buffering/paused/stopped),
+  // on seeks/large jumps, or when paused/stopped with a real jump.
+  // For small jitter on an already-playing track, keep displayPos monotonic and let
   // tickPlaybackClock smoothly slew into estServer.
-  const shouldSnap = Math.abs(delta) > JITTER_THRESHOLD_SEC || (!playing && Math.abs(delta) > 1);
+  const shouldSnap =
+    (!prev.playing && playing) ||
+    Math.abs(delta) > JITTER_THRESHOLD_SEC ||
+    (!playing && Math.abs(delta) > 1);
 
   return {
     zoneId,

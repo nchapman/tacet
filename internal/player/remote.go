@@ -622,6 +622,10 @@ func (p *RemotePlayer) ReportState(rep StateReport) {
 	p.mu.Lock()
 	zoneID := p.info.ID
 
+	var (
+		pendingCh  chan cmdResult
+		pendingRes cmdResult
+	)
 	if rep.CmdID != "" {
 		if ch, ok := p.pending[rep.CmdID]; ok {
 			delete(p.pending, rep.CmdID)
@@ -629,7 +633,8 @@ func (p *RemotePlayer) ReportState(rep StateReport) {
 			if rep.OK != nil {
 				okVal = *rep.OK
 			}
-			ch <- cmdResult{
+			pendingCh = ch
+			pendingRes = cmdResult{
 				ok:           okVal,
 				errorCode:    rep.ErrorCode,
 				errorMessage: rep.ErrorMessage,
@@ -685,8 +690,13 @@ func (p *RemotePlayer) ReportState(rep StateReport) {
 	onEvent := p.onEvent
 	p.mu.Unlock()
 
+	// Deliver state updates to queue.Manager before unblocking any awaiting
+	// command caller so ctrl.Play() returns with the zone already in PLAYING.
 	if onEvent != nil && ev.HasAnyUpdate() {
 		onEvent(ev)
+	}
+	if pendingCh != nil {
+		pendingCh <- pendingRes
 	}
 }
 

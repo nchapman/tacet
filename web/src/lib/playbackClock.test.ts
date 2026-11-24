@@ -163,4 +163,29 @@ describe("playbackClock", () => {
     });
     expect(Math.floor(clk.displayPos)).toBe(45);
   });
+
+  it("snaps immediately when transitioning from buffering/paused to playing even for small offsets", () => {
+    let clk = syncPlaybackClock(null, {
+      zoneId: "z1",
+      trackKey: "item-1",
+      playing: false,
+      serverPosSec: 0,
+      positionUpdatedAtMs: 1000,
+      durationSec: 200,
+      nowMs: 1000,
+    });
+    expect(clk.displayPos).toBe(0);
+
+    // Track begins playing at 2.8s after buffering: must snap to 2.8s immediately instead of lagging at 0s.
+    clk = syncPlaybackClock(clk, {
+      zoneId: "z1",
+      trackKey: "item-1",
+      playing: true,
+      serverPosSec: 2.8,
+      positionUpdatedAtMs: 3800,
+      durationSec: 200,
+      nowMs: 3800,
+    });
+    expect(clk.displayPos).toBeCloseTo(2.8, 2);
+  });
 });
