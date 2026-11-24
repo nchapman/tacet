@@ -105,6 +105,7 @@ func TestValidateRendererURL_AllowsPrivateLANOnly(t *testing.T) {
 		"http://192.168.1.50:49152/description.xml",
 		"http://10.0.0.25:49152/description.xml",
 		"http://172.16.0.10:8080/desc.xml",
+		"http://100.88.248.12:49152/description.xml",
 	}
 	for _, u := range valid {
 		if _, err := validateRendererURL(ctx, u); err != nil {
@@ -115,6 +116,7 @@ func TestValidateRendererURL_AllowsPrivateLANOnly(t *testing.T) {
 	invalid := []string{
 		"http://127.0.0.1:8080/description.xml",
 		"http://169.254.169.254/latest/meta-data/",
+		"http://100.128.0.1:49152/description.xml",
 		"http://8.8.8.8/description.xml",
 		"file:///etc/passwd",
 		"ftp://192.168.1.50/description.xml",

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
@@ -22,6 +23,24 @@ const maxUPnPXMLBytes = 2 << 20 // 2 MiB cap for device description & SCPD XML
 
 // ErrInvalidRendererURL indicates a renderer URL failed syntax, scheme, or LAN IP validation.
 var ErrInvalidRendererURL = errors.New("invalid renderer URL")
+
+var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
+
+func isAllowedRendererIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	if ip.IsPrivate() {
+		return true
+	}
+	if addr, ok := netip.AddrFromSlice(ip); ok {
+		addr = addr.Unmap()
+		if addr.Is4() && cgnatPrefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
 
 // Discover scans the local network via SSDP for UPnP/DLNA MediaRenderers
 // exposing AVTransport:1.
@@ -132,7 +151,7 @@ func validateRendererURL(ctx context.Context, rawURL string) (*url.URL, error) {
 	}
 
 	for _, ip := range ips {
-		if !ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		if !isAllowedRendererIP(ip) {
 			return nil, fmt.Errorf("%w: host %q resolves to non-LAN IP %s", ErrInvalidRendererURL, host, ip.String())
 		}
 	}
