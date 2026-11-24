@@ -260,6 +260,7 @@ export const PlayerBar = memo(function PlayerBar({
                       qualLabel={qualLabel}
                       isBrowserActive={isBrowserActive}
                       streamMode={streamMode}
+                      variant="led"
                     />
                   )}
                 </div>

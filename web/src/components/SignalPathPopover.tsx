@@ -1,7 +1,7 @@
 import { Cloud, Cpu, Disc3, HardDrive, Radio, Speaker, Waves } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { fmtQuality, rendererLossyCodec } from "@/api/format";
+import { fmtQuality, isHiResOutput, rendererLossyCodec } from "@/api/format";
 import type { AudioQuality, StreamMode, Track, ZoneSnapshot } from "@/api/types";
 import { SignalBadge } from "@/components/ui/SignalBadge";
 import { cn } from "@/lib/utils";
@@ -12,12 +12,14 @@ interface SignalPathPopoverProps {
   qualLabel: string;
   isBrowserActive: boolean;
   streamMode?: StreamMode;
+  variant?: "pill" | "led";
 }
 
 interface Stage {
   icon: typeof Disc3;
   title: string;
   detail: string;
+  meta?: string;
   accent?: "emerald" | "sky" | "amber" | "neutral";
 }
 
@@ -25,6 +27,14 @@ function fmtSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return "";
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${Math.round(bytes / 1024)} KB`;
+}
+
+function fmtChannels(channels?: number): string {
+  if (!channels || channels <= 0) return "";
+  if (channels === 1) return "Mono";
+  if (channels === 2) return "Stereo";
+  if (channels === 6) return "5.1";
+  return `${channels}ch`;
 }
 
 function isLosslessTrack(track: Track): boolean {
@@ -67,6 +77,7 @@ export function SignalPathPopover({
   qualLabel,
   isBrowserActive,
   streamMode,
+  variant = "pill",
 }: SignalPathPopoverProps) {
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
@@ -79,8 +90,9 @@ export function SignalPathPopover({
     const el = rootRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
+    const popWidth = Math.min(344, window.innerWidth - 24);
     setAnchor({
-      left: Math.max(12, Math.min(r.left, window.innerWidth - 332)),
+      left: Math.max(12, Math.min(r.left, window.innerWidth - popWidth - 12)),
       bottom: window.innerHeight - r.top + 10,
     });
   };
@@ -146,23 +158,40 @@ export function SignalPathPopover({
   const isOpus = activeQ.startsWith("opus_");
   const isWav = activeQ === "wav";
   const losslessSource = isLosslessTrack(track);
+  const hiResOut = isHiResOutput(track, activeQ);
 
   const pathStatus = isOpus
-    ? { label: "Transcoded", dot: "bg-amber-400", text: "text-amber-300/90" }
+    ? {
+        label: "Transcoded",
+        dot: "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.65)]",
+        pill: "border-amber-400/20 bg-amber-400/[0.08] text-amber-300/95",
+        spine: "from-amber-400/35 via-amber-400/20 to-white/[0.08]",
+      }
     : losslessSource
-      ? { label: "Lossless", dot: "bg-emerald-400", text: "text-emerald-300/90" }
-      : { label: "Direct", dot: "bg-sky-400", text: "text-sky-300/90" };
+      ? {
+          label: hiResOut ? "Lossless · Hi-Res" : "Lossless",
+          dot: "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.65)]",
+          pill: "border-emerald-400/20 bg-emerald-400/[0.08] text-emerald-300/95",
+          spine: "from-emerald-400/35 via-emerald-400/20 to-white/[0.08]",
+        }
+      : {
+          label: "Direct",
+          dot: "bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.65)]",
+          pill: "border-sky-400/20 bg-sky-400/[0.08] text-sky-300/95",
+          spine: "from-sky-400/35 via-sky-400/20 to-white/[0.08]",
+        };
 
   const sourceQuality = fmtQuality(track);
-  const channels = track.channels ? `${track.channels}ch` : "";
-  const fileSize = !isQobuz ? fmtSize(track.size) : "";
-  const sourceDetail = [sourceQuality, channels, fileSize].filter(Boolean).join(" · ");
+  const sourceMeta = [fmtChannels(track.channels), !isQobuz ? fmtSize(track.size) : ""]
+    .filter(Boolean)
+    .join(" · ");
 
   const stages: Stage[] = [
     {
       icon: isQobuz ? Cloud : HardDrive,
       title: isQobuz ? "Qobuz Stream" : "Local File",
-      detail: sourceDetail || (isQobuz ? "Qobuz catalog" : "Local storage"),
+      detail: sourceQuality || (isQobuz ? "Qobuz catalog" : "Local storage"),
+      meta: sourceMeta || undefined,
       accent: isQobuz ? "sky" : "emerald",
     },
   ];
@@ -172,21 +201,22 @@ export function SignalPathPopover({
     stages.push({
       icon: Cpu,
       title: codec === "aac" ? "AAC Transcode" : "Opus Transcode",
-      detail:
-        codec === "aac"
-          ? `ffmpeg aac · ${opusBitrate(activeQ)} · ADTS`
-          : `ffmpeg libopus · ${opusBitrate(activeQ)} · 48 kHz`,
+      detail: codec === "aac" ? "ffmpeg aac · ADTS" : "ffmpeg libopus · 48 kHz",
+      meta: opusBitrate(activeQ),
       accent: "amber",
     });
   } else if (isWav) {
     const wavDetail =
       track.bitDepth === 1
-        ? "WAV · 24-bit / 88.2 kHz"
-        : `WAV${track.bitDepth && track.sampleRate ? ` · ${track.bitDepth > 16 ? 24 : 16}-bit / ${(track.sampleRate / 1000).toFixed(track.sampleRate % 1000 === 0 ? 0 : 1)} kHz` : ""}`;
+        ? "24-bit / 88.2 kHz PCM"
+        : track.bitDepth && track.sampleRate
+          ? `${track.bitDepth > 16 ? 24 : 16}-bit / ${(track.sampleRate / 1000).toFixed(track.sampleRate % 1000 === 0 ? 0 : 1)} kHz PCM`
+          : "Uncompressed PCM";
     stages.push({
       icon: Waves,
       title: track.bitDepth === 1 ? "DSD → PCM Decode" : "PCM Decode",
       detail: wavDetail,
+      meta: "WAV",
       accent: "emerald",
     });
   } else {
@@ -194,6 +224,7 @@ export function SignalPathPopover({
       icon: Waves,
       title: "Bit-Perfect Pass-Through",
       detail: "No resampling or DSP",
+      meta: "Original",
       accent: losslessSource ? "emerald" : "neutral",
     });
   }
@@ -204,28 +235,29 @@ export function SignalPathPopover({
       stages.push({
         icon: Radio,
         title: "HTTP Audio Stream",
-        detail: isQobuz ? "Relay" : "LAN HTTP",
+        detail: isOpus ? "Transcoded stream" : "Direct lossless stream",
+        meta: isQobuz ? "Relay" : "LAN HTTP",
         accent: "neutral",
       });
     } else {
       const isCastKind = zone.renderer.kind === "cast";
-      const transportBits: string[] = [];
-      if (isQobuz) {
-        transportBits.push(streamMode === "direct" && !isOpus && !isWav ? "Handoff" : "Relay");
-      } else {
-        transportBits.push("LAN HTTP");
-      }
-      if (!isCastKind) {
-        if (zone.gaplessArmed) {
-          transportBits.push("Gapless armed");
-        } else if (zone.renderer.supportsSetNext) {
-          transportBits.push("Gapless ready");
-        }
-      }
+      const deliveryTag = isQobuz
+        ? streamMode === "direct" && !isOpus && !isWav
+          ? "Handoff"
+          : "Relay"
+        : "LAN HTTP";
+      const transportDetail = isCastKind
+        ? "Cast media session"
+        : zone.gaplessArmed
+          ? "Gapless armed"
+          : zone.renderer.supportsSetNext
+            ? "Gapless ready"
+            : "Standard transport";
       stages.push({
         icon: Radio,
         title: isCastKind ? "Google Cast" : "UPnP / DLNA AVTransport",
-        detail: transportBits.join(" · "),
+        detail: transportDetail,
+        meta: deliveryTag,
         accent: "neutral",
       });
     }
@@ -260,19 +292,30 @@ export function SignalPathPopover({
           });
         }}
         aria-expanded={open}
-        aria-label="Show audio signal path"
-        className="inline-flex cursor-pointer rounded-full focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30"
+        aria-label={`Show audio signal path (${pathStatus.label})`}
+        className={cn(
+          "inline-flex cursor-pointer items-center justify-center rounded-full focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30",
+          variant === "led" &&
+            cn(
+              "h-5 w-5 shrink-0 transition-colors hover:bg-white/[0.08]",
+              open && "bg-white/[0.1]",
+            ),
+        )}
       >
-        <SignalBadge
-          provider={track.provider || track.source}
-          format={qualLabel}
-          size="sm"
-          showTitle={false}
-          className={cn(
-            "transition-colors hover:border-white/20 hover:bg-white/[0.09]",
-            open && "border-white/20 bg-white/[0.09]",
-          )}
-        />
+        {variant === "led" ? (
+          <span className={cn("h-2 w-2 rounded-full", pathStatus.dot)} />
+        ) : (
+          <SignalBadge
+            provider={track.provider || track.source}
+            format={qualLabel}
+            size="sm"
+            showTitle={false}
+            className={cn(
+              "transition-colors hover:border-white/20 hover:bg-white/[0.09]",
+              open && "border-white/20 bg-white/[0.09]",
+            )}
+          />
+        )}
       </button>
 
       {open &&
@@ -285,59 +328,75 @@ export function SignalPathPopover({
             onMouseEnter={handleEnter}
             onMouseLeave={handleLeave}
             style={{ left: anchor.left, bottom: anchor.bottom }}
-            className="fixed z-50 w-76 sm:w-80 rounded-2xl border border-white/[0.11] bg-[#111115]/95 p-4 text-left shadow-[0_24px_60px_rgba(0,0,0,0.7)] backdrop-blur-2xl"
+            className="fixed z-50 w-[min(344px,calc(100vw-24px))] rounded-2xl border border-white/[0.11] bg-[#111115]/96 p-4 text-left shadow-[0_24px_60px_rgba(0,0,0,0.75)] backdrop-blur-2xl"
           >
-          {/* Header */}
-          <div className="flex items-center justify-between gap-2 pb-3 border-b border-white/[0.07]">
-            <span className="text-xs font-semibold tracking-tight text-white">Signal Path</span>
-            <span className={cn("inline-flex items-center gap-1.5 text-[11px] font-medium", pathStatus.text)}>
-              <span className={cn("h-1.5 w-1.5 rounded-full", pathStatus.dot)} />
-              {pathStatus.label}
-            </span>
-          </div>
+            {/* Header */}
+            <div className="flex items-center justify-between gap-3 pb-3.5 border-b border-white/[0.07]">
+              <span className="text-xs font-semibold tracking-tight text-white">Signal Path</span>
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10.5px] font-medium whitespace-nowrap",
+                  pathStatus.pill,
+                )}
+              >
+                <span className={cn("h-1.5 w-1.5 rounded-full", pathStatus.dot)} />
+                {pathStatus.label}
+              </span>
+            </div>
 
-          {/* Vertical pipeline stages */}
-          <ol className="mt-3.5 space-y-3">
-            {stages.map((stage, i) => {
-              const Icon = stage.icon;
-              const isLast = i === stages.length - 1;
-              const iconColor =
-                stage.accent === "emerald"
-                  ? "text-emerald-300/90 border-emerald-400/25 bg-emerald-400/10"
-                  : stage.accent === "sky"
-                    ? "text-sky-300/90 border-sky-400/25 bg-sky-400/10"
-                    : stage.accent === "amber"
-                      ? "text-amber-300/90 border-amber-400/25 bg-amber-400/10"
-                      : "text-foreground/75 border-white/12 bg-white/[0.05]";
-
-              return (
-                <li key={stage.title} className="relative flex items-start gap-3">
-                  {/* Connecting spine */}
-                  {!isLast && (
-                    <span
-                      aria-hidden="true"
-                      className="absolute left-[13px] top-7 -bottom-3 w-px bg-white/[0.1]"
-                    />
+            {/* Vertical pipeline stages */}
+            <ol className="relative mt-4 space-y-3.5">
+              {/* Continuous colored signal spine */}
+              {stages.length > 1 && (
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "pointer-events-none absolute left-[15px] top-4 bottom-4 w-px bg-gradient-to-b",
+                    pathStatus.spine,
                   )}
-                  <span
-                    className={cn(
-                      "relative z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border",
-                      iconColor,
-                    )}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                  </span>
-                  <div className="min-w-0 pt-0.5">
-                    <div className="text-xs font-medium text-foreground leading-tight">{stage.title}</div>
-                    <div className="mt-0.5 font-mono text-[11px] text-muted-foreground leading-snug break-words">
-                      {stage.detail}
+                />
+              )}
+              {stages.map((stage) => {
+                const Icon = stage.icon;
+                const iconColor =
+                  stage.accent === "emerald"
+                    ? "text-emerald-300 border-emerald-400/30 bg-[#111a17]"
+                    : stage.accent === "sky"
+                      ? "text-sky-300 border-sky-400/30 bg-[#101820]"
+                      : stage.accent === "amber"
+                        ? "text-amber-300 border-amber-400/30 bg-[#1c1710]"
+                        : "text-foreground/75 border-white/[0.13] bg-[#18181d]";
+
+                return (
+                  <li key={stage.title} className="relative flex items-start gap-3">
+                    <span
+                      className={cn(
+                        "relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border",
+                        iconColor,
+                      )}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                    </span>
+                    <div className="min-w-0 flex-1 pt-0.5">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <span className="truncate text-[12.5px] font-medium text-foreground leading-tight">
+                          {stage.title}
+                        </span>
+                        {stage.meta && (
+                          <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/80 whitespace-nowrap">
+                            {stage.meta}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-0.5 font-mono text-[11px] text-muted-foreground leading-snug truncate">
+                        {stage.detail}
+                      </div>
                     </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
-        </div>,
+                  </li>
+                );
+              })}
+            </ol>
+          </div>,
         document.body,
       )}
     </div>

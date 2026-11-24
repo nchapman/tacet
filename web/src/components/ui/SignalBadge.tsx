@@ -19,18 +19,9 @@ function normalizeProvider(provider?: string): { label: string; isLocal: boolean
   };
 }
 
-function compactFormat(label: string): string {
-  const trimmed = label.trim();
-  if (!trimmed) return "";
-  // "FLAC 24-bit / 96 kHz" -> "FLAC 24/96", "24-bit / 96 kHz" -> "24/96"
-  return trimmed
-    .replace(/(\d+)-bit\s*\/\s*([\d.]+)\s*kHz/i, "$1/$2")
-    .replace(/\s*kbps$/i, "k");
-}
-
 export function SignalBadge({ provider, format, size = "md", showTitle = true, className }: SignalBadgeProps) {
   const { label: srcLabel, isLocal, isQobuz } = normalizeProvider(provider);
-  const displayFormat = format ? (size === "sm" ? compactFormat(format) : format) : "";
+  const displayFormat = format?.trim() || "";
 
   if (!srcLabel && !displayFormat) return null;
 
