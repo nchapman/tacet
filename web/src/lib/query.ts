@@ -1,15 +1,88 @@
-import { QueryClient } from "@tanstack/react-query";
+import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
+import {
+  persistQueryClientSave,
+  removeOldestQuery,
+  type AsyncStorage,
+  type PersistQueryClientOptions,
+} from "@tanstack/react-query-persist-client";
+import {
+  defaultShouldDehydrateQuery,
+  QueryClient,
+  type Query,
+} from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { TacetAPIError } from "@/api/client";
 
+export const QUERY_PERSIST_STORAGE_KEY = "tacet.queryCache";
+export const QUERY_PERSIST_BUSTER = "v1";
+export const QUERY_PERSIST_MAX_AGE_MS = 24 * 60 * 60_000;
+
 export const DEFAULT_STALE_TIME_MS = 30_000;
-export const DEFAULT_GC_TIME_MS = 10 * 60_000;
+// Keep gcTime >= QUERY_PERSIST_MAX_AGE_MS per TanStack Query persist docs so
+// hydrated cache entries are not discarded by garbage collection on restore.
+export const DEFAULT_GC_TIME_MS = QUERY_PERSIST_MAX_AGE_MS;
 export const QOBUZ_ARTIST_STALE_TIME_MS = 60 * 60_000;
-export const QOBUZ_ARTIST_GC_TIME_MS = 4 * 60 * 60_000;
+export const QOBUZ_ARTIST_GC_TIME_MS = QUERY_PERSIST_MAX_AGE_MS;
 export const QOBUZ_ALBUM_STALE_TIME_MS = 60 * 60_000;
-export const QOBUZ_ALBUM_GC_TIME_MS = 4 * 60 * 60_000;
+export const QOBUZ_ALBUM_GC_TIME_MS = QUERY_PERSIST_MAX_AGE_MS;
 export const QOBUZ_SEARCH_STALE_TIME_MS = 15 * 60_000;
-export const QOBUZ_SEARCH_GC_TIME_MS = 60 * 60_000;
+export const QOBUZ_SEARCH_GC_TIME_MS = QUERY_PERSIST_MAX_AGE_MS;
+
+function getBrowserLocalStorage(): AsyncStorage<string> | undefined {
+  try {
+    return typeof window !== "undefined" ? window.localStorage : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isFirstPageList(params: unknown): boolean {
+  if (params == null || typeof params !== "object") return true;
+  const p = params as Record<string, unknown>;
+  if (typeof p.artist === "string" && p.artist.length > 0) return false;
+  return p.offset === undefined || p.offset === 0;
+}
+
+/**
+ * Persists durable feeds and first-page library lists across reloads so Home,
+ * Albums, Artists, Songs, Qobuz, Heavy Rotation, and Discover shelves render
+ * stably via SWR without unbounded localStorage growth from deep pagination or
+ * per-keystroke search queries.
+ */
+export function shouldPersistQuery(query: Query): boolean {
+  if (!defaultShouldDehydrateQuery(query)) return false;
+  const [scope, kind, params] = query.queryKey;
+  if (scope === "discover") {
+    return kind === "feed" || kind === "shelf";
+  }
+  if (scope === "library") {
+    if (kind === "heavy-rotation" || kind === "genres") return true;
+    if (kind === "albums" || kind === "artists" || kind === "tracks") {
+      return isFirstPageList(params);
+    }
+  }
+  return false;
+}
+
+export function createQueryPersister(storage: AsyncStorage<string> | null | undefined = getBrowserLocalStorage()) {
+  return createAsyncStoragePersister({
+    storage,
+    key: QUERY_PERSIST_STORAGE_KEY,
+    throttleTime: 1000,
+    retry: removeOldestQuery,
+  });
+}
+
+export const queryPersister = createQueryPersister();
+
+export const queryPersistOptions: Omit<PersistQueryClientOptions, "queryClient"> = {
+  persister: queryPersister,
+  maxAge: QUERY_PERSIST_MAX_AGE_MS,
+  buster: QUERY_PERSIST_BUSTER,
+  dehydrateOptions: {
+    shouldDehydrateQuery: shouldPersistQuery,
+  },
+};
 
 export function shouldRetryQuery(failureCount: number, error: unknown): boolean {
   if (error instanceof TacetAPIError) {
@@ -87,6 +160,23 @@ export function invalidateQobuzLogout(client: QueryClient = queryClient): void {
   client.removeQueries({ queryKey: queryKeys.discover.all });
   void client.invalidateQueries({ queryKey: queryKeys.library.all });
   void client.invalidateQueries({ queryKey: queryKeys.albums });
+  if (client === queryClient) {
+    void (async () => {
+      try {
+        await persistQueryClientSave({
+          ...queryPersistOptions,
+          queryClient: client,
+        });
+      } catch (err) {
+        console.warn("Failed to update persisted query cache on Qobuz logout:", err);
+        try {
+          await queryPersister.removeClient();
+        } catch {
+          // Storage unavailable or blocked; nothing more to clear.
+        }
+      }
+    })();
+  }
 }
 
 export function queryErrorMessage(error: unknown): string {
