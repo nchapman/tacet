@@ -44,6 +44,17 @@ struct CastConnState {
     transport_id: String,
     media_session_id: i32,
     repeat_mode: RepeatMode,
+    queue_items: Vec<MediaItem>,
+    cur_idx: i32,
+    queue_dirty: bool,
+}
+
+impl CastConnState {
+    fn reset_conn(&mut self) {
+        self.client = None;
+        self.transport_id.clear();
+        self.media_session_id = 0;
+    }
 }
 
 pub struct CastRenderer {
@@ -63,6 +74,9 @@ impl CastRenderer {
                 transport_id: String::new(),
                 media_session_id: 0,
                 repeat_mode: RepeatMode::RepeatOff,
+                queue_items: Vec::new(),
+                cur_idx: -1,
+                queue_dirty: false,
             }),
         })
     }
@@ -102,7 +116,108 @@ impl CastRenderer {
         if let Some(c) = st.client.take() {
             let _ = c.close().await;
         }
+        st.transport_id.clear();
+        st.media_session_id = 0;
     }
+
+    async fn replace_queue_locked(
+        &self,
+        st: &mut CastConnState,
+        items: &[MediaItem],
+        start_index: usize,
+    ) -> Result<()> {
+        if items.is_empty() {
+            return Err(UpnpError::Other("cast replace_queue: empty items".into()));
+        }
+        let qitems: Vec<QueueItem> = items.iter().map(to_cast_queue_item).collect();
+        let start = if start_index < qitems.len() {
+            start_index as u32
+        } else {
+            0
+        };
+        let repeat = st.repeat_mode;
+
+        let mut last_err = None;
+        for attempt in 0..2 {
+            if let Err(e) = self.ensure_media_app(st).await {
+                st.reset_conn();
+                last_err = Some(e);
+                continue;
+            }
+            let client = st.client.as_ref().unwrap();
+            match client.queue_load(&qitems, start, repeat).await {
+                Ok(ms) => {
+                    st.media_session_id = ms.media_session_id;
+                    st.queue_items = items.to_vec();
+                    st.cur_idx = start as i32;
+                    st.queue_dirty = false;
+                    return Ok(());
+                }
+                Err(e) => {
+                    st.reset_conn();
+                    last_err = Some(UpnpError::Other(format!("cast queue_load: {e}")));
+                    if attempt == 1 {
+                        break;
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| UpnpError::Other("cast queue_load failed".into())))
+    }
+
+    async fn queue_jump(&self, delta: i32) -> Result<()> {
+        let mut st = self.state.lock().await;
+        if st.queue_dirty {
+            let target = st.cur_idx + delta;
+            if target >= 0 && (target as usize) < st.queue_items.len() {
+                let items = st.queue_items.clone();
+                return self
+                    .replace_queue_locked(&mut st, &items, target as usize)
+                    .await;
+            }
+        }
+        let dest = st.transport_id.clone();
+        let msid = st.media_session_id;
+        if dest.is_empty() || msid == 0 {
+            return Err(UpnpError::Other("cast no active media session".into()));
+        }
+        let client = self.ensure_connected(&mut st).await?;
+        client
+            .send_raw(
+                CAST_MEDIA_NAMESPACE,
+                &dest,
+                serde_json::json!({
+                    "type": "QUEUE_UPDATE",
+                    "mediaSessionId": msid,
+                    "jump": delta,
+                }),
+            )
+            .await
+            .map_err(|e| UpnpError::Other(format!("cast queue_jump({delta}): {e}")))?;
+        let next_idx = st.cur_idx + delta;
+        if next_idx >= 0 && (next_idx as usize) < st.queue_items.len() {
+            st.cur_idx = next_idx;
+        }
+        Ok(())
+    }
+}
+
+/// Matches a Cast `contentId` against the tracked queue, preferring `cur_idx`,
+/// adjacent items (`cur_idx ± 1`), wrap-around `0`, and finally a full scan.
+fn match_queue_index(items: &[MediaItem], cur_idx: i32, content_id: &str) -> Option<usize> {
+    if content_id.is_empty() || items.is_empty() {
+        return None;
+    }
+    let candidates = [cur_idx, cur_idx + 1, cur_idx - 1, 0];
+    for c in candidates {
+        if c >= 0
+            && let Some(it) = items.get(c as usize)
+            && it.url == content_id
+        {
+            return Some(c as usize);
+        }
+    }
+    items.iter().position(|it| it.url == content_id)
 }
 
 fn to_cast_media_info(item: &MediaItem) -> MediaInfo {
@@ -189,15 +304,33 @@ impl Controller for CastRenderer {
 
     async fn set_uri(&self, item: &MediaItem) -> Result<()> {
         let mut st = self.state.lock().await;
-        self.ensure_media_app(&mut st).await?;
-        let client = st.client.as_ref().unwrap();
         let mi = to_cast_media_info(item);
-        let ms = client
-            .load_media(&mi, true, 0.0, None)
-            .await
-            .map_err(|e| UpnpError::Other(format!("cast load_media: {e}")))?;
-        st.media_session_id = ms.media_session_id;
-        Ok(())
+        let mut last_err = None;
+        for attempt in 0..2 {
+            if let Err(e) = self.ensure_media_app(&mut st).await {
+                st.reset_conn();
+                last_err = Some(e);
+                continue;
+            }
+            let client = st.client.as_ref().unwrap();
+            match client.load_media(&mi, true, 0.0, None).await {
+                Ok(ms) => {
+                    st.media_session_id = ms.media_session_id;
+                    st.queue_items = vec![item.clone()];
+                    st.cur_idx = 0;
+                    st.queue_dirty = false;
+                    return Ok(());
+                }
+                Err(e) => {
+                    st.reset_conn();
+                    last_err = Some(UpnpError::Other(format!("cast load_media: {e}")));
+                    if attempt == 1 {
+                        break;
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| UpnpError::Other("cast load_media failed".into())))
     }
 
     async fn set_next_uri(&self, _item: &MediaItem) -> Result<()> {
@@ -301,6 +434,11 @@ impl Controller for CastRenderer {
                 ts.duration = Duration::from_secs_f64(d);
             }
             if let Some(m) = ms.media {
+                if let Some(idx) = match_queue_index(&st.queue_items, st.cur_idx, &m.content_id) {
+                    st.cur_idx = idx as i32;
+                    ts.queue_index = idx as i32;
+                    ts.has_queue_index = true;
+                }
                 ts.track_uri = m.content_id;
             }
         }
@@ -337,25 +475,8 @@ impl Controller for CastRenderer {
 #[async_trait]
 impl QueueController for CastRenderer {
     async fn replace_queue(&self, items: &[MediaItem], start_index: usize) -> Result<()> {
-        if items.is_empty() {
-            return Err(UpnpError::Other("cast replace_queue: empty items".into()));
-        }
         let mut st = self.state.lock().await;
-        self.ensure_media_app(&mut st).await?;
-        let repeat = st.repeat_mode;
-        let client = st.client.as_ref().unwrap();
-        let qitems: Vec<QueueItem> = items.iter().map(to_cast_queue_item).collect();
-        let start = if start_index < qitems.len() {
-            start_index as u32
-        } else {
-            0
-        };
-        let ms = client
-            .queue_load(&qitems, start, repeat)
-            .await
-            .map_err(|e| UpnpError::Other(format!("cast queue_load: {e}")))?;
-        st.media_session_id = ms.media_session_id;
-        Ok(())
+        self.replace_queue_locked(&mut st, items, start_index).await
     }
 
     async fn append_queue(&self, items: &[MediaItem]) -> Result<()> {
@@ -363,73 +484,110 @@ impl QueueController for CastRenderer {
             return Ok(());
         }
         let mut st = self.state.lock().await;
-        let client = self.ensure_connected(&mut st).await?;
+        st.queue_items.extend_from_slice(items);
+        if st.queue_dirty || st.media_session_id == 0 || st.client.is_none() {
+            st.queue_dirty = true;
+            return Ok(());
+        }
         let qitems: Vec<QueueItem> = items.iter().map(to_cast_queue_item).collect();
-        let ms = client
-            .queue_insert(&qitems, None)
-            .await
-            .map_err(|e| UpnpError::Other(format!("cast queue_insert: {e}")))?;
-        st.media_session_id = ms.media_session_id;
+        let client = st.client.as_ref().unwrap();
+        match client.queue_insert(&qitems, None).await {
+            Ok(ms) => {
+                st.media_session_id = ms.media_session_id;
+                Ok(())
+            }
+            Err(_) => {
+                st.queue_dirty = true;
+                Ok(())
+            }
+        }
+    }
+
+    async fn remove_queue_range(&self, start: usize, end: usize) -> Result<()> {
+        let mut st = self.state.lock().await;
+        if end < start || start >= st.queue_items.len() {
+            return Ok(());
+        }
+        let end = end.min(st.queue_items.len() - 1);
+        st.queue_items.drain(start..=end);
+        let removed = (end - start + 1) as i32;
+        if st.cur_idx > end as i32 {
+            st.cur_idx -= removed;
+        } else if st.cur_idx >= start as i32 {
+            if st.queue_items.is_empty() {
+                st.cur_idx = -1;
+            } else {
+                st.cur_idx = (start as i32).min(st.queue_items.len() as i32 - 1);
+            }
+        }
+        st.queue_dirty = true;
         Ok(())
     }
 
-    async fn remove_queue_range(&self, _start: usize, _end: usize) -> Result<()> {
-        // Queue manager falls back to replace_queue on unsupported partial edits.
-        Err(UpnpError::ActionUnsupported)
+    async fn move_queue_item(&self, from: usize, to: usize) -> Result<()> {
+        let mut st = self.state.lock().await;
+        if from >= st.queue_items.len() || to >= st.queue_items.len() || from == to {
+            return Ok(());
+        }
+        let moved = st.queue_items.remove(from);
+        st.queue_items.insert(to, moved);
+        let (f, t) = (from as i32, to as i32);
+        if st.cur_idx == f {
+            st.cur_idx = t;
+        } else if f < st.cur_idx && t >= st.cur_idx {
+            st.cur_idx -= 1;
+        } else if f > st.cur_idx && t <= st.cur_idx {
+            st.cur_idx += 1;
+        }
+        st.queue_dirty = true;
+        Ok(())
     }
 
-    async fn move_queue_item(&self, _from: usize, _to: usize) -> Result<()> {
-        Err(UpnpError::ActionUnsupported)
-    }
-
-    async fn play_index(&self, _index: usize) -> Result<()> {
-        Err(UpnpError::ActionUnsupported)
+    async fn play_index(&self, index: usize) -> Result<()> {
+        let mut st = self.state.lock().await;
+        if index >= st.queue_items.len() {
+            return Err(UpnpError::Other(format!(
+                "cast play_index {index} out of range [0,{})",
+                st.queue_items.len()
+            )));
+        }
+        if !st.queue_dirty
+            && !st.transport_id.is_empty()
+            && st.media_session_id != 0
+            && st.cur_idx >= 0
+            && let Some(client) = st.client.as_ref()
+        {
+            let jump = index as i32 - st.cur_idx;
+            if jump == 0 {
+                return Ok(());
+            }
+            if client
+                .send_raw(
+                    CAST_MEDIA_NAMESPACE,
+                    &st.transport_id,
+                    serde_json::json!({
+                        "type": "QUEUE_UPDATE",
+                        "mediaSessionId": st.media_session_id,
+                        "jump": jump,
+                    }),
+                )
+                .await
+                .is_ok()
+            {
+                st.cur_idx = index as i32;
+                return Ok(());
+            }
+        }
+        let items = st.queue_items.clone();
+        self.replace_queue_locked(&mut st, &items, index).await
     }
 
     async fn next(&self) -> Result<()> {
-        let mut st = self.state.lock().await;
-        let dest = st.transport_id.clone();
-        let msid = st.media_session_id;
-        if dest.is_empty() || msid == 0 {
-            return Err(UpnpError::Other("cast no active media session".into()));
-        }
-        let client = self.ensure_connected(&mut st).await?;
-        client
-            .send_raw(
-                CAST_MEDIA_NAMESPACE,
-                &dest,
-                serde_json::json!({
-                    "type": "QUEUE_UPDATE",
-                    "mediaSessionId": msid,
-                    "jump": 1,
-                }),
-            )
-            .await
-            .map_err(|e| UpnpError::Other(format!("cast next: {e}")))?;
-        Ok(())
+        self.queue_jump(1).await
     }
 
     async fn previous(&self) -> Result<()> {
-        let mut st = self.state.lock().await;
-        let dest = st.transport_id.clone();
-        let msid = st.media_session_id;
-        if dest.is_empty() || msid == 0 {
-            return Err(UpnpError::Other("cast no active media session".into()));
-        }
-        let client = self.ensure_connected(&mut st).await?;
-        client
-            .send_raw(
-                CAST_MEDIA_NAMESPACE,
-                &dest,
-                serde_json::json!({
-                    "type": "QUEUE_UPDATE",
-                    "mediaSessionId": msid,
-                    "jump": -1,
-                }),
-            )
-            .await
-            .map_err(|e| UpnpError::Other(format!("cast previous: {e}")))?;
-        Ok(())
+        self.queue_jump(-1).await
     }
 
     async fn set_loop_mode(&self, repeat: &str, shuffle: bool) -> Result<()> {
@@ -596,5 +754,53 @@ mod tests {
             RepeatMode::RepeatAllAndShuffle
         );
         assert_eq!(map_repeat_mode("off", false), RepeatMode::RepeatOff);
+    }
+
+    #[tokio::test]
+    async fn cast_queue_tracking_remove_move_and_match_index() {
+        let r = CastRenderer::new(CastDeviceDesc {
+            id: "cast:test".into(),
+            name: "Living Room TV".into(),
+            model: "Chromecast".into(),
+            host: "192.168.1.99".into(),
+            port: 8009,
+        });
+        let mk = |u: &str| MediaItem {
+            url: u.into(),
+            ..Default::default()
+        };
+        {
+            let mut st = r.state.lock().await;
+            st.queue_items = vec![mk("u0"), mk("u1"), mk("u2"), mk("u3")];
+            st.cur_idx = 1;
+            st.queue_dirty = false;
+        }
+
+        // match_queue_index prefers cur_idx / adjacent / wrap / scan
+        {
+            let st = r.state.lock().await;
+            assert_eq!(match_queue_index(&st.queue_items, 1, "u1"), Some(1));
+            assert_eq!(match_queue_index(&st.queue_items, 1, "u2"), Some(2));
+            assert_eq!(match_queue_index(&st.queue_items, 3, "u0"), Some(0));
+            assert_eq!(match_queue_index(&st.queue_items, 0, "u3"), Some(3));
+        }
+
+        // Removing an upcoming track (index 2) keeps cur_idx=1 and marks dirty
+        r.remove_queue_range(2, 2).await.unwrap();
+        {
+            let st = r.state.lock().await;
+            assert_eq!(st.queue_items.len(), 3);
+            assert_eq!(st.cur_idx, 1);
+            assert!(st.queue_dirty);
+        }
+
+        // Moving index 2 before cur_idx=1 shifts cur_idx to 2
+        r.move_queue_item(2, 0).await.unwrap();
+        {
+            let st = r.state.lock().await;
+            assert_eq!(st.queue_items[0].url, "u3");
+            assert_eq!(st.cur_idx, 2);
+            assert_eq!(st.queue_items[st.cur_idx as usize].url, "u1");
+        }
     }
 }
