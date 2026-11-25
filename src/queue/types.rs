@@ -15,6 +15,10 @@ pub enum QueueError {
     InvalidArgument(String),
     #[error("empty queue")]
     EmptyQueue,
+    #[error("end of queue")]
+    EndOfQueue,
+    #[error("capability unsupported: {0}")]
+    CapabilityUnsupported(String),
     #[error("renderer error: {0}")]
     Renderer(String),
 }

@@ -89,6 +89,15 @@ impl From<QueueError> for ApiError {
             QueueError::EmptyQueue => {
                 ApiError::new(StatusCode::CONFLICT, "QUEUE_EMPTY", "queue is empty", false)
             }
+            QueueError::EndOfQueue => {
+                ApiError::new(StatusCode::CONFLICT, "END_OF_QUEUE", "end of queue", false)
+            }
+            QueueError::CapabilityUnsupported(m) => ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "CAPABILITY_UNSUPPORTED",
+                m,
+                false,
+            ),
             QueueError::Renderer(m) => {
                 ApiError::new(StatusCode::BAD_GATEWAY, "RENDERER_ERROR", m, true)
             }

@@ -461,6 +461,14 @@ struct PatchSettingsReq {
 async fn patch_settings(State(st): State<Arc<AppState>>, body: Bytes) -> ApiResult<Json<Settings>> {
     let req: PatchSettingsReq = parse_strict_json(&body)?;
 
+    if let Some(interval) = req.library_scan_interval_min
+        && !(0..=10_080).contains(&interval)
+    {
+        return Err(ApiError::bad_request(
+            "libraryScanIntervalMin must be between 0 and 10080",
+        ));
+    }
+
     if let Some(sm) = req.stream_mode {
         let mode = StreamMode::parse(&sm)
             .ok_or_else(|| ApiError::bad_request(format!("invalid streamMode {sm:?}")))?;
@@ -477,7 +485,8 @@ async fn patch_settings(State(st): State<Arc<AppState>>, body: Bytes) -> ApiResu
             )
         })?;
         qb.set_max_quality(&q)?;
-        let _ = st.catalog.set_pref(PREF_QOBUZ_MAX_QUALITY, &q);
+        let normalized = qb.status().max_quality;
+        let _ = st.catalog.set_pref(PREF_QOBUZ_MAX_QUALITY, &normalized);
         st.manager.broadcast("qobuz.status", &qb.status());
     }
     if req.library_watch_enabled.is_some() || req.library_scan_interval_min.is_some() {
@@ -487,15 +496,18 @@ async fn patch_settings(State(st): State<Arc<AppState>>, body: Bytes) -> ApiResu
             .unwrap_or(cur.library_watch_enabled);
         let interval_min = req
             .library_scan_interval_min
-            .unwrap_or(cur.library_scan_interval_min)
-            .clamp(0, 10_080);
-        let _ = st.catalog.set_pref(
-            PREF_LIBRARY_WATCH_ENABLED,
-            if watch { "true" } else { "false" },
-        );
-        let _ = st
-            .catalog
-            .set_pref(PREF_LIBRARY_SCAN_INTERVAL_MIN, &interval_min.to_string());
+            .unwrap_or(cur.library_scan_interval_min);
+        if req.library_watch_enabled.is_some() {
+            let _ = st.catalog.set_pref(
+                PREF_LIBRARY_WATCH_ENABLED,
+                if watch { "true" } else { "false" },
+            );
+        }
+        if req.library_scan_interval_min.is_some() {
+            let _ = st
+                .catalog
+                .set_pref(PREF_LIBRARY_SCAN_INTERVAL_MIN, &interval_min.to_string());
+        }
         if let Some(scanner) = st
             .auto_scanner
             .read()
@@ -638,7 +650,14 @@ async fn cors_and_csrf_middleware(
                     "ETag, Allow, Content-Length, Content-Range, Accept-Ranges",
                 ),
             );
+            h.insert(
+                header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+                HeaderValue::from_static("true"),
+            );
             h.insert(header::VARY, HeaderValue::from_static("Origin"));
+        } else {
+            resp.headers_mut()
+                .insert(header::VARY, HeaderValue::from_static("Origin"));
         }
         return resp;
     }
@@ -660,24 +679,39 @@ async fn cors_and_csrf_middleware(
     }
 
     let mut resp = next.run(req).await;
+    resp.headers_mut()
+        .insert(header::VARY, HeaderValue::from_static("Origin"));
     if allowed && let Ok(hv) = HeaderValue::from_str(&origin) {
         let h = resp.headers_mut();
         h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, hv);
         h.insert(
+            header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            HeaderValue::from_static("true"),
+        );
+        h.insert(
             header::ACCESS_CONTROL_EXPOSE_HEADERS,
             HeaderValue::from_static("ETag, Allow, Content-Length, Content-Range, Accept-Ranges"),
         );
-        h.insert(header::VARY, HeaderValue::from_static("Origin"));
     }
     resp
 }
 
 // --- Embedded React SPA fallback ---
 
-async fn serve_spa(uri: axum::http::Uri) -> Response {
+async fn serve_spa(method: Method, uri: axum::http::Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
-    if path.starts_with("api/") || path.starts_with("media/") {
+    if path == "api" || path.starts_with("api/") {
+        return ApiError::not_found("NOT_FOUND", "endpoint not found").into_response();
+    }
+    if path == "media" || path.starts_with("media/") {
         return StatusCode::NOT_FOUND.into_response();
+    }
+    if method != Method::GET && method != Method::HEAD {
+        return Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .header(header::ALLOW, "GET, HEAD")
+            .body(Body::empty())
+            .unwrap_or_else(|_| StatusCode::METHOD_NOT_ALLOWED.into_response());
     }
     if !path.is_empty()
         && let Some(file) = WebAssets::get(path)
@@ -688,20 +722,37 @@ async fn serve_spa(uri: axum::http::Uri) -> Response {
         } else {
             "no-cache"
         };
+        let len = file.data.len();
+        let body = if method == Method::HEAD {
+            Body::empty()
+        } else {
+            Body::from(file.data.into_owned())
+        };
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, mime.as_ref())
+            .header(header::CONTENT_LENGTH, len)
             .header(header::CACHE_CONTROL, cache)
-            .body(Body::from(file.data.into_owned()))
+            .body(body)
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+    if path.starts_with("assets/") {
+        return StatusCode::NOT_FOUND.into_response();
     }
 
     if let Some(index) = WebAssets::get("index.html") {
+        let len = index.data.len();
+        let body = if method == Method::HEAD {
+            Body::empty()
+        } else {
+            Body::from(index.data.into_owned())
+        };
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+            .header(header::CONTENT_LENGTH, len)
             .header(header::CACHE_CONTROL, "no-cache")
-            .body(Body::from(index.data.into_owned()))
+            .body(body)
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     }
     (StatusCode::NOT_FOUND, "web UI not built").into_response()

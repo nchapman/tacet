@@ -536,10 +536,7 @@ pub async fn set_zone_repeat(
 
 // --- Live SSE Events (/api/v1/events) ---
 
-pub async fn events_sse(
-    State(st): State<Arc<AppState>>,
-    RawQuery(raw_q): RawQuery,
-) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>> {
+pub async fn events_sse(State(st): State<Arc<AppState>>, RawQuery(raw_q): RawQuery) -> Response {
     let zone_filters: Vec<String> = raw_q
         .as_deref()
         .map(|qs| {
@@ -578,14 +575,18 @@ pub async fn events_sse(
         "library": st.catalog.status(),
     });
     let init_event = SseEvent::default()
+        .retry(Duration::from_secs(3))
         .event("snapshot")
         .data(init_payload.to_string());
 
     let shutdown = st.shutdown.clone();
-    let stream = futures_util::stream::once(async move { Ok(init_event) }).chain(
+    let stream = futures_util::stream::once(async move { Ok::<_, Infallible>(init_event) }).chain(
         futures_util::stream::unfold(
-            (rx, zone_filters, shutdown),
-            |(mut rx, filters, shutdown)| async move {
+            (rx, zone_filters, shutdown, false),
+            |(mut rx, filters, shutdown, done)| async move {
+                if done {
+                    return None;
+                }
                 loop {
                     tokio::select! {
                         biased;
@@ -598,29 +599,19 @@ pub async fn events_sse(
                                 {
                                     continue;
                                 }
-                                let data_str = if !filters.is_empty()
-                                    && ev.event_type == "zones.updated"
-                                    && let Some(arr) = ev.data.get("zones").and_then(|v| v.as_array())
-                                {
-                                    let kept: Vec<&serde_json::Value> = arr
-                                        .iter()
-                                        .filter(|z| {
-                                            z.get("zoneId")
-                                                .and_then(|id| id.as_str())
-                                                .is_some_and(|id| filters.iter().any(|f| f == id))
-                                        })
-                                        .collect();
-                                    serde_json::json!({ "zones": kept }).to_string()
-                                } else {
-                                    ev.data.to_string()
-                                };
+                                let data_str = filter_sse_event_data(&ev, &filters);
                                 let sse_ev = SseEvent::default()
                                     .id(ev.id.to_string())
                                     .event(ev.event_type)
                                     .data(data_str);
-                                return Some((Ok(sse_ev), (rx, filters, shutdown)));
+                                return Some((Ok(sse_ev), (rx, filters, shutdown, false)));
                             }
-                            Err(RecvError::Lagged(_)) => continue,
+                            Err(RecvError::Lagged(_)) => {
+                                let resync = SseEvent::default()
+                                    .event("resync")
+                                    .data(serde_json::json!({ "reason": "subscriber_lagged" }).to_string());
+                                return Some((Ok(resync), (rx, filters, shutdown, true)));
+                            }
                             Err(RecvError::Closed) => return None,
                         }
                     }
@@ -629,11 +620,37 @@ pub async fn events_sse(
         ),
     );
 
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(20))
-            .text("ping"),
-    )
+    let mut resp = Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(20))
+                .text("ping"),
+        )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::HeaderName::from_static("x-accel-buffering"),
+        axum::http::HeaderValue::from_static("no"),
+    );
+    resp
+}
+
+fn filter_sse_event_data(ev: &crate::queue::Event, filters: &[String]) -> String {
+    if !filters.is_empty()
+        && ev.event_type == "zones.updated"
+        && let Some(arr) = ev.data.get("zones").and_then(|v| v.as_array())
+    {
+        let kept: Vec<&serde_json::Value> = arr
+            .iter()
+            .filter(|z| {
+                z.get("zoneId")
+                    .and_then(|id| id.as_str())
+                    .is_some_and(|id| filters.iter().any(|f| f == id))
+            })
+            .collect();
+        serde_json::json!({ "zones": kept }).to_string()
+    } else {
+        ev.data.to_string()
+    }
 }
 
 use futures_util::StreamExt;
@@ -746,7 +763,7 @@ pub async fn player_commands_sse(
     Path(zone_id): Path<String>,
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
-) -> ApiResult<Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>>> {
+) -> ApiResult<Response> {
     if headers
         .get("sec-fetch-site")
         .and_then(|v| v.to_str().ok())
@@ -792,6 +809,7 @@ pub async fn player_commands_sse(
         connected_payload["zone"] = serde_json::to_value(z).unwrap_or_default();
     }
     let connected = SseEvent::default()
+        .retry(Duration::from_secs(3))
         .event("connected")
         .data(connected_payload.to_string());
 
@@ -814,7 +832,7 @@ pub async fn player_commands_sse(
                 _ = &mut replaced => {
                     let ev = SseEvent::default()
                         .event("replaced")
-                        .data(serde_json::json!({ "reason": "replaced" }).to_string());
+                        .data(serde_json::json!({ "reason": "player session taken over by another connection" }).to_string());
                     Some((Ok(ev), (cmds, replaced, guard, shutdown, true)))
                 }
                 cmd = cmds.recv() => {
@@ -827,12 +845,20 @@ pub async fn player_commands_sse(
         },
     );
 
-    let full = futures_util::stream::once(async move { Ok(connected) }).chain(cmd_stream);
-    Ok(Sse::new(full).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("ping"),
-    ))
+    let full =
+        futures_util::stream::once(async move { Ok::<_, Infallible>(connected) }).chain(cmd_stream);
+    let mut resp = Sse::new(full)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(20))
+                .text("keepalive"),
+        )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::HeaderName::from_static("x-accel-buffering"),
+        axum::http::HeaderValue::from_static("no"),
+    );
+    Ok(resp)
 }
 
 pub async fn player_state(
