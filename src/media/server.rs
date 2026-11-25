@@ -643,6 +643,11 @@ async fn serve_transcode(
             Ok(body) => {
                 dlna_headers_response(spec.mime, DLNA_FEATURES_TRANSCODED, spec.exact_length, body)
             }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("transcode busy: {e}"),
+            )
+                .into_response(),
             Err(e) => (StatusCode::BAD_GATEWAY, format!("transcode failed: {e}")).into_response(),
         };
     }

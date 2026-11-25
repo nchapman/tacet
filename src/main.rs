@@ -458,7 +458,13 @@ async fn serve_with_drain(
         res = &mut server => Some(res),
         () = shutdown_signal() => {
             shutdown_tok.cancel();
-            tokio::time::timeout(Duration::from_secs(5), &mut server).await.ok()
+            match tokio::time::timeout(Duration::from_secs(5), &mut server).await {
+                Ok(res) => Some(res),
+                Err(_) => {
+                    server.abort();
+                    None
+                }
+            }
         }
     };
     log_server_exit(wait_res);

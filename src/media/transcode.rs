@@ -351,10 +351,18 @@ pub async fn spawn_ffmpeg_stream(
     spec: &TranscodeSpec,
     range: StreamRange,
 ) -> std::io::Result<axum::body::Body> {
-    let permit = transcode_semaphore()
-        .acquire_owned()
-        .await
-        .map_err(|_| std::io::Error::other("transcode semaphore closed"))?;
+    let permit = tokio::time::timeout(
+        Duration::from_secs(15),
+        transcode_semaphore().acquire_owned(),
+    )
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "transcode capacity saturated",
+        )
+    })?
+    .map_err(|_| std::io::Error::other("transcode semaphore closed"))?;
 
     let mut cmd = Command::new(ffmpeg_path);
     cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin"]);

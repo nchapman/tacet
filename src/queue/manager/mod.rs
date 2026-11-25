@@ -301,6 +301,10 @@ impl Manager {
                 let changed = old_info.location != info.location || old_info.host != info.host;
                 if changed {
                     zi.ctrl = Arc::clone(&ctrl);
+                    zi.next_preloaded = false;
+                    zi.next_uri.clear();
+                    zi.next_index = -1;
+                    zi.set_next_unsupported = false;
                 }
                 (false, changed)
             } else {

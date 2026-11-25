@@ -96,7 +96,7 @@ impl AppState {
             players,
             media,
             gena,
-            cors_origin: cors_origin.trim().to_string(),
+            cors_origin: cors_origin.trim().trim_end_matches('/').to_string(),
             public_url: RwLock::new(String::new()),
             shutdown: CancellationToken::new(),
             oauth_state: Mutex::new(HashMap::new()),

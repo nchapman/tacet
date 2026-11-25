@@ -304,7 +304,8 @@ impl Client {
             .iter()
             .find(|a| a.name.trim().eq_ignore_ascii_case(name));
         let Some(art) = picked else {
-            self.cache_artist_name(name, 0, true);
+            // Never overwrite a previously cached positive artist ID on a search miss.
+            self.cache_artist_name(name, 0, false);
             return Err(QobuzError::NotFound);
         };
         self.cache_artist_name(name, art.id, true);

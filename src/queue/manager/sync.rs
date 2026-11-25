@@ -140,6 +140,7 @@ impl Manager {
     }
 
     async fn advance_if_unchanged(&self, zone_id: &str, z: &Zone, expected_rev: u64) {
+        let _op = z.op_mu.lock().await;
         let next_idx = {
             let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             if zi.revision != expected_rev {
@@ -148,7 +149,7 @@ impl Manager {
             compute_next_index(&zi)
         };
         if let Some(ni) = next_idx
-            && let Err(e) = self.play_index(zone_id, ni as usize).await
+            && let Err(e) = self.play_index_locked(zone_id, z, ni as usize).await
         {
             self.emit_zone_error(zone_id, "ADVANCE_FAILED", e.to_string(), true);
         }

@@ -679,11 +679,10 @@ pub async fn qobuz_oauth_callback(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    // Require the HttpOnly cookie set by /oauth/start (works in web browsers,
+    // Require BOTH the HttpOnly cookie and matching query state (works in web browsers,
     // iOS ASWebAuthenticationSession, and Android Custom Tabs) to prevent login CSRF.
     let effective_state = match (cookie_state, query_state) {
         (Some(c), Some(q)) if c == q => c,
-        (Some(c), None) => c,
         _ => String::new(),
     };
     let valid = !effective_state.is_empty() && {

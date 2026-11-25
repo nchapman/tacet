@@ -74,6 +74,7 @@ impl LibraryStore {
         recompute_versions_tx(&tx)?;
         tx.commit()?;
         inner.generation += 1;
+        inner.catalog_generation += 1;
         Ok(group_id)
     }
 

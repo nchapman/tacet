@@ -376,18 +376,44 @@ impl Manager {
     }
 
     pub async fn clear(&self, zone_id: &str) -> Result<ZoneSnapshot> {
-        if let Some(z) = self.get_zone(zone_id) {
-            let (ctrl, prev_len) = {
-                let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-                (Arc::clone(&zi.ctrl), zi.queue.len())
-            };
-            if prev_len > 0
-                && let Some(qc) = ctrl.as_queue_controller()
-            {
-                let _ = qc.remove_queue_range(0, prev_len - 1).await;
-            }
+        let z = self
+            .get_zone(zone_id)
+            .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
+        let _op = z.op_mu.lock().await;
+        let (ctrl, prev_len, q_ev, pb_ev) = {
+            let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let prev_len = zi.queue.len();
+            zi.queue.clear();
+            zi.original_queue.clear();
+            zi.current_index = -1;
+            zi.current_uri.clear();
+            zi.next_preloaded = false;
+            zi.next_uri.clear();
+            zi.next_index = -1;
+            zi.status.state = "STOPPED".into();
+            zi.status.position = Duration::ZERO;
+            zi.status.duration = Duration::ZERO;
+            zi.user_stopped = true;
+            zi.position_updated_at = Utc::now();
+            zi.last_command_at = Instant::now();
+            zi.revision += 1;
+            (
+                Arc::clone(&zi.ctrl),
+                prev_len,
+                Self::make_items_event(zone_id, &zi),
+                self.make_playback_event(zone_id, &zi),
+            )
+        };
+        self.emit("zone.queue", zone_id, &q_ev);
+        self.emit("zone.playback", zone_id, &pb_ev);
+        self.persist_zone_queues();
+        if prev_len > 0
+            && let Some(qc) = ctrl.as_queue_controller()
+        {
+            let _ = qc.remove_queue_range(0, prev_len - 1).await;
         }
-        self.set_queue(zone_id, Vec::new(), -1, false).await
+        let _ = ctrl.stop().await;
+        Ok(self.snapshot_zone(zone_id, &z))
     }
 
     pub async fn play_item_by_id(&self, zone_id: &str, item_id: &str) -> Result<ZoneSnapshot> {
@@ -413,7 +439,7 @@ impl Manager {
         self.play_index_locked(zone_id, &z, index).await
     }
 
-    async fn play_index_locked(
+    pub(super) async fn play_index_locked(
         &self,
         zone_id: &str,
         z: &Zone,
@@ -499,12 +525,14 @@ impl Manager {
             let st = PlaybackState::normalize(&zi.status.state);
             let need_load = st == PlaybackState::Idle
                 || st == PlaybackState::Stopped
-                || zi.current_uri.is_empty();
+                || (st != PlaybackState::Paused && zi.current_uri.is_empty());
             (Arc::clone(&zi.ctrl), need_load)
         };
 
         if need_load {
-            self.start_current_locked(zone_id, &z, &ctrl, false).await?;
+            let use_native = ctrl.as_queue_controller().is_some();
+            self.start_current_locked(zone_id, &z, &ctrl, use_native)
+                .await?;
         } else {
             ctrl.play()
                 .await
@@ -948,8 +976,10 @@ impl Manager {
 
         if use_native_queue && let Some(qc) = ctrl.as_queue_controller() {
             let mut all_media = Vec::with_capacity(queue_items.len());
+            let mut native_cur_idx = 0usize;
             for (i, it) in queue_items.iter().enumerate() {
                 if i == cur_idx as usize {
+                    native_cur_idx = all_media.len();
                     all_media.push(media_item.clone());
                 } else if let Ok((mi, _)) =
                     self.build_media_item(&it.track, ctrl, requested_q).await
@@ -957,8 +987,7 @@ impl Manager {
                     all_media.push(mi);
                 }
             }
-            if !all_media.is_empty() && qc.replace_queue(&all_media, cur_idx as usize).await.is_ok()
-            {
+            if !all_media.is_empty() && qc.replace_queue(&all_media, native_cur_idx).await.is_ok() {
                 self.finish_start_locked(zone_id, z, cur_item, &media_item, eff_q, false);
                 return Ok(());
             }
