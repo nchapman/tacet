@@ -45,7 +45,7 @@ impl Client {
         }
 
         let mut fav_albums: Vec<QAlbum> = Vec::new();
-        const MAX_FAVORITE_PAGES: usize = 100;
+        const MAX_FAVORITE_PAGES: usize = 1_000;
         let mut offset = 0;
         for _ in 0..MAX_FAVORITE_PAGES {
             let lim_s = PAGE_SIZE.to_string();
