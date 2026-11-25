@@ -150,19 +150,23 @@ impl LibraryStore {
             "DELETE FROM albums_fts WHERE album_id = ?1",
             params![album.id],
         )?;
-        tx.execute(
-            "INSERT INTO albums_fts(album_id, title, artist, genre) VALUES (?1, ?2, ?3, ?4)",
-            params![album.id, album.title, album.artist, album.genre],
-        )?;
+        if album.available {
+            tx.execute(
+                "INSERT INTO albums_fts(album_id, title, artist, genre) VALUES (?1, ?2, ?3, ?4)",
+                params![album.id, album.title, album.artist, album.genre],
+            )?;
+        }
 
         for t in tracks {
             upsert_track_row(&tx, t, provider, source_type, now)?;
             tx.execute("DELETE FROM tracks_fts WHERE track_id = ?1", params![t.id])?;
-            tx.execute(
-                "INSERT INTO tracks_fts(track_id, title, artist, album_artist, album, genre)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![t.id, t.title, t.artist, t.album_artist, t.album, t.genre],
-            )?;
+            if t.available {
+                tx.execute(
+                    "INSERT INTO tracks_fts(track_id, title, artist, album_artist, album, genre)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![t.id, t.title, t.artist, t.album_artist, t.album, t.genre],
+                )?;
+            }
         }
 
         if !tracks.is_empty() {

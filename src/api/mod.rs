@@ -599,11 +599,18 @@ fn is_allowed_origin(origin: &str, host: &str, custom_cors: &str) -> bool {
         && matches!(u.scheme(), "http" | "https")
         && let Some(ohost) = u.host_str()
     {
-        let origin_host_port = match u.port() {
-            Some(p) => format!("{ohost}:{p}"),
-            None => ohost.to_string(),
+        let default_port = if u.scheme() == "https" { 443 } else { 80 };
+        let origin_port = u.port().unwrap_or(default_port);
+        let origin_norm = format!("{ohost}:{origin_port}");
+        let host_norm = if let Ok(hu) =
+            url::Url::parse(&format!("{}://{}", u.scheme(), host.trim()))
+            && let Some(hh) = hu.host_str()
+        {
+            format!("{hh}:{}", hu.port().unwrap_or(default_port))
+        } else {
+            host.trim().to_string()
         };
-        if origin_host_port.eq_ignore_ascii_case(host) {
+        if origin_norm.eq_ignore_ascii_case(&host_norm) {
             return true;
         }
     }

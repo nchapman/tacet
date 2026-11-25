@@ -232,11 +232,15 @@ impl Renderer {
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
     {
-        let _guard = self.soap_mu.lock().await;
-        match f().await {
+        let first = {
+            let _guard = self.soap_mu.lock().await;
+            f().await
+        };
+        match first {
             Ok(v) => Ok(v),
             Err(e) if e.is_transient_conn() => {
                 tokio::time::sleep(Duration::from_millis(120)).await;
+                let _guard = self.soap_mu.lock().await;
                 f().await
             }
             Err(e) => Err(e),

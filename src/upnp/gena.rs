@@ -512,6 +512,12 @@ async fn raw_gena_subscribe(
     renew_sid: Option<&str>,
 ) -> std::result::Result<(String, Duration), String> {
     let u = Url::parse(event_sub_url).map_err(|e| e.to_string())?;
+    if u.scheme() != "http" {
+        return Err(format!(
+            "GENA requires http:// eventSubURL (got {})",
+            u.scheme()
+        ));
+    }
     let host = u.host_str().ok_or("missing host")?;
     let port = u.port_or_known_default().unwrap_or(80);
     let path = if let Some(q) = u.query() {
@@ -564,6 +570,12 @@ async fn raw_gena_subscribe(
 
 async fn raw_gena_unsubscribe(event_sub_url: &str, sid: &str) -> std::result::Result<(), String> {
     let u = Url::parse(event_sub_url).map_err(|e| e.to_string())?;
+    if u.scheme() != "http" {
+        return Err(format!(
+            "GENA requires http:// eventSubURL (got {})",
+            u.scheme()
+        ));
+    }
     let host = u.host_str().ok_or("missing host")?;
     let port = u.port_or_known_default().unwrap_or(80);
     let path = if let Some(q) = u.query() {
