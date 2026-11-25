@@ -217,4 +217,22 @@ mod tests {
         assert_eq!(res, Ok(99));
         assert_eq!(runs.load(Ordering::SeqCst), 2);
     }
+
+    #[tokio::test]
+    async fn work_cleans_up_inflight_map_on_producer_panic() {
+        let sf: SingleFlight<String, usize, String> = SingleFlight::new();
+        let sf_panic = sf.clone();
+        let jh = tokio::spawn(async move {
+            sf_panic
+                .work("boom".to_string(), async move {
+                    panic!("simulated producer panic");
+                })
+                .await
+        });
+        assert!(jh.await.is_err());
+
+        // Key must have been cleaned up by Drop guard so a subsequent call succeeds
+        let res = sf.work("boom".to_string(), async move { Ok(7) }).await;
+        assert_eq!(res, Ok(7));
+    }
 }

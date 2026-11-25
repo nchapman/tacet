@@ -822,4 +822,423 @@ mod tests {
         assert_eq!(del_json["unregistered"], true);
         assert_eq!(del_json["zoneId"], zone_id);
     }
+
+    #[tokio::test]
+    async fn library_settings_and_qobuz_oauth_handlers() {
+        use crate::library::{Album, SOURCE_LOCAL, SOURCE_TYPE_LOCAL, Track};
+        use axum::body::to_bytes;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cat = Catalog::new_in_memory(vec![dir.path().to_path_buf()]);
+        let album = Album {
+            id: "local:alb1".into(),
+            source: SOURCE_LOCAL.into(),
+            source_type: SOURCE_TYPE_LOCAL.into(),
+            title: "Kind of Blue".into(),
+            artist: "Miles Davis".into(),
+            genre: "Jazz".into(),
+            year: 1959,
+            available: true,
+            in_library: true,
+            ..Default::default()
+        };
+        let track = Track {
+            id: "local:tr1".into(),
+            album_id: album.id.clone(),
+            source: SOURCE_LOCAL.into(),
+            source_type: SOURCE_TYPE_LOCAL.into(),
+            title: "So What".into(),
+            artist: "Miles Davis".into(),
+            album: "Kind of Blue".into(),
+            album_artist: "Miles Davis".into(),
+            genre: "Jazz".into(),
+            track_number: 1,
+            disc_number: 1,
+            duration_sec: 562,
+            available: true,
+            in_library: true,
+            ..Default::default()
+        };
+        cat.store()
+            .upsert_album_with_tracks(&album, std::slice::from_ref(&track))
+            .unwrap();
+
+        let qb = crate::qobuz::Client::new(crate::qobuz::Config::default());
+        let mgr = QueueManager::new(
+            Arc::clone(&cat),
+            Some(Arc::clone(&qb)),
+            4320,
+            StreamMode::Relay,
+        );
+        let state = AppState::new(cat, Some(qb), mgr, None, String::new());
+        let app = build_router(state);
+
+        // Library browse & status endpoints
+        for uri in [
+            "/api/v1/openapi.yaml",
+            "/api/v1/library/status",
+            "/api/v1/library/albums",
+            "/api/v1/library/albums/local:alb1",
+            "/api/v1/library/tracks",
+            "/api/v1/library/artists",
+            "/api/v1/library/genres",
+            "/api/v1/library/heavy-rotation",
+            "/api/v1/library/search?q=Miles",
+            "/api/v1/qobuz/status",
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "GET {uri}");
+        }
+
+        // Missing album returns 404
+        let not_found = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/library/albums/local:missing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(not_found.status(), StatusCode::NOT_FOUND);
+
+        // Synchronous rescan (?wait=true) returns 200
+        let rescan = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/library/rescan?wait=true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rescan.status(), StatusCode::OK);
+
+        // Settings GET & PATCH (valid + unknown field rejection)
+        let patch_ok = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/api/v1/settings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"streamMode":"direct"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(patch_ok.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(patch_ok.into_body(), 65536).await.unwrap()).unwrap();
+        assert_eq!(body["streamMode"], "direct");
+
+        let patch_bad = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/api/v1/settings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"unknownField":123}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(patch_bad.status(), StatusCode::BAD_REQUEST);
+
+        // OAuth start rejects injected Host header
+        let bad_host = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/qobuz/oauth/start")
+                    .header(header::HOST, "evil.com/foo@bar")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_host.status(), StatusCode::BAD_REQUEST);
+
+        // Qobuz logout returns 200
+        let logout = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri("/api/v1/qobuz/session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(logout.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn zone_queue_by_id_transport_and_sse_shutdown() {
+        use crate::library::{Album, SOURCE_LOCAL, SOURCE_TYPE_LOCAL, Track};
+        use axum::body::to_bytes;
+
+        let cat = Catalog::new_in_memory(vec![]);
+        let alb = Album {
+            id: "local:a1".into(),
+            source: SOURCE_LOCAL.into(),
+            source_type: SOURCE_TYPE_LOCAL.into(),
+            title: "Test Album".into(),
+            artist: "Test Artist".into(),
+            available: true,
+            in_library: true,
+            ..Default::default()
+        };
+        let tracks = vec![
+            Track {
+                id: "local:t1".into(),
+                album_id: alb.id.clone(),
+                source: SOURCE_LOCAL.into(),
+                source_type: SOURCE_TYPE_LOCAL.into(),
+                title: "One".into(),
+                artist: "Test Artist".into(),
+                album: "Test Album".into(),
+                track_number: 1,
+                duration_sec: 120,
+                available: true,
+                in_library: true,
+                ..Default::default()
+            },
+            Track {
+                id: "local:t2".into(),
+                album_id: alb.id.clone(),
+                source: SOURCE_LOCAL.into(),
+                source_type: SOURCE_TYPE_LOCAL.into(),
+                title: "Two".into(),
+                artist: "Test Artist".into(),
+                album: "Test Album".into(),
+                track_number: 2,
+                duration_sec: 140,
+                available: true,
+                in_library: true,
+                ..Default::default()
+            },
+        ];
+        cat.store().upsert_album_with_tracks(&alb, &tracks).unwrap();
+
+        let mgr = QueueManager::new(Arc::clone(&cat), None, 4320, StreamMode::Relay);
+        let state = AppState::new(cat, None, mgr, None, String::new());
+        let shutdown = state.shutdown.clone();
+        let players = Arc::clone(&state.players);
+        let app = build_router(state);
+
+        // Register a remote player and spawn an ack responder so transport commands succeed
+        let reg_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/players")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"name":"Desk","playerId":"desk_1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reg_resp.status(), StatusCode::OK);
+        let reg: serde_json::Value =
+            serde_json::from_slice(&to_bytes(reg_resp.into_body(), 65536).await.unwrap()).unwrap();
+        let zone_id = reg["zoneId"].as_str().unwrap().to_string();
+        let token = reg["token"].as_str().unwrap().to_string();
+        let rp = players.get(&zone_id, &token).unwrap();
+        let mut pstream = rp.attach_stream();
+        let rp_ack = Arc::clone(&rp);
+        let ack_handle = tokio::spawn(async move {
+            while let Some(cmd) = pstream.commands.recv().await {
+                rp_ack.report_state(crate::player::StateReport {
+                    cmd_id: cmd.id,
+                    ok: Some(true),
+                    state: "PLAYING".into(),
+                    ..Default::default()
+                });
+            }
+        });
+
+        // Add 2 tracks to queue via POST /queue/items
+        let rep = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/zones/{zone_id}/queue/items"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"source":{"type":"tracks","trackIds":["local:t1","local:t2"]},"position":"end"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rep.status(), StatusCode::OK);
+        let z_json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(rep.into_body(), 65536).await.unwrap()).unwrap();
+        let items = z_json["queue"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        let item0 = items[0]["itemId"].as_str().unwrap().to_string();
+        let item1 = items[1]["itemId"].as_str().unwrap().to_string();
+
+        // Move item1 to index 0
+        let mv = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/zones/{zone_id}/queue/items/{item1}/move"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"toIndex":0}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mv.status(), StatusCode::OK);
+
+        // Remove item0 by ID
+        let rm = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri(format!("/api/v1/zones/{zone_id}/queue/items/{item0}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rm.status(), StatusCode::OK);
+
+        // Removing missing itemId returns 422 QUEUE_ITEM_NOT_FOUND
+        let rm_missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri(format!("/api/v1/zones/{zone_id}/queue/items/no_such_item"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rm_missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err_json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(rm_missing.into_body(), 65536).await.unwrap())
+                .unwrap();
+        assert_eq!(err_json["error"]["code"], "QUEUE_ITEM_NOT_FOUND");
+
+        // Zone quality & unknown zone 404
+        let qual = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri(format!("/api/v1/zones/{zone_id}/quality"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"quality":"opus_160"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(qual.status(), StatusCode::OK);
+
+        let missing_zone = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/zones/zone:nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_zone.status(), StatusCode::NOT_FOUND);
+
+        // Transport endpoints (pause, play, seek, volume, mute, next, prev, stop)
+        for (method, uri, body) in [
+            (
+                Method::POST,
+                format!("/api/v1/zones/{zone_id}/transport/pause"),
+                "",
+            ),
+            (
+                Method::POST,
+                format!("/api/v1/zones/{zone_id}/transport/play"),
+                "",
+            ),
+            (
+                Method::POST,
+                format!("/api/v1/zones/{zone_id}/transport/seek"),
+                r#"{"positionSec":15}"#,
+            ),
+            (
+                Method::PUT,
+                format!("/api/v1/zones/{zone_id}/volume"),
+                r#"{"volume":65}"#,
+            ),
+            (
+                Method::PUT,
+                format!("/api/v1/zones/{zone_id}/mute"),
+                r#"{"muted":true}"#,
+            ),
+            (
+                Method::POST,
+                format!("/api/v1/zones/{zone_id}/transport/stop"),
+                "",
+            ),
+        ] {
+            let mut req = Request::builder().method(method).uri(&uri);
+            if !body.is_empty() {
+                req = req.header(header::CONTENT_TYPE, "application/json");
+            }
+            let r = app
+                .clone()
+                .oneshot(req.body(Body::from(body)).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(r.status(), StatusCode::OK, "{uri}");
+        }
+
+        // Clear queue
+        let clr = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri(format!("/api/v1/zones/{zone_id}/queue"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(clr.status(), StatusCode::OK);
+
+        // SSE /api/v1/events emits snapshot and terminates cleanly when shutdown token cancels
+        let sse_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/events?zone={zone_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sse_resp.status(), StatusCode::OK);
+        shutdown.cancel();
+        let sse_bytes = to_bytes(sse_resp.into_body(), 256 * 1024).await.unwrap();
+        let sse_text = String::from_utf8_lossy(&sse_bytes);
+        assert!(sse_text.contains("event: snapshot"));
+        assert!(sse_text.contains(&zone_id));
+        ack_handle.abort();
+    }
 }

@@ -103,4 +103,110 @@ mod tests {
         assert!(ev.has_track_uri);
         assert_eq!(ev.duration, Duration::from_secs(250));
     }
+
+    #[tokio::test]
+    async fn gena_notify_enforces_strict_sid_and_delivers_event() {
+        use axum::{
+            Router,
+            body::Bytes,
+            http::{HeaderMap, HeaderValue, StatusCode},
+        };
+
+        // Spin up a mock UPnP eventSubURL that captures the CALLBACK token from SUBSCRIBE and returns a SID
+        let (tok_tx, mut tok_rx) = tokio::sync::mpsc::channel::<String>(4);
+        let mock_upnp = Router::new().route(
+            "/evt",
+            axum::routing::any(move |headers: HeaderMap| {
+                let tok_tx = tok_tx.clone();
+                async move {
+                    if let Some(cb) = headers.get("callback").and_then(|v| v.to_str().ok())
+                        && let Some(tok) =
+                            cb.trim_matches(|c| c == '<' || c == '>').rsplit('/').next()
+                    {
+                        let _ = tok_tx.try_send(tok.to_string());
+                    }
+                    (
+                        StatusCode::OK,
+                        [("sid", "uuid:good-sid-123"), ("timeout", "Second-300")],
+                        "",
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            axum::serve(listener, mock_upnp).await.unwrap();
+        });
+
+        let (ev_tx, mut ev_rx) = tokio::sync::mpsc::channel::<DeviceEvent>(4);
+        let gena = GenaClient::new(move |ev| {
+            let _ = ev_tx.try_send(ev);
+        });
+
+        gena.watch_renderer(
+            "upnp:z1",
+            "http://127.0.0.1:4320",
+            &format!("http://{addr}/evt"),
+            "",
+        );
+        let token = tokio::time::timeout(Duration::from_secs(2), tok_rx.recv())
+            .await
+            .expect("timed out waiting for SUBSCRIBE")
+            .expect("token channel closed");
+        assert!(!token.is_empty(), "SUBSCRIBE must send CALLBACK token");
+
+        // Wait until GenaClient has stored the active SID from the SUBSCRIBE response
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while !gena.is_active("upnp:z1") {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for GENA subscription to become active"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let notify_method = axum::http::Method::from_bytes(b"NOTIFY").unwrap();
+        let notify_body = Bytes::from_static(br#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event&gt;&lt;InstanceID val="0"&gt;&lt;TransportState val="PLAYING"/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#);
+
+        // Missing SID -> 412 PRECONDITION_FAILED
+        let r_missing = gena
+            .handle_notify(
+                notify_method.clone(),
+                &token,
+                &HeaderMap::new(),
+                notify_body.clone(),
+            )
+            .await;
+        assert_eq!(r_missing, StatusCode::PRECONDITION_FAILED);
+
+        // Wrong SID -> 412 PRECONDITION_FAILED
+        let mut wrong_hdrs = HeaderMap::new();
+        wrong_hdrs.insert("sid", HeaderValue::from_static("uuid:wrong-sid"));
+        let r_wrong = gena
+            .handle_notify(
+                notify_method.clone(),
+                &token,
+                &wrong_hdrs,
+                notify_body.clone(),
+            )
+            .await;
+        assert_eq!(r_wrong, StatusCode::PRECONDITION_FAILED);
+
+        // Matching SID -> 200 OK & event delivered
+        let mut ok_hdrs = HeaderMap::new();
+        ok_hdrs.insert("sid", HeaderValue::from_static("uuid:good-sid-123"));
+        let r_ok = gena
+            .handle_notify(notify_method, &token, &ok_hdrs, notify_body)
+            .await;
+        assert_eq!(r_ok, StatusCode::OK);
+        let ev = tokio::time::timeout(Duration::from_secs(2), ev_rx.recv())
+            .await
+            .expect("timed out waiting for GENA event")
+            .expect("event channel closed");
+        assert_eq!(ev.state, "PLAYING");
+
+        gena.close();
+        srv.abort();
+    }
 }

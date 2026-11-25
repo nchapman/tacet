@@ -72,6 +72,11 @@ impl Catalog {
         Self::open(":memory:", roots).expect("open in-memory library store")
     }
 
+    #[cfg(test)]
+    pub(crate) fn store(&self) -> &LibraryStore {
+        &self.store
+    }
+
     pub fn open(db_path: &str, roots: Vec<PathBuf>) -> Result<Arc<Self>> {
         let store = Arc::new(LibraryStore::open(db_path)?);
         let cleaned: Vec<PathBuf> = roots

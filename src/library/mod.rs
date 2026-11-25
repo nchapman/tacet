@@ -107,4 +107,98 @@ mod tests {
         assert_eq!(hr.len(), 1);
         assert_eq!(hr[0].recent_plays, 1);
     }
+
+    #[tokio::test]
+    async fn unmounted_root_preserves_library_and_prefer_local_uses_etag_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = Catalog::new_in_memory(vec![dir.path().to_path_buf()]);
+        let alb = Album {
+            id: "local:a1".into(),
+            source: SOURCE_LOCAL.into(),
+            source_type: SOURCE_TYPE_LOCAL.into(),
+            title: "A Love Supreme".into(),
+            artist: "John Coltrane".into(),
+            available: true,
+            in_library: true,
+            ..Default::default()
+        };
+        let tr = Track {
+            id: "local:t1".into(),
+            album_id: alb.id.clone(),
+            source: SOURCE_LOCAL.into(),
+            source_type: SOURCE_TYPE_LOCAL.into(),
+            title: "Acknowledgement".into(),
+            artist: "John Coltrane".into(),
+            album: "A Love Supreme".into(),
+            available: true,
+            in_library: true,
+            ..Default::default()
+        };
+        cat.store()
+            .upsert_album_with_tracks(&alb, std::slice::from_ref(&tr))
+            .unwrap();
+
+        // prefer_local_albums swaps a remote duplicate for the local album and caches by ETag
+        let remote_dup = Album {
+            id: "qobuz:999".into(),
+            source: "qobuz".into(),
+            source_type: SOURCE_TYPE_REMOTE.into(),
+            provider: "qobuz".into(),
+            title: "A Love Supreme".into(),
+            artist: "John Coltrane".into(),
+            ..Default::default()
+        };
+        let preferred = cat.prefer_local_albums(vec![remote_dup.clone()]);
+        assert_eq!(preferred[0].id, "local:a1");
+        let preferred2 = cat.prefer_local_albums(vec![remote_dup]);
+        assert_eq!(preferred2[0].id, "local:a1");
+
+        // Adding a new local album bumps the ETag and invalidates the cached lookup map
+        let alb2 = Album {
+            id: "local:a2".into(),
+            source: SOURCE_LOCAL.into(),
+            source_type: SOURCE_TYPE_LOCAL.into(),
+            title: "Giant Steps".into(),
+            artist: "John Coltrane".into(),
+            available: true,
+            in_library: true,
+            ..Default::default()
+        };
+        cat.store().upsert_album_with_tracks(&alb2, &[]).unwrap();
+        let remote_dup2 = Album {
+            id: "qobuz:1000".into(),
+            source: "qobuz".into(),
+            source_type: SOURCE_TYPE_REMOTE.into(),
+            provider: "qobuz".into(),
+            title: "Giant Steps".into(),
+            artist: "John Coltrane".into(),
+            ..Default::default()
+        };
+        let preferred3 = cat.prefer_local_albums(vec![remote_dup2]);
+        assert_eq!(preferred3[0].id, "local:a2");
+
+        // Remove the configured root directory to simulate an unmounted NAS
+        std::fs::remove_dir_all(dir.path()).unwrap();
+        let scanned = cat.scan().await.unwrap();
+        assert_eq!(scanned, 0);
+        // Existing local album must NOT be wiped
+        assert!(cat.has_album("local:a1"));
+    }
+
+    #[test]
+    fn probe_dsf_bounds_absurd_sample_count_without_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let dsf_path = dir.path().join("crafted.dsf");
+        let mut hdr = [0u8; 80];
+        hdr[0..4].copy_from_slice(b"DSD ");
+        hdr[28..32].copy_from_slice(b"fmt ");
+        hdr[28 + 24..28 + 28].copy_from_slice(&2u32.to_le_bytes());
+        hdr[28 + 28..28 + 32].copy_from_slice(&1u32.to_le_bytes());
+        hdr[28 + 32..28 + 36].copy_from_slice(&1u32.to_le_bytes());
+        hdr[28 + 36..28 + 44].copy_from_slice(&u64::MAX.to_le_bytes());
+        std::fs::write(&dsf_path, hdr).unwrap();
+
+        let props = probe::probe_audio(&dsf_path);
+        assert_eq!(props.duration, std::time::Duration::ZERO);
+    }
 }

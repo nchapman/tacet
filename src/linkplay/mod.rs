@@ -332,4 +332,97 @@ mod tests {
         let resp = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetQueueIndexResponse xmlns:u="urn:schemas-wiimu-com:service:PlayQueue:1"><CurrentIndex>3</CurrentIndex></u:GetQueueIndexResponse></s:Body></s:Envelope>"#;
         assert_eq!(parse_get_queue_index(resp), Some(2));
     }
+
+    #[tokio::test]
+    async fn replace_queue_batches_over_50_tracks_and_parses_soap_fault() {
+        use axum::{
+            Router, http::HeaderMap, http::StatusCode, response::IntoResponse, routing::post,
+        };
+        use std::sync::{Arc, Mutex};
+
+        let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let calls_clone = Arc::clone(&calls);
+
+        let app = Router::new().route(
+            "/PlayQueue",
+            post(move |headers: HeaderMap, body: String| {
+                let calls = Arc::clone(&calls_clone);
+                async move {
+                    let action = headers
+                        .get("soapaction")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    calls.lock().unwrap().push((action.clone(), body));
+                    if action.contains("PlayQueueWithIndex") {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><detail><UPnPError><errorCode>701</errorCode><errorDescription>Transition not available</errorDescription></UPnPError></detail></s:Fault></s:Body></s:Envelope>"#,
+                        )
+                            .into_response();
+                    }
+                    (StatusCode::OK, "<s:Envelope><s:Body/></s:Envelope>").into_response()
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let pq_url = format!("http://{addr}/PlayQueue");
+        let upnp = Arc::new(crate::upnp::Renderer::new_internal(
+            crate::upnp::RendererInfo {
+                id: "upnp:lp_test".into(),
+                name: "WiiM Test".into(),
+                ..Default::default()
+            },
+            "127.0.0.1".into(),
+            format!("http://{addr}/AVT"),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            pq_url.clone(),
+        ));
+        let lp = LinkplayRenderer::new(upnp, pq_url);
+
+        let items: Vec<MediaItem> = (0..55)
+            .map(|i| MediaItem {
+                id: format!("t{i}"),
+                url: format!("http://192.168.1.10:4320/media/local/t{i}.flac"),
+                title: format!("Track {i}"),
+                mime: "audio/flac".into(),
+                ..Default::default()
+            })
+            .collect();
+
+        // replace_queue with 55 items sends CreateQueue (50) + AppendTracksInQueueEx (5) + PlayQueueWithIndex (which returns SOAP fault 701)
+        let err = lp.replace_queue(&items, 0).await.unwrap_err();
+        assert!(matches!(err, UpnpError::SoapFault { code: 701, .. }));
+
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 3);
+        assert!(recorded[0].0.contains("CreateQueue"));
+        assert!(
+            recorded[0]
+                .1
+                .contains("&lt;TrackNumber&gt;50&lt;/TrackNumber&gt;")
+        );
+        assert!(recorded[1].0.contains("AppendTracksInQueue"));
+        assert!(
+            recorded[1]
+                .1
+                .contains("&lt;ListName&gt;tacet&lt;/ListName&gt;")
+        );
+        assert!(
+            recorded[1]
+                .1
+                .contains("&lt;TrackNumber&gt;5&lt;/TrackNumber&gt;")
+        );
+
+        srv.abort();
+    }
 }

@@ -50,4 +50,128 @@ mod tests {
         });
         assert!(res.is_none());
     }
+
+    #[tokio::test]
+    async fn media_handler_serves_range_wav_cover_art_and_rejects_symlink_and_ssrf() {
+        use crate::library::Catalog;
+        use axum::body::to_bytes;
+        use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let alb1 = dir.path().join("alb1");
+        let alb2 = dir.path().join("alb2");
+        std::fs::create_dir_all(&alb1).unwrap();
+        std::fs::create_dir_all(&alb2).unwrap();
+
+        // Write valid 44-byte WAV header + 1764 bytes of silence
+        let mut wav = build_wav_header(44100, 2, 16, 1764);
+        wav.extend(std::iter::repeat_n(0u8, 1764));
+        std::fs::write(alb1.join("01 - Tone.wav"), &wav).unwrap();
+        std::fs::write(alb2.join("01 - Sym.wav"), &wav).unwrap();
+
+        // Write a real 4x4 PNG cover in alb1
+        let mut png_bytes = Vec::new();
+        let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 100, 50, 255]));
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        std::fs::write(alb1.join("cover.png"), &png_bytes).unwrap();
+
+        // Put a symlink cover.jpg in alb2 (must be ignored by find_folder_art)
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(alb1.join("cover.png"), alb2.join("cover.jpg")).unwrap();
+
+        let cat = Catalog::new_in_memory(vec![dir.path().to_path_buf()]);
+        cat.scan().await.unwrap();
+        let tracks = cat.query_tracks(&Default::default()).unwrap().0;
+        assert_eq!(tracks.len(), 2);
+        let t1 = tracks
+            .iter()
+            .find(|t| t.file_path.contains("alb1"))
+            .unwrap();
+        let t2 = tracks
+            .iter()
+            .find(|t| t.file_path.contains("alb2"))
+            .unwrap();
+
+        let mh = MediaHandler::new(Arc::clone(&cat), None);
+        let empty_hdrs = HeaderMap::new();
+        let empty_q = std::collections::HashMap::new();
+        let w300_q = std::collections::HashMap::from([("w".to_string(), "300".to_string())]);
+
+        // Full GET 200
+        let r_full = mh
+            .serve_local(
+                Method::GET,
+                &format!("{}.wav", t1.id),
+                &empty_q,
+                &empty_hdrs,
+            )
+            .await;
+        assert_eq!(r_full.status(), StatusCode::OK);
+        let body = to_bytes(r_full.into_body(), 1024 * 1024).await.unwrap();
+        assert_eq!(body.len(), wav.len());
+
+        // Range GET 206
+        let mut range_hdrs = HeaderMap::new();
+        range_hdrs.insert(header::RANGE, HeaderValue::from_static("bytes=0-43"));
+        let r_part = mh
+            .serve_local(Method::GET, &t1.id, &empty_q, &range_hdrs)
+            .await;
+        assert_eq!(r_part.status(), StatusCode::PARTIAL_CONTENT);
+        let part_body = to_bytes(r_part.into_body(), 4096).await.unwrap();
+        assert_eq!(part_body.as_ref(), &wav[..44]);
+
+        // Unsatisfiable range -> 416
+        let mut bad_range = HeaderMap::new();
+        bad_range.insert(header::RANGE, HeaderValue::from_static("bytes=999999-"));
+        let r_416 = mh
+            .serve_local(Method::GET, &t1.id, &empty_q, &bad_range)
+            .await;
+        assert_eq!(r_416.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+
+        // Missing track -> 404
+        let r_404 = mh
+            .serve_local(Method::GET, "local:missing", &empty_q, &empty_hdrs)
+            .await;
+        assert_eq!(r_404.status(), StatusCode::NOT_FOUND);
+
+        // Real cover.png served & transcoded to JPEG/WebP
+        let r_art = mh.serve_art(&t1.id, &w300_q, &empty_hdrs).await;
+        assert_eq!(r_art.status(), StatusCode::OK);
+        assert_eq!(
+            r_art.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/jpeg"
+        );
+
+        let mut webp_hdrs = HeaderMap::new();
+        webp_hdrs.insert(header::ACCEPT, HeaderValue::from_static("image/webp"));
+        let r_webp = mh.serve_art(&t1.id, &w300_q, &webp_hdrs).await;
+        assert_eq!(r_webp.status(), StatusCode::OK);
+
+        // Symlink cover.jpg in alb2 must NOT be served
+        #[cfg(unix)]
+        {
+            let r_sym = mh.serve_art(&t2.id, &w300_q, &empty_hdrs).await;
+            assert_eq!(r_sym.status(), StatusCode::NOT_FOUND);
+        }
+
+        // Remote art SSRF allowlist rejects non-Qobuz hosts & non-HTTP schemes
+        let q_evil = std::collections::HashMap::from([(
+            "url".to_string(),
+            "https://evil.example.com/a.jpg".to_string(),
+        )]);
+        let r_evil = mh.serve_remote_art(&q_evil, &empty_hdrs).await;
+        assert_eq!(r_evil.status(), StatusCode::FORBIDDEN);
+        let q_scheme = std::collections::HashMap::from([(
+            "url".to_string(),
+            "file:///etc/passwd".to_string(),
+        )]);
+        let r_scheme = mh.serve_remote_art(&q_scheme, &empty_hdrs).await;
+        assert_eq!(r_scheme.status(), StatusCode::FORBIDDEN);
+    }
 }
