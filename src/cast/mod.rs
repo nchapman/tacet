@@ -217,7 +217,9 @@ impl Controller for CastRenderer {
 
     async fn pause(&self) -> Result<()> {
         let mut st = self.state.lock().await;
-        let client = self.ensure_connected(&mut st).await?;
+        let Some(client) = st.client.as_ref() else {
+            return Ok(());
+        };
         let ms = client
             .pause()
             .await
@@ -227,8 +229,10 @@ impl Controller for CastRenderer {
     }
 
     async fn stop(&self) -> Result<()> {
-        let mut st = self.state.lock().await;
-        let client = self.ensure_connected(&mut st).await?;
+        let st = self.state.lock().await;
+        let Some(client) = st.client.as_ref() else {
+            return Ok(());
+        };
         let _ = client.stop_media().await;
         Ok(())
     }

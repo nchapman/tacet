@@ -518,6 +518,23 @@ async fn serve_local_file_range(
         return (StatusCode::INTERNAL_SERVER_ERROR, "stat failed").into_response();
     };
     let file_size = meta.len();
+    let last_modified = meta.modified().ok().map(|t| {
+        let dt: chrono::DateTime<chrono::Utc> = t.into();
+        dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string()
+    });
+    if headers.get(header::RANGE).is_none()
+        && let Some(ref lm) = last_modified
+        && headers
+            .get(header::IF_MODIFIED_SINCE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ims| ims.trim() == lm)
+    {
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(header::LAST_MODIFIED, lm)
+            .body(Body::empty())
+            .unwrap_or_else(|_| StatusCode::NOT_MODIFIED.into_response());
+    }
     let content_type = if mime.is_empty() || mime == "audio/x-flac" {
         "audio/flac"
     } else {
@@ -554,6 +571,9 @@ async fn serve_local_file_range(
         .header(header::ACCEPT_RANGES, "bytes")
         .header("transferMode.dlna.org", "Streaming")
         .header("contentFeatures.dlna.org", DLNA_FEATURES_SEEKABLE);
+    if let Some(ref lm) = last_modified {
+        builder = builder.header(header::LAST_MODIFIED, lm);
+    }
     if is_partial {
         builder = builder.header(
             header::CONTENT_RANGE,

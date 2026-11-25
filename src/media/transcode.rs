@@ -149,6 +149,16 @@ pub fn parse_transcode_spec(
             "audio/webm; codecs=\"opus\"",
             vec!["-f".into(), "webm".into()],
         )
+    } else if c == "mp4" {
+        (
+            "audio/mp4; codecs=\"opus\"",
+            vec![
+                "-f".into(),
+                "mp4".into(),
+                "-movflags".into(),
+                "frag_keyframe+empty_moov+default_base_moof".into(),
+            ],
+        )
     } else {
         (
             "audio/ogg; codecs=\"opus\"",
@@ -156,22 +166,30 @@ pub fn parse_transcode_spec(
         )
     };
 
+    let mut codec_args = vec![
+        "-c:a".into(),
+        "libopus".into(),
+        "-b:a".into(),
+        bitrate.into(),
+        "-vbr".into(),
+        "on".into(),
+        "-compression_level".into(),
+        "10".into(),
+        "-frame_duration".into(),
+        "20".into(),
+        "-application".into(),
+        "audio".into(),
+    ];
+    if track.channels > 2 {
+        codec_args.push("-ac".into());
+        codec_args.push("2".into());
+    }
+
     Some(TranscodeSpec {
         quality: q,
         mime,
         filter_args: vec!["-af".into(), af.into()],
-        codec_args: vec![
-            "-c:a".into(),
-            "libopus".into(),
-            "-b:a".into(),
-            bitrate.into(),
-            "-vbr".into(),
-            "on".into(),
-            "-compression_level".into(),
-            "10".into(),
-            "-application".into(),
-            "audio".into(),
-        ],
+        codec_args,
         fmt_args,
         wav_header: None,
         exact_length: None,
@@ -320,7 +338,21 @@ pub async fn spawn_ffmpeg_stream(
     {
         cmd.args(["-ss", &format!("{ss:.3}")]);
     }
-    cmd.args(["-i", input, "-vn", "-sn", "-dn"]);
+    cmd.args([
+        "-i",
+        input,
+        "-threads",
+        "2",
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-map_metadata",
+        "-1",
+        "-flush_packets",
+        "1",
+    ]);
     cmd.args(&spec.filter_args);
     cmd.args(&spec.codec_args);
     cmd.args(&spec.fmt_args);
