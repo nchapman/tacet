@@ -216,6 +216,7 @@ impl Client {
             g.user_name = creds.user_name.trim().to_string();
             g.subscription = creds.subscription.trim().to_string();
         }
+        g.url_cache.clear();
     }
 
     pub fn set_credentials(&self, app_id: &str, app_secret: &str, auth_token: &str) {
@@ -348,7 +349,13 @@ impl Client {
         if k == "aname:" {
             return;
         }
-        if !overwrite && kv.get(&k).ok().flatten().is_some() {
+        if !overwrite
+            && let Ok(Some(raw)) = kv.get(&k)
+            && std::str::from_utf8(&raw)
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .is_some_and(|existing_id| existing_id > 0)
+        {
             return;
         }
         let ttl = if id == 0 {

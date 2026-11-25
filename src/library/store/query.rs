@@ -558,6 +558,9 @@ fn track_order_by(f: &TrackFilter) -> String {
     };
     match f.sort.trim().to_ascii_lowercase().as_str() {
         "title" => format!("t.sort_title {dir}, t.sort_artist ASC, t.id ASC"),
+        "album" => format!(
+            "t.sort_album {dir}, t.disc_number ASC, t.track_number ASC, t.sort_title ASC, t.id ASC"
+        ),
         "artist" => format!(
             "t.sort_artist {dir}, t.sort_album ASC, t.disc_number ASC, t.track_number ASC, t.id ASC"
         ),
@@ -565,7 +568,7 @@ fn track_order_by(f: &TrackFilter) -> String {
             "t.year {dir}, t.sort_album ASC, t.disc_number ASC, t.track_number ASC, t.id ASC"
         ),
         "added" => format!(
-            "t.added_at {dir}, t.sort_artist ASC, t.sort_album ASC, t.disc_number ASC, t.track_number ASC, t.id ASC"
+            "t.added_at {dir}, t.sort_album ASC, t.disc_number ASC, t.track_number ASC, t.id ASC"
         ),
         "plays" => format!("t.play_count {dir}, t.last_played_at DESC, t.sort_title ASC, t.id ASC"),
         "duration" => format!("t.duration_sec {dir}, t.sort_title ASC, t.id ASC"),

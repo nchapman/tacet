@@ -96,19 +96,28 @@ impl Client {
             offset += PAGE_SIZE;
         }
 
-        let mut albums = Vec::with_capacity(fav_albums.len());
-        for qa in fav_albums {
+        use futures_util::stream::{self, StreamExt};
+
+        let mut indexed: Vec<(usize, Album)> = Vec::with_capacity(fav_albums.len());
+        let mut futs = stream::iter(fav_albums.into_iter().enumerate().map(|(idx, qa)| async move {
             match self.get_album(&qa.id).await {
-                Ok(full) => albums.push(full),
+                Ok(full) => Ok((idx, full)),
                 Err(QobuzError::NotFound) => {
                     tracing::warn!(album_id = %qa.id, "qobuz favorites sync: album not found; marking unavailable");
                     let mut summary = qa.to_library_album(false);
                     summary.available = false;
-                    albums.push(summary);
+                    Ok((idx, summary))
                 }
-                Err(e) => return Err(e),
+                Err(e) => Err(e),
             }
+        }))
+        .buffer_unordered(3);
+
+        while let Some(res) = futs.next().await {
+            indexed.push(res?);
         }
+        indexed.sort_by_key(|(idx, _)| *idx);
+        let albums = indexed.into_iter().map(|(_, a)| a).collect();
 
         Ok(RemoteCollection {
             albums,
@@ -290,9 +299,9 @@ impl RemoteSource for RemoteSourceAdapter {
             .trim()
             .strip_prefix("qobuz:")
             .unwrap_or(external_id.trim());
-        let id: i64 = clean
-            .parse()
-            .map_err(|_| LibraryError::Remote(format!("invalid qobuz track id {external_id:?}")))?;
+        let id: i64 = clean.parse().ok().filter(|&id| id > 0).ok_or_else(|| {
+            LibraryError::Remote(format!("invalid qobuz track id {external_id:?}"))
+        })?;
         self.client
             .get_track(id)
             .await

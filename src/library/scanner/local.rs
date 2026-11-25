@@ -220,6 +220,7 @@ fn collect_audio_files(
                 && cached.size == size as i64
                 && cached.mtime_ns == mtime_ns
                 && cached.track.available
+                && !cached.track.artwork_url.starts_with("/media/art/local:")
             {
                 reused.push(cached.track.clone());
                 continue;
@@ -389,7 +390,11 @@ fn build_albums_from_tracks(tracks: &[Track]) -> Vec<Album> {
             source: t.source.clone(),
             source_type: t.source_type.clone(),
             provider: t.provider.clone(),
-            external_id: t.album_id.clone(),
+            external_id: t
+                .album_id
+                .strip_prefix("local:")
+                .unwrap_or(&t.album_id)
+                .to_string(),
             title: t.album.clone(),
             artist: artist.to_string(),
             genre: t.genre.clone(),
