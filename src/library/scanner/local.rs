@@ -158,6 +158,16 @@ fn scan_roots_blocking(store: &LibraryStore, roots: &[PathBuf]) -> Result<(usize
         }
     }
 
+    // Sort deterministically before grouping into albums so album metadata
+    // (year, genre, artwork, added_at) does not depend on filesystem walk order.
+    all_tracks.sort_by(|a, b| {
+        a.album_id
+            .cmp(&b.album_id)
+            .then_with(|| a.disc_number.cmp(&b.disc_number))
+            .then_with(|| a.track_number.cmp(&b.track_number))
+            .then_with(|| a.file_path.cmp(&b.file_path))
+    });
+
     let albums = build_albums_from_tracks(&all_tracks);
     let count = all_tracks.len();
     store.replace_provider(SOURCE_LOCAL, SOURCE_TYPE_LOCAL, &albums, &all_tracks, true)?;

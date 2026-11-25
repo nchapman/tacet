@@ -266,7 +266,6 @@ struct AddQueueItemsReq {
     #[serde(default)]
     position: String,
     #[serde(default)]
-    #[allow(dead_code)]
     autoplay: Option<bool>,
 }
 
@@ -277,10 +276,15 @@ pub async fn add_queue_items(
 ) -> ApiResult<Json<serde_json::Value>> {
     let req: AddQueueItemsReq = parse_strict_json(&body)?;
     let tracks = resolve_source(&st, req.source).await?;
+    let autoplay = req.autoplay.unwrap_or(true);
     let snap = if req.position.eq_ignore_ascii_case("next") {
-        st.manager.play_next(&zone_id, tracks).await?
+        st.manager
+            .play_next_with_autoplay(&zone_id, tracks, autoplay)
+            .await?
     } else {
-        st.manager.enqueue(&zone_id, tracks).await?
+        st.manager
+            .enqueue_with_autoplay(&zone_id, tracks, autoplay)
+            .await?
     };
     Ok(Json(serde_json::to_value(snap).unwrap_or_default()))
 }

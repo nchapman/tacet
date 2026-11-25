@@ -67,6 +67,15 @@ impl Manager {
     }
 
     pub async fn enqueue(&self, zone_id: &str, tracks: Vec<Track>) -> Result<ZoneSnapshot> {
+        self.enqueue_with_autoplay(zone_id, tracks, true).await
+    }
+
+    pub async fn enqueue_with_autoplay(
+        &self,
+        zone_id: &str,
+        tracks: Vec<Track>,
+        autoplay: bool,
+    ) -> Result<ZoneSnapshot> {
         let z = self
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
@@ -94,7 +103,9 @@ impl Manager {
         self.persist_zone_queues();
 
         if was_empty {
-            self.start_current_locked(zone_id, &z, &ctrl, true).await?;
+            if autoplay {
+                self.start_current_locked(zone_id, &z, &ctrl, true).await?;
+            }
         } else if let Some(qc) = ctrl.as_queue_controller() {
             let mut media_items = Vec::with_capacity(new_items.len());
             for it in &new_items {
@@ -111,6 +122,15 @@ impl Manager {
     }
 
     pub async fn play_next(&self, zone_id: &str, tracks: Vec<Track>) -> Result<ZoneSnapshot> {
+        self.play_next_with_autoplay(zone_id, tracks, true).await
+    }
+
+    pub async fn play_next_with_autoplay(
+        &self,
+        zone_id: &str,
+        tracks: Vec<Track>,
+        autoplay: bool,
+    ) -> Result<ZoneSnapshot> {
         let z = self
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
@@ -155,7 +175,9 @@ impl Manager {
         self.persist_zone_queues();
 
         if was_empty {
-            self.start_current_locked(zone_id, &z, &ctrl, true).await?;
+            if autoplay {
+                self.start_current_locked(zone_id, &z, &ctrl, true).await?;
+            }
         } else if ctrl.as_queue_controller().is_some() {
             self.sync_native_play_next(zone_id, &z, &added_tracks, prev_len, insert_at)
                 .await;

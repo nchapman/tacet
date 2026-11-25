@@ -778,9 +778,11 @@ fn list_genres_conn(conn: &Connection, f: &FacetFilter) -> Result<(Vec<GenreSumm
 }
 
 pub fn build_fts_query(raw: &str) -> String {
+    const MAX_FTS_CHARS: usize = 512;
+    const MAX_FTS_TOKENS: usize = 32;
     let mut tokens = Vec::new();
     let mut cur = String::new();
-    for ch in raw.trim().chars() {
+    for ch in raw.trim().chars().take(MAX_FTS_CHARS) {
         if ch.is_alphanumeric() {
             for lc in ch.to_lowercase() {
                 cur.push(lc);
@@ -788,9 +790,12 @@ pub fn build_fts_query(raw: &str) -> String {
         } else if !cur.is_empty() {
             tokens.push(format!("\"{}\"*", cur.replace('"', "")));
             cur.clear();
+            if tokens.len() >= MAX_FTS_TOKENS {
+                break;
+            }
         }
     }
-    if !cur.is_empty() {
+    if !cur.is_empty() && tokens.len() < MAX_FTS_TOKENS {
         tokens.push(format!("\"{}\"*", cur.replace('"', "")));
     }
     tokens.join(" ")

@@ -768,11 +768,13 @@ pub fn parse_byte_range(hdr: &str, total: u64) -> Option<(u64, u64)> {
 }
 
 fn strip_ext(raw: &str) -> &str {
+    const KNOWN_EXTS: &[&str] = &[
+        "flac", "wav", "mp3", "m4a", "aac", "ogg", "opus", "webm", "mp4", "alac", "aiff", "aif",
+        "dsf", "dff", "wma",
+    ];
     match raw.rsplit_once('.') {
         Some((stem, ext))
-            if !stem.is_empty()
-                && ext.len() <= 5
-                && ext.chars().all(|c| c.is_ascii_alphanumeric()) =>
+            if !stem.is_empty() && KNOWN_EXTS.iter().any(|k| k.eq_ignore_ascii_case(ext)) =>
         {
             stem
         }

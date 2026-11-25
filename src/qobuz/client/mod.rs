@@ -650,6 +650,7 @@ impl Client {
                 body: String::from_utf8_lossy(&body).chars().take(200).collect(),
             });
         }
+        self.consecutive_429.store(0, Ordering::Relaxed);
         decode_qobuz_json(&body)
     }
 
