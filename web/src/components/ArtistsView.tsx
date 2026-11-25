@@ -360,12 +360,15 @@ export function ArtistsView({
                   }
                   const active = artist.name.toLowerCase() === effectiveArtist.toLowerCase();
                   const committedMatch = view?.artist.toLowerCase() === artist.name.toLowerCase();
+                  const cachedRemoteArt = queryClient.getQueryData<QobuzArtistDetail | null>(
+                    queryKeys.qobuz.artist({ name: artist.name }),
+                  )?.artist.artworkUrl;
                   return (
                     <ArtistRailRow
                       key={artist.name}
                       artist={artist}
                       active={active}
-                      artworkUrl={(committedMatch ? view?.heroArt : undefined) || artist.artworkUrl}
+                      artworkUrl={(committedMatch ? view?.heroArt : undefined) || cachedRemoteArt || artist.artworkUrl}
                       onSelect={handleSelectArtist}
                     />
                   );

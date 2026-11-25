@@ -112,6 +112,50 @@ impl AppState {
             url.into().trim().trim_end_matches('/').to_string();
     }
 
+    pub fn prewarm_artists(&self) {
+        let Some(ref qb) = self.qobuz else {
+            return;
+        };
+        if !qb.is_connected() {
+            return;
+        }
+        let names: Vec<String> = self
+            .catalog
+            .list_artists(&crate::library::FacetFilter {
+                limit: 500,
+                ..Default::default()
+            })
+            .map(|(items, _)| {
+                items
+                    .into_iter()
+                    .map(|a| a.name)
+                    .filter(|n| !n.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let local_albums: Vec<crate::qobuz::AlbumLookup> = self
+            .catalog
+            .query_albums(&crate::library::AlbumFilter {
+                source_type: crate::library::SOURCE_TYPE_LOCAL.into(),
+                limit: 500,
+                ..Default::default()
+            })
+            .map(|(items, _)| {
+                items
+                    .into_iter()
+                    .filter(|a| !a.artist.is_empty() && !a.title.is_empty())
+                    .map(|a| crate::qobuz::AlbumLookup {
+                        artist: a.artist,
+                        title: a.title,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        qb.prewarm_library(names, local_albums);
+    }
+
     pub fn close(&self) {
         self.shutdown.cancel();
         self.players.close();

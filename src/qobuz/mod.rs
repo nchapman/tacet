@@ -211,4 +211,116 @@ mod tests {
         assert_eq!(disc.rights.streamable, Some(false));
         assert!(!disc.ai_generated);
     }
+
+    #[tokio::test]
+    async fn artist_page_extras_decode_cache_and_portrait_lookup() {
+        use axum::Router;
+        use axum::extract::Query;
+        use axum::routing::get;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let page_hits = Arc::new(AtomicUsize::new(0));
+        let page_hits_c = Arc::clone(&page_hits);
+        let app = Router::new()
+            .route(
+                "/artist/get",
+                get(|| async {
+                    axum::Json(serde_json::json!({
+                        "id": 77,
+                        "name": "Adele",
+                        "biography": {"content": "<p>Soul singer.</p>"},
+                        "albums": {
+                            "items": [{
+                                "id": "a30",
+                                "title": "30",
+                                "release_type": "album",
+                                "artist": {"id": 77, "name": "Adele"},
+                                "streamable": true
+                            }]
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/artist/page",
+                get(move |Query(q): Query<HashMap<String, String>>| {
+                    let hits = Arc::clone(&page_hits_c);
+                    async move {
+                        assert_eq!(q.get("sort").map(String::as_str), Some("relevant"));
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(serde_json::json!({
+                            "images": {
+                                "portrait": {"hash": "abc123", "format": "jpg"}
+                            },
+                            "similar_artists": {
+                                "items": [{
+                                    "id": 90,
+                                    "name": {"display": "Amy Winehouse"},
+                                    "images": {"portrait": {"hash": "amy456", "format": "jpg"}}
+                                }]
+                            },
+                            "top_tracks": [
+                                {
+                                    "id": 901,
+                                    "title": "Easy On Me",
+                                    "duration": 225,
+                                    "rights": {"streamable": true},
+                                    "audio_info": {"maximum_bit_depth": 24, "maximum_sampling_rate": 44.1},
+                                    "artist": {"name": {"display": "Adele"}},
+                                    "album": {"id": "a30", "title": "30"}
+                                },
+                                {
+                                    "id": 902,
+                                    "title": "Blocked",
+                                    "rights": {"streamable": false}
+                                }
+                            ]
+                        }))
+                    }
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let c = Client::new(Config {
+            base_url: format!("http://{addr}"),
+            app_id: "100".into(),
+            app_secret: "sec".into(),
+            auth_token: "tok".into(),
+            cache: Some(
+                crate::cache::Cache::open(":memory:", crate::cache::CacheOptions::default())
+                    .unwrap(),
+            ),
+            ..Default::default()
+        });
+
+        let detail = c.get_artist(77, 50).await.unwrap();
+        assert_eq!(
+            detail.artist.artwork_url,
+            "https://static.qobuz.com/images/artists/covers/large/abc123.jpg"
+        );
+        assert_eq!(detail.tracks.len(), 1);
+        assert_eq!(detail.tracks[0].title, "Easy On Me");
+        assert_eq!(detail.similar_artists.len(), 1);
+        assert_eq!(detail.similar_artists[0].name, "Amy Winehouse");
+        assert_eq!(page_hits.load(Ordering::SeqCst), 1);
+
+        // Second call serves /artist/page from cache without hitting the network.
+        let _ = c.get_artist(77, 50).await.unwrap();
+        assert_eq!(page_hits.load(Ordering::SeqCst), 1);
+
+        // cached_artist_portrait resolves portrait from cached /artist/page.
+        assert_eq!(
+            c.cached_artist_portrait("Adele"),
+            "https://static.qobuz.com/images/artists/covers/large/abc123.jpg"
+        );
+
+        srv.abort();
+    }
 }

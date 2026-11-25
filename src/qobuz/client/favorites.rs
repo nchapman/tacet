@@ -172,6 +172,9 @@ impl Client {
         }
         let client = Arc::clone(self);
         tokio::spawn(async move {
+            let start = std::time::Instant::now();
+            let mut warmed_artists = 0usize;
+            let mut warmed_albums = 0usize;
             let mut seen_a = HashSet::new();
             for name in artist_names.into_iter().take(250) {
                 if cancel.is_cancelled() || !client.is_connected() {
@@ -184,8 +187,15 @@ impl Client {
                 if client.get_cached_artist_name(&name).is_some() {
                     continue;
                 }
-                if let Err(QobuzError::RateLimited) = client.get_artist_by_name(&name, 50).await {
-                    return;
+                match client.get_artist_by_name(&name, 50).await {
+                    Ok(_) => warmed_artists += 1,
+                    Err(QobuzError::RateLimited) => {
+                        tracing::info!(
+                            "qobuz prewarm: rate limited while warming artists; pausing pass"
+                        );
+                        return;
+                    }
+                    Err(_) => {}
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
@@ -201,11 +211,25 @@ impl Client {
                 if client.get_cached_album_match(&a.artist, &a.title).is_some() {
                     continue;
                 }
-                if let Err(QobuzError::RateLimited) = client.match_album(&a.artist, &a.title).await
-                {
-                    return;
+                match client.match_album(&a.artist, &a.title).await {
+                    Ok(_) => warmed_albums += 1,
+                    Err(QobuzError::RateLimited) => {
+                        tracing::info!(
+                            "qobuz prewarm: rate limited while warming albums; pausing pass"
+                        );
+                        return;
+                    }
+                    Err(_) => {}
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            if warmed_artists > 0 || warmed_albums > 0 {
+                tracing::info!(
+                    artists = warmed_artists,
+                    albums = warmed_albums,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "prewarmed Qobuz SQLite cache"
+                );
             }
         });
     }

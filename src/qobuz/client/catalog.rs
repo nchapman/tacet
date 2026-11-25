@@ -4,15 +4,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use crate::library::{Album, Track};
+use crate::library::{Album, SOURCE_QOBUZ, SOURCE_TYPE_REMOTE, Track};
 
 use super::{
     ALBUM_CACHE_TTL, ARTIST_CACHE_TTL, Client, MAX_URL_CACHE_ENTRIES, SEARCH_CACHE_TTL,
     cache_key_for_req, sign_file_url,
 };
 use crate::qobuz::types::{
-    Artist, ArtistDetail, QAlbum, QArtist, QTrack, QobuzError, Result, SearchResult, StreamInfo,
-    decode_qobuz_json, is_primary_artist_album_or_ep, norm_match_key, normalize_sample_rate_hz,
+    Artist, ArtistDetail, QAlbum, QArtist, QDiscoverAudioInfo, QDiscoverRights, QImage, QTrack,
+    QobuzError, Result, SearchResult, StreamInfo, decode_qobuz_json, is_primary_artist_album_or_ep,
+    norm_match_key, normalize_sample_rate_hz,
 };
 
 #[derive(Default)]
@@ -339,7 +340,20 @@ impl Client {
         if id <= 0 {
             return String::new();
         }
+        let Some(kv) = &self.kv else {
+            return String::new();
+        };
         let aid_s = id.to_string();
+        let page_key = cache_key_for_req(
+            "/artist/page",
+            &[("artist_id", &aid_s), ("sort", "relevant")],
+        );
+        if let Ok(Some(raw)) = kv.get(&page_key)
+            && let Ok(page) = decode_qobuz_json::<QArtistPagePortraitOnly>(&raw)
+            && let Some(url) = page.portrait_url()
+        {
+            return url;
+        }
         let key = cache_key_for_req(
             "/artist/get",
             &[
@@ -349,13 +363,9 @@ impl Client {
                 ("offset", "0"),
             ],
         );
-        let Some(kv) = &self.kv else {
-            return String::new();
-        };
-        let Ok(Some(raw)) = kv.get(&key) else {
-            return String::new();
-        };
-        if let Ok(qa) = decode_qobuz_json::<QArtist>(&raw) {
+        if let Ok(Some(raw)) = kv.get(&key)
+            && let Ok(qa) = decode_qobuz_json::<QArtist>(&raw)
+        {
             return qa.to_artist().artwork_url;
         }
         String::new()
@@ -492,41 +502,16 @@ impl Client {
     }
 
     async fn fetch_artist_page_extras(&self, artist_id: i64) -> ArtistPageExtras {
+        if artist_id <= 0 {
+            return ArtistPageExtras::default();
+        }
         let aid_s = artist_id.to_string();
-        #[derive(Deserialize)]
-        struct Portrait {
-            #[serde(default)]
-            hash: String,
-            #[serde(default)]
-            format: String,
-        }
-        #[derive(Deserialize)]
-        struct Images {
-            #[serde(default)]
-            portrait: Option<Portrait>,
-        }
-        #[derive(Deserialize)]
-        struct TopTracks {
-            #[serde(default)]
-            items: Vec<QTrack>,
-        }
-        #[derive(Deserialize)]
-        struct Similar {
-            #[serde(default)]
-            items: Vec<QArtist>,
-        }
-        #[derive(Deserialize)]
-        struct PageResp {
-            #[serde(default)]
-            images: Option<Images>,
-            #[serde(default)]
-            top_tracks: Option<TopTracks>,
-            #[serde(default)]
-            similar_artists: Option<Similar>,
-        }
-
         let Ok(resp) = self
-            .get_cached_json::<PageResp>("/artist/page", &[("artist_id", &aid_s)], ARTIST_CACHE_TTL)
+            .get_cached_json::<QArtistPageResp>(
+                "/artist/page",
+                &[("artist_id", &aid_s), ("sort", "relevant")],
+                ARTIST_CACHE_TTL,
+            )
             .await
         else {
             return ArtistPageExtras::default();
@@ -534,27 +519,18 @@ impl Client {
 
         let portrait_url = resp
             .images
-            .and_then(|i| i.portrait)
-            .filter(|p| !p.hash.is_empty())
-            .map(|p| {
-                let ext = if p.format.is_empty() {
-                    "jpg"
-                } else {
-                    &p.format
-                };
-                format!(
-                    "https://static.qobuz.com/images/artists/covers/large/{}.{ext}",
-                    p.hash
-                )
-            })
+            .as_ref()
+            .and_then(|i| i.portrait.as_ref())
+            .and_then(QArtistPortrait::url)
             .unwrap_or_default();
 
+        const MAX_POPULAR_TRACKS: usize = 10;
         let tracks = resp
             .top_tracks
-            .map(|t| t.items)
-            .unwrap_or_default()
             .into_iter()
-            .map(|qt| qt.to_library_track(None))
+            .filter(|pt| pt.id > 0 && pt.rights.streamable != Some(false))
+            .take(MAX_POPULAR_TRACKS)
+            .map(QPageTopTrack::into_library_track)
             .collect();
 
         let similar_artists = resp
@@ -562,8 +538,7 @@ impl Client {
             .map(|s| s.items)
             .unwrap_or_default()
             .into_iter()
-            .map(|qa| qa.to_artist())
-            .filter(|a| a.id > 0 && !a.name.is_empty())
+            .filter_map(QPageSimilarArtist::into_artist)
             .collect();
 
         ArtistPageExtras {
@@ -572,6 +547,179 @@ impl Client {
             similar_artists,
         }
     }
+}
+
+#[derive(Default, Deserialize)]
+struct QArtistPortrait {
+    #[serde(default)]
+    hash: String,
+    #[serde(default)]
+    format: String,
+}
+
+impl QArtistPortrait {
+    fn url(&self) -> Option<String> {
+        let h = self.hash.trim();
+        if h.is_empty() {
+            return None;
+        }
+        let ext = self.format.trim();
+        let ext = if ext.is_empty() { "jpg" } else { ext };
+        Some(format!(
+            "https://static.qobuz.com/images/artists/covers/large/{h}.{ext}"
+        ))
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct QArtistPageImages {
+    #[serde(default)]
+    portrait: Option<QArtistPortrait>,
+}
+
+#[derive(Default, Deserialize)]
+struct QArtistPagePortraitOnly {
+    #[serde(default)]
+    images: Option<QArtistPageImages>,
+}
+
+impl QArtistPagePortraitOnly {
+    fn portrait_url(&self) -> Option<String> {
+        self.images
+            .as_ref()
+            .and_then(|i| i.portrait.as_ref())
+            .and_then(QArtistPortrait::url)
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct QDisplayName {
+    #[serde(default)]
+    display: String,
+}
+
+#[derive(Default, Deserialize)]
+struct QPageSimilarArtist {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    name: QDisplayName,
+    #[serde(default)]
+    images: Option<QArtistPageImages>,
+}
+
+impl QPageSimilarArtist {
+    fn into_artist(self) -> Option<Artist> {
+        let name = self.name.display.trim().to_string();
+        if self.id <= 0 || name.is_empty() {
+            return None;
+        }
+        let artwork_url = self
+            .images
+            .as_ref()
+            .and_then(|i| i.portrait.as_ref())
+            .and_then(QArtistPortrait::url)
+            .unwrap_or_default();
+        Some(Artist {
+            id: self.id,
+            name,
+            artwork_url,
+            ..Default::default()
+        })
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct QPageSimilarWrap {
+    #[serde(default)]
+    items: Vec<QPageSimilarArtist>,
+}
+
+#[derive(Default, Deserialize)]
+struct QPageTrackArtist {
+    #[serde(default)]
+    name: QDisplayName,
+}
+
+#[derive(Default, Deserialize)]
+struct QPageTrackAlbum {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    image: QImage,
+}
+
+#[derive(Default, Deserialize)]
+struct QPageTopTrack {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    duration: i32,
+    #[serde(default)]
+    parental_warning: bool,
+    #[serde(default)]
+    audio_info: QDiscoverAudioInfo,
+    #[serde(default)]
+    rights: QDiscoverRights,
+    #[serde(default)]
+    artist: QPageTrackArtist,
+    #[serde(default)]
+    album: QPageTrackAlbum,
+}
+
+impl QPageTopTrack {
+    fn into_library_track(self) -> Track {
+        let mut title = self.title.trim().to_string();
+        let ver = self.version.trim();
+        if !ver.is_empty() && !title.to_lowercase().contains(&ver.to_lowercase()) {
+            title = format!("{title} ({ver})");
+        }
+        let artist_name = self.artist.name.display.trim().to_string();
+        let album_id = if self.album.id.is_empty() {
+            String::new()
+        } else {
+            format!("qobuz:{}", self.album.id)
+        };
+        Track {
+            id: format!("qobuz:{}", self.id),
+            source: SOURCE_QOBUZ.into(),
+            source_type: SOURCE_TYPE_REMOTE.into(),
+            provider: SOURCE_QOBUZ.into(),
+            external_id: self.id.to_string(),
+            qobuz_track_id: self.id,
+            album_id,
+            title,
+            artist: artist_name.clone(),
+            album_artist: artist_name,
+            album: self.album.title.trim().to_string(),
+            duration_sec: self.duration,
+            artwork_url: self.album.image.best(),
+            channels: 2,
+            mime: "audio/flac".into(),
+            ext: ".flac".into(),
+            bit_depth: self.audio_info.maximum_bit_depth,
+            sample_rate: normalize_sample_rate_hz(self.audio_info.maximum_sampling_rate),
+            explicit: self.parental_warning,
+            available: true,
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct QArtistPageResp {
+    #[serde(default)]
+    images: Option<QArtistPageImages>,
+    #[serde(default)]
+    top_tracks: Vec<QPageTopTrack>,
+    #[serde(default)]
+    similar_artists: Option<QPageSimilarWrap>,
 }
 
 fn put_url_cache_locked(cache: &mut HashMap<i64, StreamInfo>, track_id: i64, info: StreamInfo) {

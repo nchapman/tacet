@@ -281,7 +281,7 @@ fn start_autoscan(catalog: &Arc<Catalog>, state: &Arc<AppState>) -> Arc<AutoScan
         .and_then(|v| v.parse().ok())
         .unwrap_or(60);
 
-    let media_for_scan = Arc::clone(&state.media);
+    let state_for_scan = Arc::clone(state);
     let auto_scanner = AutoScanner::new(
         Arc::clone(catalog),
         AutoScanConfig {
@@ -290,7 +290,8 @@ fn start_autoscan(catalog: &Arc<Catalog>, state: &Arc<AppState>) -> Arc<AutoScan
             debounce: Duration::from_secs(5),
         },
         Some(Arc::new(move |_| {
-            media_for_scan.prewarm_art();
+            state_for_scan.media.prewarm_art();
+            state_for_scan.prewarm_artists();
         })),
     );
     state.set_auto_scanner(Arc::clone(&auto_scanner));
@@ -298,13 +299,16 @@ fn start_autoscan(catalog: &Arc<Catalog>, state: &Arc<AppState>) -> Arc<AutoScan
 
     if !catalog.roots().is_empty() {
         let cat_bg = Arc::clone(catalog);
-        let media_bg = Arc::clone(&state.media);
+        let state_bg = Arc::clone(state);
         tokio::spawn(async move {
             if let Ok(n) = cat_bg.scan().await {
                 tracing::info!(tracks = n, "initial local library scan complete");
-                media_bg.prewarm_art();
+                state_bg.media.prewarm_art();
+                state_bg.prewarm_artists();
             }
         });
+    } else {
+        state.prewarm_artists();
     }
     auto_scanner
 }

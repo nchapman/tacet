@@ -311,17 +311,18 @@ pub async fn library_rescan(
     if wait {
         st.catalog.scan().await?;
         st.media.prewarm_art();
+        st.prewarm_artists();
         return Ok((
             StatusCode::OK,
             Json(serde_json::to_value(st.catalog.status()).unwrap_or_default()),
         )
             .into_response());
     }
-    let cat = Arc::clone(&st.catalog);
-    let media = Arc::clone(&st.media);
+    let st_bg = Arc::clone(&st);
     tokio::spawn(async move {
-        if cat.scan().await.is_ok() {
-            media.prewarm_art();
+        if st_bg.catalog.scan().await.is_ok() {
+            st_bg.media.prewarm_art();
+            st_bg.prewarm_artists();
         }
     });
     Ok((
@@ -361,15 +362,18 @@ pub async fn library_sync(
     let wait = qv.get("wait").is_some_and(|v| v == "true" || v == "1");
     if wait {
         st.catalog.sync_remote(&prov).await?;
+        st.prewarm_artists();
         return Ok((
             StatusCode::OK,
             Json(serde_json::to_value(st.catalog.status()).unwrap_or_default()),
         )
             .into_response());
     }
-    let cat = Arc::clone(&st.catalog);
+    let st_bg = Arc::clone(&st);
     tokio::spawn(async move {
-        let _ = cat.sync_remote(&prov).await;
+        if st_bg.catalog.sync_remote(&prov).await.is_ok() {
+            st_bg.prewarm_artists();
+        }
     });
     Ok((
         StatusCode::ACCEPTED,
@@ -530,6 +534,7 @@ pub async fn qobuz_oauth_callback(
         .set_provider_credentials(SOURCE_QOBUZ, &qb.export_credentials());
     let _ = st.catalog.set_provider_available(SOURCE_QOBUZ, true);
     st.manager.broadcast("qobuz.status", &status);
+    st.prewarm_artists();
 
     Ok(Html(
         r#"<!doctype html><html><body><script>
@@ -581,6 +586,7 @@ pub async fn qobuz_login(
         .set_provider_credentials(SOURCE_QOBUZ, &qb.export_credentials());
     let _ = st.catalog.set_provider_available(SOURCE_QOBUZ, true);
     st.manager.broadcast("qobuz.status", &status);
+    st.prewarm_artists();
     Ok(Json(serde_json::to_value(status).unwrap_or_default()))
 }
 
