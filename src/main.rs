@@ -78,6 +78,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let cli = Cli::parse();
+    if let Err(msg) = validate_cli(&cli) {
+        return Err(msg.into());
+    }
     let data_dir = cli
         .data_dir
         .as_deref()
@@ -167,14 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "tacet listening");
 
-    let shutdown_tok = state.shutdown.clone();
-    let serve_fut = axum::serve(listener, router).with_graceful_shutdown(async move {
-        shutdown_signal().await;
-        shutdown_tok.cancel();
-    });
-    if let Err(e) = serve_fut.await {
-        tracing::error!(error = %e, "HTTP server exited with error");
-    }
+    serve_with_drain(listener, router, state.shutdown.clone()).await;
 
     tracing::info!("shutting down tacet...");
     upnp_monitor.stop();
@@ -255,6 +251,20 @@ fn configure_event_log(manager: &QueueManager, raw_path: &str) -> std::io::Resul
     Ok(())
 }
 
+fn validate_cli(cli: &Cli) -> Result<(), String> {
+    if cli.port == 0 {
+        return Err("--port must be between 1 and 65535 (got 0)".into());
+    }
+    if let Some(explicit) = cli.stream_mode.as_deref().filter(|s| !s.trim().is_empty())
+        && StreamMode::parse(explicit).is_none()
+    {
+        return Err(format!(
+            "invalid --stream-mode {explicit:?}: expected \"relay\" or \"direct\""
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_stream_mode(cli: &Cli, catalog: &Catalog) -> StreamMode {
     // Explicit CLI flag / TACET_STREAM_MODE takes precedence over saved SQLite pref.
     if let Some(explicit) = cli.stream_mode.as_deref().filter(|s| !s.trim().is_empty()) {
@@ -268,18 +278,30 @@ fn resolve_stream_mode(cli: &Cli, catalog: &Catalog) -> StreamMode {
     }
 }
 
+fn parse_watch_enabled(raw: Option<&str>) -> bool {
+    match raw {
+        Some(v) => {
+            let trimmed = v.trim();
+            trimmed.eq_ignore_ascii_case("true") || trimmed == "1"
+        }
+        None => true,
+    }
+}
+
 fn start_autoscan(catalog: &Arc<Catalog>, state: &Arc<AppState>) -> Arc<AutoScanner> {
-    let watch_enabled = catalog
-        .get_pref(PREF_LIBRARY_WATCH_ENABLED)
-        .ok()
-        .flatten()
-        .map(|v| v != "false")
-        .unwrap_or(true);
+    let watch_enabled = parse_watch_enabled(
+        catalog
+            .get_pref(PREF_LIBRARY_WATCH_ENABLED)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
     let interval_min: u64 = catalog
         .get_pref(PREF_LIBRARY_SCAN_INTERVAL_MIN)
         .ok()
         .flatten()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|v| v.min(10_080))
         .unwrap_or(60);
 
     let state_for_scan = Arc::clone(state);
@@ -322,14 +344,27 @@ fn spawn_manual_renderers(catalog: &Catalog, manager: &Arc<QueueManager>, render
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
-    let mut manual_urls: Vec<String> = catalog
+    let saved_urls: Vec<String> = catalog
         .get_pref(PREF_MANUAL_RENDERERS)
         .ok()
         .flatten()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
-    if !renderer_url.trim().is_empty() {
-        manual_urls.push(renderer_url.trim().to_string());
+
+    let mut seen = std::collections::HashSet::new();
+    let mut manual_urls = Vec::new();
+    let cli_url = renderer_url.trim();
+    if !cli_url.is_empty() && seen.insert(cli_url.to_string()) {
+        manual_urls.push(cli_url.to_string());
+    }
+    for u in saved_urls {
+        let trimmed = u.trim();
+        if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
+            manual_urls.push(trimmed.to_string());
+        }
+        if manual_urls.len() >= 16 {
+            break;
+        }
     }
     if manual_urls.is_empty() {
         return;
@@ -338,14 +373,22 @@ fn spawn_manual_renderers(catalog: &Catalog, manager: &Arc<QueueManager>, render
     let mgr_m = Arc::clone(manager);
     tokio::spawn(async move {
         for u in manual_urls {
-            if let Ok(r) = upnp::connect_by_url(&u).await {
-                let ctrl = linkplay::wrap(r);
-                let id = ctrl.info().id;
-                mgr_m.register_renderer(ctrl);
-                if let Some(q_str) = saved_qualities.get(&id)
-                    && let Some(q) = AudioQuality::parse(q_str)
-                {
-                    let _ = mgr_m.set_audio_quality(&id, q).await;
+            match tokio::time::timeout(Duration::from_secs(5), upnp::connect_by_url(&u)).await {
+                Ok(Ok(r)) => {
+                    let ctrl = linkplay::wrap(r);
+                    let id = ctrl.info().id;
+                    mgr_m.register_renderer(ctrl);
+                    if let Some(q_str) = saved_qualities.get(&id)
+                        && let Some(q) = AudioQuality::parse(q_str)
+                    {
+                        let _ = mgr_m.set_audio_quality(&id, q).await;
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(url = %u, error = %e, "manual renderer connect failed");
+                }
+                Err(_) => {
+                    tracing::warn!(url = %u, "manual renderer connect timed out after 5s");
                 }
             }
         }
@@ -400,6 +443,36 @@ fn start_device_monitors(manager: &Arc<QueueManager>) -> (Arc<Monitor>, Arc<Cast
     (upnp_monitor, cast_monitor)
 }
 
+async fn serve_with_drain(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    shutdown_tok: tokio_util::sync::CancellationToken,
+) {
+    let shutdown_wait = shutdown_tok.clone();
+    let mut server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown_wait.cancelled_owned())
+            .await
+    });
+    let wait_res = tokio::select! {
+        res = &mut server => Some(res),
+        () = shutdown_signal() => {
+            shutdown_tok.cancel();
+            tokio::time::timeout(Duration::from_secs(5), &mut server).await.ok()
+        }
+    };
+    log_server_exit(wait_res);
+}
+
+fn log_server_exit(wait_res: Option<Result<std::io::Result<()>, tokio::task::JoinError>>) {
+    match wait_res {
+        Some(Ok(Ok(()))) => {}
+        Some(Ok(Err(e))) => tracing::error!(error = %e, "HTTP server exited with error"),
+        Some(Err(e)) => tracing::error!(error = %e, "HTTP server task panicked"),
+        None => tracing::warn!("HTTP server drain timed out after 5s; forcing shutdown"),
+    }
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
@@ -418,5 +491,37 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_cli_rejects_port_zero_and_bad_stream_mode() {
+        let mut cli = Cli::parse_from(["tacet", "--port", "0"]);
+        let err = validate_cli(&cli).unwrap_err();
+        assert!(err.contains("--port"));
+
+        cli = Cli::parse_from(["tacet", "--stream-mode", "bogus"]);
+        let err = validate_cli(&cli).unwrap_err();
+        assert!(err.contains("--stream-mode"));
+        assert!(err.contains("relay"));
+        assert!(err.contains("direct"));
+
+        cli = Cli::parse_from(["tacet", "--port", "4320", "--stream-mode", "direct"]);
+        assert!(validate_cli(&cli).is_ok());
+    }
+
+    #[test]
+    fn parse_watch_enabled_matches_go_semantics() {
+        assert!(parse_watch_enabled(None));
+        assert!(parse_watch_enabled(Some("true")));
+        assert!(parse_watch_enabled(Some("TRUE")));
+        assert!(parse_watch_enabled(Some("1")));
+        assert!(!parse_watch_enabled(Some("false")));
+        assert!(!parse_watch_enabled(Some("0")));
+        assert!(!parse_watch_enabled(Some("")));
     }
 }
