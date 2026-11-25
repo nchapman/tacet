@@ -397,4 +397,44 @@ mod tests {
 
         mgr.close();
     }
+
+    #[tokio::test]
+    async fn event_log_writes_jsonl_for_sse_and_gena() {
+        struct SharedBuf(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buf = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let cat = Catalog::new_in_memory(vec![]);
+        let mgr = Manager::new(cat, None, 4320, StreamMode::Direct);
+        mgr.set_event_log(Some(Box::new(SharedBuf(Arc::clone(&buf)))));
+
+        mgr.broadcast("settings.updated", &serde_json::json!({"ok": true}));
+        mgr.apply_device_event(crate::upnp::DeviceEvent {
+            renderer_id: "zone:test".into(),
+            service: "AVTransport".into(),
+            has_state: true,
+            state: "PLAYING".into(),
+            ..Default::default()
+        });
+        mgr.close();
+
+        let text = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["src"], "sse");
+        assert!(lines[0]["ts"].as_str().unwrap().ends_with('Z'));
+        assert_eq!(lines[1]["src"], "gena");
+        assert_eq!(lines[1]["zoneId"], "zone:test");
+    }
 }

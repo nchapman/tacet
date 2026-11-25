@@ -81,7 +81,8 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TransportStatus {
     pub state: String,
     pub position: Duration,

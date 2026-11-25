@@ -2,6 +2,7 @@ mod ops;
 mod sync;
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -59,6 +60,7 @@ pub struct Manager {
     event_seq: AtomicU64,
     err_seq: AtomicU64,
     events_tx: broadcast::Sender<Event>,
+    event_log: Mutex<Option<Box<dyn Write + Send>>>,
     pub(super) stop: CancellationToken,
 }
 
@@ -82,10 +84,49 @@ impl Manager {
             event_seq: AtomicU64::new(0),
             err_seq: AtomicU64::new(0),
             events_tx,
+            event_log: Mutex::new(None),
             stop: CancellationToken::new(),
         });
         mgr.start_poll_loop();
         mgr
+    }
+
+    /// Configures an optional JSONL writer for raw event tracing (GENA, polls, SSE).
+    pub fn set_event_log(&self, writer: Option<Box<dyn Write + Send>>) {
+        *self.event_log.lock().unwrap_or_else(|e| e.into_inner()) = writer;
+    }
+
+    pub(super) fn log_event<T: Serialize>(&self, src: &str, zone_id: &str, data: &T) {
+        let enabled = self
+            .event_log
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some();
+        if !enabled {
+            return;
+        }
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LogEntry<'a, T: Serialize> {
+            ts: String,
+            src: &'a str,
+            #[serde(skip_serializing_if = "str::is_empty")]
+            zone_id: &'a str,
+            data: &'a T,
+        }
+        let Ok(mut line) = serde_json::to_vec(&LogEntry {
+            ts: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+            src,
+            zone_id,
+            data,
+        }) else {
+            return;
+        };
+        line.push(b'\n');
+        let mut guard = self.event_log.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(w) = guard.as_mut() {
+            let _ = w.write_all(&line);
+        }
     }
 
     pub fn set_gena(&self, gena: Arc<GenaClient>) {
@@ -126,12 +167,14 @@ impl Manager {
             return;
         };
         let id = self.event_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        let _ = self.events_tx.send(Event {
+        let ev = Event {
             id,
             event_type: event_type.into(),
             zone_id: zone_id.into(),
             data: val,
-        });
+        };
+        self.log_event("sse", zone_id, &ev);
+        let _ = self.events_tx.send(ev);
     }
 
     pub fn stream_mode(&self) -> StreamMode {

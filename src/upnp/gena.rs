@@ -19,7 +19,8 @@ pub const SERVICE_RENDERING_CONTROL: &str = "RenderingControl";
 const DEFAULT_GENA_TIMEOUT_SEC: u64 = 300;
 const MAX_GENA_BODY_BYTES: usize = 512 << 10;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceEvent {
     pub renderer_id: String,
     pub service: String,

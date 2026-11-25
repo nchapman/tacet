@@ -303,7 +303,8 @@ pub struct ZoneErrorEvent {
     pub occurred_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Event {
     pub id: u64,
     pub event_type: String,

@@ -125,9 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !cli.public_url.trim().is_empty() {
         manager.set_public_url(cli.public_url.trim());
     }
-    if !cli.event_log.trim().is_empty() {
-        tracing::info!(event_log = %cli.event_log, "event log flag acknowledged");
-    }
+    configure_event_log(&manager, &cli.event_log)?;
 
     let mgr_gena = Arc::clone(&manager);
     let gena = GenaClient::new(move |ev| {
@@ -231,6 +229,29 @@ async fn try_env_qobuz_login(catalog: &Catalog, qobuz: &QobuzClient) {
         }
         Err(e) => tracing::warn!(error = %e, "Qobuz env login failed"),
     }
+}
+
+fn configure_event_log(manager: &QueueManager, raw_path: &str) -> std::io::Result<()> {
+    let lp = raw_path.trim();
+    if lp.is_empty() {
+        return Ok(());
+    }
+    if lp == "-" {
+        manager.set_event_log(Some(Box::new(std::io::stderr())));
+        tracing::info!("raw event stream logging enabled: stderr");
+        return Ok(());
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let f = opts.open(lp)?;
+    manager.set_event_log(Some(Box::new(f)));
+    tracing::info!(path = lp, "raw event stream logging enabled");
+    Ok(())
 }
 
 fn resolve_stream_mode(cli: &Cli, catalog: &Catalog) -> StreamMode {

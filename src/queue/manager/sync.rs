@@ -19,6 +19,7 @@ struct PreloadTarget {
 impl Manager {
     /// Handles push events from UPnP GENA or remote HTTP/SSE players.
     pub fn apply_device_event(self: &Arc<Self>, ev: DeviceEvent) {
+        self.log_event("gena", &ev.renderer_id, &ev);
         let Some(z) = self.get_zone(&ev.renderer_id) else {
             return;
         };
@@ -183,6 +184,7 @@ impl Manager {
         let Ok(st) = ctrl.status().await else {
             return;
         };
+        self.log_event("poll", &zone_id, &st);
 
         let mut need_advance = false;
         let need_preload;

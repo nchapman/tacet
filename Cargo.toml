@@ -44,7 +44,6 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 # CLI, logging, errors
 clap = { version = "4", features = ["derive", "env"] }
 thiserror = "2"
-anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 dirs = "6"
@@ -65,16 +64,11 @@ hex = "0.4"
 base64 = "0.22"
 rand = "0.9"
 subtle = "2"
-uuid = { version = "1", features = ["v4"] }
 regex = "1"
-html-escape = "0.2"
 roxmltree = "0.20"
-quick-xml = "0.37"
 
 # Discovery & Cast
 ssdp-client = "2"
-socket2 = { version = "0.5", features = ["all"] }
-if-addrs = "0.13"
 oxicast = { version = "0.0.5", default-features = false, features = ["discovery"] }
 mdns-sd = "0.20"
 
