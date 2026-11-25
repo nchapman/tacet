@@ -1,0 +1,9 @@
+# Clippy complexity and maintainability thresholds.
+cognitive-complexity-threshold = 25
+too-many-lines-threshold = 100
+too-many-arguments-threshold = 7
+type-complexity-threshold = 250
+max-struct-bools = 4
+max-fn-params-bools = 3
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true

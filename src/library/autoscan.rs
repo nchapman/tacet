@@ -82,135 +82,143 @@ impl AutoScanner {
         if tx_guard.is_some() {
             return;
         }
-        let (reconf_tx, mut reconf_rx) = mpsc::channel::<AutoScanConfig>(4);
+        let (reconf_tx, reconf_rx) = mpsc::channel::<AutoScanConfig>(4);
         *tx_guard = Some(reconf_tx);
         drop(tx_guard);
 
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            let mut cfg = this.config();
-            let (ev_tx, mut ev_rx) = mpsc::channel::<Event>(256);
-            let mut watcher: Option<RecommendedWatcher> = None;
-
-            let start_watcher = |cat: &Catalog,
-                                 tx: mpsc::Sender<Event>|
-             -> Option<RecommendedWatcher> {
-                let roots = cat.roots();
-                if roots.is_empty() {
-                    return None;
-                }
-                let mut w = match notify::recommended_watcher(move |res: notify::Result<Event>| {
-                    if let Ok(ev) = res {
-                        let _ = tx.try_send(ev);
-                    }
-                }) {
-                    Ok(w) => w,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "library file watcher unavailable");
-                        return None;
-                    }
-                };
-                for root in &roots {
-                    if root.exists()
-                        && let Err(e) = w.watch(root, RecursiveMode::Recursive)
-                    {
-                        tracing::warn!(root = %root.display(), error = %e, "library watcher failed on root");
-                    }
-                }
-                tracing::info!(roots = roots.len(), "library file watcher active");
-                Some(w)
-            };
-
-            if cfg.watch_enabled {
-                watcher = start_watcher(&this.cat, ev_tx.clone());
-            }
-
-            let mut debounce_deadline: Option<tokio::time::Instant> = None;
-            let mut next_periodic: Option<tokio::time::Instant> = if !cfg.interval.is_zero() {
-                Some(tokio::time::Instant::now() + cfg.interval)
-            } else {
-                None
-            };
-
-            loop {
-                let next_timer = match (debounce_deadline, next_periodic) {
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                    (Some(a), None) => Some(a),
-                    (None, Some(b)) => Some(b),
-                    (None, None) => None,
-                };
-
-                tokio::select! {
-                    _ = this.cancel.cancelled() => break,
-                    Some(new_cfg) = reconf_rx.recv() => {
-                        if new_cfg.watch_enabled && watcher.is_none() {
-                            watcher = start_watcher(&this.cat, ev_tx.clone());
-                        } else if !new_cfg.watch_enabled {
-                            watcher = None;
-                            debounce_deadline = None;
-                        }
-                        next_periodic = if !new_cfg.interval.is_zero() {
-                            Some(tokio::time::Instant::now() + new_cfg.interval)
-                        } else {
-                            None
-                        };
-                        cfg = new_cfg;
-                    }
-                    Some(ev) = ev_rx.recv() => {
-                        if is_relevant_event(&ev) {
-                            debounce_deadline = Some(tokio::time::Instant::now() + cfg.debounce);
-                        }
-                    }
-                    _ = async {
-                        if let Some(dl) = next_timer {
-                            tokio::time::sleep_until(dl).await;
-                        } else {
-                            std::future::pending::<()>().await;
-                        }
-                    } => {
-                        let now = tokio::time::Instant::now();
-                        let mut reason = None;
-                        if let Some(dl) = debounce_deadline && now >= dl {
-                            debounce_deadline = None;
-                            reason = Some("file-change");
-                        }
-                        if let Some(per) = next_periodic && now >= per {
-                            next_periodic = Some(now + cfg.interval);
-                            if reason.is_none() {
-                                reason = Some("scheduled");
-                            }
-                        }
-                        if let Some(r) = reason && !this.cat.roots().is_empty() {
-                            let started = Instant::now();
-                            match this.cat.scan().await {
-                                Ok(n) => {
-                                    let st = this.cat.status();
-                                    tracing::info!(
-                                        reason = r,
-                                        tracks = n,
-                                        albums = st.local_albums,
-                                        elapsed_ms = started.elapsed().as_millis(),
-                                        "auto library scan complete"
-                                    );
-                                    if let Some(cb) = &this.on_scan_done {
-                                        cb(n);
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!(reason = r, error = %e, "auto library scan failed");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            drop(watcher);
+            this.run_loop(reconf_rx).await;
         });
+    }
+
+    async fn run_loop(&self, mut reconf_rx: mpsc::Receiver<AutoScanConfig>) {
+        let mut cfg = self.config();
+        let (ev_tx, mut ev_rx) = mpsc::channel::<Event>(256);
+        let mut watcher = if cfg.watch_enabled {
+            start_watcher(&self.cat, ev_tx.clone())
+        } else {
+            None
+        };
+
+        let mut debounce_deadline: Option<tokio::time::Instant> = None;
+        let mut next_periodic = next_periodic_deadline(cfg.interval);
+
+        loop {
+            let next_timer = match (debounce_deadline, next_periodic) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+
+            tokio::select! {
+                _ = self.cancel.cancelled() => break,
+                Some(new_cfg) = reconf_rx.recv() => {
+                    if new_cfg.watch_enabled && watcher.is_none() {
+                        watcher = start_watcher(&self.cat, ev_tx.clone());
+                    } else if !new_cfg.watch_enabled {
+                        watcher = None;
+                        debounce_deadline = None;
+                    }
+                    next_periodic = next_periodic_deadline(new_cfg.interval);
+                    cfg = new_cfg;
+                }
+                Some(ev) = ev_rx.recv() => {
+                    if is_relevant_event(&ev) {
+                        debounce_deadline = Some(tokio::time::Instant::now() + cfg.debounce);
+                    }
+                }
+                _ = sleep_until_opt(next_timer) => {
+                    let now = tokio::time::Instant::now();
+                    let mut reason = None;
+                    if let Some(dl) = debounce_deadline && now >= dl {
+                        debounce_deadline = None;
+                        reason = Some("file-change");
+                    }
+                    if let Some(per) = next_periodic && now >= per {
+                        next_periodic = Some(now + cfg.interval);
+                        if reason.is_none() {
+                            reason = Some("scheduled");
+                        }
+                    }
+                    if let Some(r) = reason && !self.cat.roots().is_empty() {
+                        self.execute_scan(r).await;
+                    }
+                }
+            }
+        }
+        drop(watcher);
+    }
+
+    async fn execute_scan(&self, reason: &str) {
+        let started = Instant::now();
+        match self.cat.scan().await {
+            Ok(n) => {
+                let st = self.cat.status();
+                tracing::info!(
+                    reason,
+                    tracks = n,
+                    albums = st.local_albums,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "auto library scan complete"
+                );
+                if let Some(cb) = &self.on_scan_done {
+                    cb(n);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(reason, error = %e, "auto library scan failed");
+            }
+        }
     }
 
     pub fn stop(&self) {
         self.cancel.cancel();
     }
+}
+
+fn next_periodic_deadline(interval: Duration) -> Option<tokio::time::Instant> {
+    if interval.is_zero() {
+        None
+    } else {
+        Some(tokio::time::Instant::now() + interval)
+    }
+}
+
+async fn sleep_until_opt(deadline: Option<tokio::time::Instant>) {
+    if let Some(dl) = deadline {
+        tokio::time::sleep_until(dl).await;
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
+fn start_watcher(cat: &Catalog, tx: mpsc::Sender<Event>) -> Option<RecommendedWatcher> {
+    let roots = cat.roots();
+    if roots.is_empty() {
+        return None;
+    }
+    let mut w = match notify::recommended_watcher(move |res: notify::Result<Event>| {
+        if let Ok(ev) = res {
+            let _ = tx.try_send(ev);
+        }
+    }) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!(error = %e, "library file watcher unavailable");
+            return None;
+        }
+    };
+    for root in &roots {
+        if root.exists()
+            && let Err(e) = w.watch(root, RecursiveMode::Recursive)
+        {
+            tracing::warn!(root = %root.display(), error = %e, "library watcher failed on root");
+        }
+    }
+    tracing::info!(roots = roots.len(), "library file watcher active");
+    Some(w)
 }
 
 fn is_relevant_event(ev: &Event) -> bool {

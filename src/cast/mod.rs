@@ -155,7 +155,6 @@ fn map_repeat_mode(repeat: &str, shuffle: bool) -> RepeatMode {
 
 fn repeat_mode_str(m: RepeatMode) -> &'static str {
     match m {
-        RepeatMode::RepeatOff => "REPEAT_OFF",
         RepeatMode::RepeatAll => "REPEAT_ALL",
         RepeatMode::RepeatSingle => "REPEAT_SINGLE",
         RepeatMode::RepeatAllAndShuffle => "REPEAT_ALL_AND_SHUFFLE",

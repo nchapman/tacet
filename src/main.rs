@@ -80,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let data_dir = cli
         .data_dir
+        .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(default_data_dir);
@@ -111,58 +112,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cache_db = cache_dir.join("cache.db");
     let app_cache = Cache::open(&cache_db.to_string_lossy(), CacheOptions::default())
         .or_else(|_| Cache::open(":memory:", CacheOptions::default()))?;
-
-    let qobuz = QobuzClient::new(QobuzConfig {
-        app_id: std::env::var("QOBUZ_APP_ID").unwrap_or_default(),
-        app_secret: std::env::var("QOBUZ_APP_SECRET").unwrap_or_default(),
-        auth_token: std::env::var("QOBUZ_AUTH_TOKEN").unwrap_or_default(),
-        format_id: FORMAT_FLAC_192,
-        cache: Some(Arc::clone(&app_cache)),
-        ..Default::default()
-    });
-    if let Ok(Some(saved)) = catalog.get_provider_credentials::<PersistedCredentials>(SOURCE_QOBUZ)
-    {
-        qobuz.restore_credentials(saved);
-        if qobuz.is_connected() {
-            tracing::info!(user = %qobuz.status().user_name, "restored Qobuz session from SQLite");
-        }
-    }
-    if !qobuz.is_connected()
-        && let (Ok(email), Ok(password)) = (
-            std::env::var("QOBUZ_EMAIL"),
-            std::env::var("QOBUZ_PASSWORD"),
-        )
-        && !email.trim().is_empty()
-        && !password.is_empty()
-    {
-        match qobuz.login(&email, &password).await {
-            Ok(st) => {
-                let _ = catalog.set_provider_credentials(SOURCE_QOBUZ, &qobuz.export_credentials());
-                tracing::info!(user = %st.user_name, "logged in to Qobuz via env credentials");
-            }
-            Err(e) => tracing::warn!(error = %e, "Qobuz env login failed"),
-        }
-    }
-    if let Ok(Some(max_q)) = catalog.get_pref(PREF_QOBUZ_MAX_QUALITY)
-        && !max_q.is_empty()
-    {
-        let _ = qobuz.set_max_quality(&max_q);
-    }
-    catalog.register_remote_source(qobuz.as_remote_source());
+    let qobuz = init_qobuz(&catalog, Arc::clone(&app_cache)).await;
 
     // 3. Queue / playback manager + GENA client
-    // Explicit CLI flag / TACET_STREAM_MODE takes precedence over saved SQLite pref.
-    let stream_mode =
-        if let Some(explicit) = cli.stream_mode.as_deref().filter(|s| !s.trim().is_empty()) {
-            StreamMode::parse(explicit).unwrap_or(StreamMode::Relay)
-        } else if let Ok(Some(saved_sm)) = catalog.get_pref(PREF_STREAM_MODE)
-            && let Some(m) = StreamMode::parse(&saved_sm)
-        {
-            m
-        } else {
-            StreamMode::Relay
-        };
-
+    let stream_mode = resolve_stream_mode(&cli, &catalog);
     let manager = QueueManager::new(
         Arc::clone(&catalog),
         Some(Arc::clone(&qobuz)),
@@ -204,121 +157,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     state.media.set_art_cache_dir(cache_dir.join("art"));
 
-    // 5. AutoScanner (filesystem watcher + periodic scan)
-    let watch_enabled = catalog
-        .get_pref(PREF_LIBRARY_WATCH_ENABLED)
-        .ok()
-        .flatten()
-        .map(|v| v != "false")
-        .unwrap_or(true);
-    let interval_min: u64 = catalog
-        .get_pref(PREF_LIBRARY_SCAN_INTERVAL_MIN)
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(60);
+    // 5. AutoScanner, initial scan, manual renderers, UPnP & Cast monitors
+    let auto_scanner = start_autoscan(&catalog, &state);
+    spawn_manual_renderers(&catalog, &manager, &cli.renderer_url);
+    let (upnp_monitor, cast_monitor) = start_device_monitors(&manager);
 
-    let media_for_scan = Arc::clone(&state.media);
-    let auto_scanner = AutoScanner::new(
-        Arc::clone(&catalog),
-        AutoScanConfig {
-            watch_enabled,
-            interval: Duration::from_secs(interval_min * 60),
-            debounce: Duration::from_secs(5),
-        },
-        Some(Arc::new(move |_| {
-            media_for_scan.prewarm_art();
-        })),
-    );
-    state.set_auto_scanner(Arc::clone(&auto_scanner));
-    auto_scanner.start();
-
-    // Initial background library scan + manual renderer reconnect
-    if !catalog.roots().is_empty() {
-        let cat_bg = Arc::clone(&catalog);
-        let media_bg = Arc::clone(&state.media);
-        tokio::spawn(async move {
-            if let Ok(n) = cat_bg.scan().await {
-                tracing::info!(tracks = n, "initial local library scan complete");
-                media_bg.prewarm_art();
-            }
-        });
-    }
-
-    let saved_qualities: std::collections::HashMap<String, String> = catalog
-        .get_pref(PREF_ZONE_QUALITIES)
-        .ok()
-        .flatten()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-
-    // Direct renderer URL + remembered manual renderers
-    let mut manual_urls: Vec<String> = catalog
-        .get_pref(PREF_MANUAL_RENDERERS)
-        .ok()
-        .flatten()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-    if !cli.renderer_url.trim().is_empty() {
-        manual_urls.push(cli.renderer_url.trim().to_string());
-    }
-    if !manual_urls.is_empty() {
-        let mgr_m = Arc::clone(&manager);
-        let sq = saved_qualities.clone();
-        tokio::spawn(async move {
-            for u in manual_urls {
-                if let Ok(r) = upnp::connect_by_url(&u).await {
-                    let ctrl = linkplay::wrap(r);
-                    let id = ctrl.info().id;
-                    mgr_m.register_renderer(ctrl);
-                    if let Some(q_str) = sq.get(&id)
-                        && let Some(q) = AudioQuality::parse(q_str)
-                    {
-                        let _ = mgr_m.set_audio_quality(&id, q).await;
-                    }
-                }
-            }
-        });
-    }
-
-    // 6. Background UPnP & Chromecast monitors
-    let mgr_u1 = Arc::clone(&manager);
-    let mgr_u2 = Arc::clone(&manager);
-    let mgr_u3 = Arc::clone(&manager);
-    let mgr_u4 = Arc::clone(&manager);
-    let upnp_monitor = Monitor::new(
-        MonitorConfig::default(),
-        MonitorCallbacks {
-            list_upnp: Arc::new(move || mgr_u1.list_renderers_by_kind("upnp")),
-            is_active: Arc::new(move |id| mgr_u2.is_zone_active(id)),
-            on_found: Arc::new(move |r| mgr_u3.register_renderer(linkplay::wrap(r))),
-            on_removed: Arc::new(move |id, name| {
-                tracing::info!(id, name, "removing unreachable UPnP renderer");
-                mgr_u4.remove_renderer(id);
-            }),
-        },
-    );
-    upnp_monitor.start();
-
-    let mgr_c1 = Arc::clone(&manager);
-    let mgr_c2 = Arc::clone(&manager);
-    let mgr_c3 = Arc::clone(&manager);
-    let mgr_c4 = Arc::clone(&manager);
-    let cast_monitor = CastMonitor::new(
-        Duration::from_secs(60),
-        CastMonitorCallbacks {
-            list_cast: Arc::new(move || mgr_c1.list_renderers_by_kind("cast")),
-            is_active: Arc::new(move |id| mgr_c2.is_zone_active(id)),
-            on_found: Arc::new(move |r| mgr_c3.register_renderer(r)),
-            on_removed: Arc::new(move |id, name| {
-                tracing::info!(id, name, "removing unreachable Cast renderer");
-                mgr_c4.remove_renderer(id);
-            }),
-        },
-    );
-    cast_monitor.start();
-
-    // 7. Start Axum HTTP server with coordinated shutdown token so SSE/media streams close promptly
+    // 6. Start Axum HTTP server with coordinated shutdown token so SSE/media streams close promptly
     let router = build_router(Arc::clone(&state));
     let addr = SocketAddr::from(([0, 0, 0, 0], cli.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -340,6 +184,185 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.close();
     catalog.close();
     Ok(())
+}
+
+async fn init_qobuz(catalog: &Arc<Catalog>, app_cache: Arc<Cache>) -> Arc<QobuzClient> {
+    let qobuz = QobuzClient::new(QobuzConfig {
+        app_id: std::env::var("QOBUZ_APP_ID").unwrap_or_default(),
+        app_secret: std::env::var("QOBUZ_APP_SECRET").unwrap_or_default(),
+        auth_token: std::env::var("QOBUZ_AUTH_TOKEN").unwrap_or_default(),
+        format_id: FORMAT_FLAC_192,
+        cache: Some(app_cache),
+        ..Default::default()
+    });
+    if let Ok(Some(saved)) = catalog.get_provider_credentials::<PersistedCredentials>(SOURCE_QOBUZ)
+    {
+        qobuz.restore_credentials(saved);
+        if qobuz.is_connected() {
+            tracing::info!(user = %qobuz.status().user_name, "restored Qobuz session from SQLite");
+        }
+    }
+    if !qobuz.is_connected() {
+        try_env_qobuz_login(catalog, &qobuz).await;
+    }
+    if let Ok(Some(max_q)) = catalog.get_pref(PREF_QOBUZ_MAX_QUALITY)
+        && !max_q.is_empty()
+    {
+        let _ = qobuz.set_max_quality(&max_q);
+    }
+    catalog.register_remote_source(qobuz.as_remote_source());
+    qobuz
+}
+
+async fn try_env_qobuz_login(catalog: &Catalog, qobuz: &QobuzClient) {
+    let (Ok(email), Ok(password)) = (
+        std::env::var("QOBUZ_EMAIL"),
+        std::env::var("QOBUZ_PASSWORD"),
+    ) else {
+        return;
+    };
+    if email.trim().is_empty() || password.is_empty() {
+        return;
+    }
+    match qobuz.login(&email, &password).await {
+        Ok(st) => {
+            let _ = catalog.set_provider_credentials(SOURCE_QOBUZ, &qobuz.export_credentials());
+            tracing::info!(user = %st.user_name, "logged in to Qobuz via env credentials");
+        }
+        Err(e) => tracing::warn!(error = %e, "Qobuz env login failed"),
+    }
+}
+
+fn resolve_stream_mode(cli: &Cli, catalog: &Catalog) -> StreamMode {
+    // Explicit CLI flag / TACET_STREAM_MODE takes precedence over saved SQLite pref.
+    if let Some(explicit) = cli.stream_mode.as_deref().filter(|s| !s.trim().is_empty()) {
+        StreamMode::parse(explicit).unwrap_or(StreamMode::Relay)
+    } else if let Ok(Some(saved_sm)) = catalog.get_pref(PREF_STREAM_MODE)
+        && let Some(m) = StreamMode::parse(&saved_sm)
+    {
+        m
+    } else {
+        StreamMode::Relay
+    }
+}
+
+fn start_autoscan(catalog: &Arc<Catalog>, state: &Arc<AppState>) -> Arc<AutoScanner> {
+    let watch_enabled = catalog
+        .get_pref(PREF_LIBRARY_WATCH_ENABLED)
+        .ok()
+        .flatten()
+        .map(|v| v != "false")
+        .unwrap_or(true);
+    let interval_min: u64 = catalog
+        .get_pref(PREF_LIBRARY_SCAN_INTERVAL_MIN)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
+
+    let media_for_scan = Arc::clone(&state.media);
+    let auto_scanner = AutoScanner::new(
+        Arc::clone(catalog),
+        AutoScanConfig {
+            watch_enabled,
+            interval: Duration::from_secs(interval_min * 60),
+            debounce: Duration::from_secs(5),
+        },
+        Some(Arc::new(move |_| {
+            media_for_scan.prewarm_art();
+        })),
+    );
+    state.set_auto_scanner(Arc::clone(&auto_scanner));
+    auto_scanner.start();
+
+    if !catalog.roots().is_empty() {
+        let cat_bg = Arc::clone(catalog);
+        let media_bg = Arc::clone(&state.media);
+        tokio::spawn(async move {
+            if let Ok(n) = cat_bg.scan().await {
+                tracing::info!(tracks = n, "initial local library scan complete");
+                media_bg.prewarm_art();
+            }
+        });
+    }
+    auto_scanner
+}
+
+fn spawn_manual_renderers(catalog: &Catalog, manager: &Arc<QueueManager>, renderer_url: &str) {
+    let saved_qualities: std::collections::HashMap<String, String> = catalog
+        .get_pref(PREF_ZONE_QUALITIES)
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let mut manual_urls: Vec<String> = catalog
+        .get_pref(PREF_MANUAL_RENDERERS)
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    if !renderer_url.trim().is_empty() {
+        manual_urls.push(renderer_url.trim().to_string());
+    }
+    if manual_urls.is_empty() {
+        return;
+    }
+
+    let mgr_m = Arc::clone(manager);
+    tokio::spawn(async move {
+        for u in manual_urls {
+            if let Ok(r) = upnp::connect_by_url(&u).await {
+                let ctrl = linkplay::wrap(r);
+                let id = ctrl.info().id;
+                mgr_m.register_renderer(ctrl);
+                if let Some(q_str) = saved_qualities.get(&id)
+                    && let Some(q) = AudioQuality::parse(q_str)
+                {
+                    let _ = mgr_m.set_audio_quality(&id, q).await;
+                }
+            }
+        }
+    });
+}
+
+fn start_device_monitors(manager: &Arc<QueueManager>) -> (Arc<Monitor>, Arc<CastMonitor>) {
+    let mgr_u1 = Arc::clone(manager);
+    let mgr_u2 = Arc::clone(manager);
+    let mgr_u3 = Arc::clone(manager);
+    let mgr_u4 = Arc::clone(manager);
+    let upnp_monitor = Monitor::new(
+        MonitorConfig::default(),
+        MonitorCallbacks {
+            list_upnp: Arc::new(move || mgr_u1.list_renderers_by_kind("upnp")),
+            is_active: Arc::new(move |id| mgr_u2.is_zone_active(id)),
+            on_found: Arc::new(move |r| mgr_u3.register_renderer(linkplay::wrap(r))),
+            on_removed: Arc::new(move |id, name| {
+                tracing::info!(id, name, "removing unreachable UPnP renderer");
+                mgr_u4.remove_renderer(id);
+            }),
+        },
+    );
+    upnp_monitor.start();
+
+    let mgr_c1 = Arc::clone(manager);
+    let mgr_c2 = Arc::clone(manager);
+    let mgr_c3 = Arc::clone(manager);
+    let mgr_c4 = Arc::clone(manager);
+    let cast_monitor = CastMonitor::new(
+        Duration::from_secs(60),
+        CastMonitorCallbacks {
+            list_cast: Arc::new(move || mgr_c1.list_renderers_by_kind("cast")),
+            is_active: Arc::new(move |id| mgr_c2.is_zone_active(id)),
+            on_found: Arc::new(move |r| mgr_c3.register_renderer(r)),
+            on_removed: Arc::new(move |id, name| {
+                tracing::info!(id, name, "removing unreachable Cast renderer");
+                mgr_c4.remove_renderer(id);
+            }),
+        },
+    );
+    cast_monitor.start();
+    (upnp_monitor, cast_monitor)
 }
 
 async fn shutdown_signal() {

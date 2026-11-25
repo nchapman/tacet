@@ -175,7 +175,16 @@ struct ParsedService {
     scpd_url: String,
 }
 
-async fn build_renderer_from_xml(xml: &str, loc: &Url) -> Result<Arc<Renderer>> {
+struct ParsedDescription {
+    url_base: Url,
+    friendly_name: String,
+    manufacturer: String,
+    model: String,
+    udn: String,
+    services: Vec<ParsedService>,
+}
+
+fn parse_description_xml(xml: &str, loc: &Url) -> Result<ParsedDescription> {
     let doc = roxmltree::Document::parse(xml)
         .map_err(|e| UpnpError::Other(format!("parse UPnP description XML: {e}")))?;
 
@@ -203,141 +212,134 @@ async fn build_renderer_from_xml(xml: &str, loc: &Url) -> Result<Arc<Renderer>> 
             .unwrap_or_default()
     };
 
-    let friendly_name = child_text(device_node, "friendlyName");
-    let manufacturer = child_text(device_node, "manufacturer");
-    let model = child_text(device_node, "modelName");
-    let udn = child_text(device_node, "UDN");
-
     let mut services = Vec::new();
     for node in doc.descendants() {
         if node.is_element() && node.tag_name().name().eq_ignore_ascii_case("service") {
             let st = child_text(node, "serviceType");
-            let ctrl = child_text(node, "controlURL");
-            let ev = child_text(node, "eventSubURL");
-            let scpd = child_text(node, "SCPDURL");
             if !st.is_empty() {
                 services.push(ParsedService {
                     service_type: st,
-                    control_url: ctrl,
-                    event_sub_url: ev,
-                    scpd_url: scpd,
+                    control_url: child_text(node, "controlURL"),
+                    event_sub_url: child_text(node, "eventSubURL"),
+                    scpd_url: child_text(node, "SCPDURL"),
                 });
             }
         }
     }
 
-    let resolve_safe = |rel: &str| -> Option<String> {
-        let rel = rel.trim();
-        if rel.is_empty() {
-            return None;
-        }
-        url_base.join(rel).ok().map(|u| u.to_string())
-    };
+    Ok(ParsedDescription {
+        url_base,
+        friendly_name: child_text(device_node, "friendlyName"),
+        manufacturer: child_text(device_node, "manufacturer"),
+        model: child_text(device_node, "modelName"),
+        udn: child_text(device_node, "UDN"),
+        services,
+    })
+}
 
-    let av_svc = services
-        .iter()
-        .find(|s| s.service_type == URN_AV_TRANSPORT_1)
-        .ok_or_else(|| {
-            UpnpError::Other(format!(
-                "device {friendly_name:?} has no AVTransport:1 service"
-            ))
-        })?;
-    let av_control_raw = resolve_safe(&av_svc.control_url)
-        .ok_or_else(|| UpnpError::Other("missing AVTransport controlURL".into()))?;
-    let av_control = validate_renderer_url(&av_control_raw).await?.to_string();
-
-    let av_event = match resolve_safe(&av_svc.event_sub_url) {
-        Some(u) => validate_renderer_url(&u)
-            .await
-            .map(|x| x.to_string())
-            .unwrap_or_default(),
-        None => String::new(),
+async fn resolve_optional_url(url_base: &Url, rel: Option<&str>) -> String {
+    let Some(raw) = rel
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|r| url_base.join(r).ok())
+    else {
+        return String::new();
     };
+    validate_renderer_url(raw.as_str())
+        .await
+        .map(|u| u.to_string())
+        .unwrap_or_default()
+}
 
-    let rc_svc = services
-        .iter()
-        .find(|s| s.service_type == URN_RENDERING_CONTROL_1);
-    let rc_control = match rc_svc.and_then(|s| resolve_safe(&s.control_url)) {
-        Some(u) => validate_renderer_url(&u)
-            .await
-            .map(|x| x.to_string())
-            .unwrap_or_default(),
-        None => String::new(),
-    };
-    let rc_event = match rc_svc.and_then(|s| resolve_safe(&s.event_sub_url)) {
-        Some(u) => validate_renderer_url(&u)
-            .await
-            .map(|x| x.to_string())
-            .unwrap_or_default(),
-        None => String::new(),
-    };
-
-    let cm_control = match services
-        .iter()
-        .find(|s| s.service_type == URN_CONNECTION_MANAGER_1)
-        .and_then(|s| resolve_safe(&s.control_url))
-    {
-        Some(u) => validate_renderer_url(&u)
-            .await
-            .map(|x| x.to_string())
-            .unwrap_or_default(),
-        None => String::new(),
-    };
-
-    let pq_control = match services
-        .iter()
-        .find(|s| s.service_type == URN_LINKPLAY_PLAYQUEUE_1)
-        .and_then(|s| resolve_safe(&s.control_url))
-    {
-        Some(u) => validate_renderer_url(&u)
-            .await
-            .map(|x| x.to_string())
-            .unwrap_or_default(),
-        None => String::new(),
-    };
-
-    // Probe SCPD for optional SetNextAVTransportURI & Seek actions
-    let mut supports_set_next = true;
-    let mut supports_seek = true;
-    if let Some(scpd_raw) = resolve_safe(&av_svc.scpd_url)
-        && let Ok(scpd_url) = validate_renderer_url(&scpd_raw).await
-        && let Ok(scpd_xml) = fetch_xml_text(&scpd_url).await
-        && let Ok(sdoc) = roxmltree::Document::parse(&scpd_xml)
-    {
-        let actions: Vec<String> = sdoc
-            .descendants()
-            .filter(|n| n.is_element() && n.tag_name().name().eq_ignore_ascii_case("action"))
-            .filter_map(|a| {
-                a.children()
-                    .find(|c| c.is_element() && c.tag_name().name().eq_ignore_ascii_case("name"))
-                    .and_then(|c| c.text())
-                    .map(|s| s.trim().to_string())
-            })
-            .collect();
-        if !actions.is_empty() {
-            supports_set_next = actions.iter().any(|a| a == "SetNextAVTransportURI");
-            supports_seek = actions.iter().any(|a| a == "Seek");
-        }
+async fn probe_scpd_capabilities(url_base: &Url, scpd_rel: &str) -> (bool, bool) {
+    let scpd_raw = resolve_optional_url(url_base, Some(scpd_rel)).await;
+    if scpd_raw.is_empty() {
+        return (true, true);
     }
-
-    let id = if !udn.is_empty() {
-        udn
-    } else {
-        loc.to_string()
+    let Ok(scpd_url) = Url::parse(&scpd_raw) else {
+        return (true, true);
     };
+    let Ok(scpd_xml) = fetch_xml_text(&scpd_url).await else {
+        return (true, true);
+    };
+    let Ok(sdoc) = roxmltree::Document::parse(&scpd_xml) else {
+        return (true, true);
+    };
+    let actions: Vec<String> = sdoc
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name().eq_ignore_ascii_case("action"))
+        .filter_map(|a| {
+            a.children()
+                .find(|c| c.is_element() && c.tag_name().name().eq_ignore_ascii_case("name"))
+                .and_then(|c| c.text())
+                .map(|s| s.trim().to_string())
+        })
+        .collect();
+    if actions.is_empty() {
+        return (true, true);
+    }
+    (
+        actions.iter().any(|a| a == "SetNextAVTransportURI"),
+        actions.iter().any(|a| a == "Seek"),
+    )
+}
+
+async fn build_renderer_from_xml(xml: &str, loc: &Url) -> Result<Arc<Renderer>> {
+    let desc = parse_description_xml(xml, loc)?;
+    let find_svc = |urn: &str| desc.services.iter().find(|s| s.service_type == urn);
+
+    let av_svc = find_svc(URN_AV_TRANSPORT_1).ok_or_else(|| {
+        UpnpError::Other(format!(
+            "device {:?} has no AVTransport:1 service",
+            desc.friendly_name
+        ))
+    })?;
+    let av_control_raw = desc
+        .url_base
+        .join(av_svc.control_url.trim())
+        .ok()
+        .filter(|_| !av_svc.control_url.trim().is_empty())
+        .ok_or_else(|| UpnpError::Other("missing AVTransport controlURL".into()))?;
+    let av_control = validate_renderer_url(av_control_raw.as_str())
+        .await?
+        .to_string();
+
+    let av_event = resolve_optional_url(&desc.url_base, Some(&av_svc.event_sub_url)).await;
+    let rc_svc = find_svc(URN_RENDERING_CONTROL_1);
+    let rc_control =
+        resolve_optional_url(&desc.url_base, rc_svc.map(|s| s.control_url.as_str())).await;
+    let rc_event =
+        resolve_optional_url(&desc.url_base, rc_svc.map(|s| s.event_sub_url.as_str())).await;
+    let cm_control = resolve_optional_url(
+        &desc.url_base,
+        find_svc(URN_CONNECTION_MANAGER_1).map(|s| s.control_url.as_str()),
+    )
+    .await;
+    let pq_control = resolve_optional_url(
+        &desc.url_base,
+        find_svc(URN_LINKPLAY_PLAYQUEUE_1).map(|s| s.control_url.as_str()),
+    )
+    .await;
+
+    let (supports_set_next, supports_seek) =
+        probe_scpd_capabilities(&desc.url_base, &av_svc.scpd_url).await;
+
     let host = loc.host_str().unwrap_or("").to_string();
     let local_ip = local_ip_for_host(&host);
-
     let info = RendererInfo {
-        id,
+        id: if desc.udn.is_empty() {
+            loc.to_string()
+        } else {
+            desc.udn
+        },
         kind: "upnp".into(),
-        name: if friendly_name.is_empty() {
+        name: if desc.friendly_name.is_empty() {
             host.clone()
         } else {
-            friendly_name
+            desc.friendly_name
         },
-        manufacturer,
-        model,
+        manufacturer: desc.manufacturer,
+        model: desc.model,
         location: loc.to_string(),
         host,
         has_volume: !rc_control.is_empty(),
