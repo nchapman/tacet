@@ -1,0 +1,87 @@
+[package]
+name = "tacet"
+version = "0.8.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Headless multi-zone bit-perfect hi-res audio server and UPnP/DLNA/Cast control point"
+
+[lib]
+name = "tacet"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tacet"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime & utilities
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+futures-util = "0.3"
+async-trait = "0.1"
+bytes = "1"
+
+# HTTP server & client
+axum = { version = "0.8", features = ["macros"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+http = "1"
+http-body-util = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "rustls-tls-native-roots", "json", "stream", "gzip", "http2", "charset"] }
+url = "2"
+percent-encoding = "2"
+mime_guess = "2"
+rust-embed = { version = "8", features = ["include-exclude"] }
+
+# Serialization & time
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+
+# Database
+rusqlite = { version = "0.34", features = ["bundled"] }
+
+# CLI, logging, errors
+clap = { version = "4", features = ["derive", "env"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+dirs = "6"
+
+# Audio metadata, scanning, watching
+lofty = "0.22"
+walkdir = "2"
+notify = "8"
+
+# Imaging
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+fast_image_resize = { version = "5", features = ["image"] }
+
+# Crypto, hashing, encoding, parsing
+sha2 = "0.10"
+md-5 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.9"
+subtle = "2"
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+html-escape = "0.2"
+roxmltree = "0.20"
+quick-xml = "0.37"
+
+# Discovery & Cast
+ssdp-client = "2"
+socket2 = { version = "0.5", features = ["all"] }
+if-addrs = "0.13"
+oxicast = { version = "0.0.5", default-features = false, features = ["discovery"] }
+mdns-sd = "0.20"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

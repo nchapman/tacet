@@ -10,24 +10,21 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-# Stage 2: Cross-compile the pure-Go static binary (CGO_ENABLED=0).
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS go-builder
+# Stage 2: Build the Rust binary for the target architecture.
+FROM rust:1-alpine AS rust-builder
 
-ARG TARGETOS
-ARG TARGETARCH
+RUN apk add --no-cache musl-dev pkgconfig
 
 WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
+COPY Cargo.toml Cargo.lock ./
+COPY src/ ./src/
+COPY --from=web-builder /src/web/dist ./web/dist
 
-COPY cmd/ ./cmd/
-COPY internal/ ./internal/
-COPY --from=web-builder /src/internal/api/web/dist ./internal/api/web/dist
+RUN cargo build --release --locked \
+    && strip target/release/tacet \
+    && cp target/release/tacet /out-tacet
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /out/tacet ./cmd/tacet
-
-# Stage 3: Minimal runtime image with CA certs, timezone data, and non-root user.
+# Stage 3: Minimal runtime image with CA certs, timezone data, ffmpeg, and non-root user.
 FROM alpine:3.21
 
 ARG OCI_SOURCE="https://github.com/nchapman/tacet"
@@ -41,7 +38,7 @@ RUN apk add --no-cache ca-certificates ffmpeg libjpeg-turbo-utils libwebp-tools 
     && mkdir -p /data /music \
     && chown -R tacet:tacet /data /music
 
-COPY --from=go-builder /out/tacet /usr/local/bin/tacet
+COPY --from=rust-builder /out-tacet /usr/local/bin/tacet
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

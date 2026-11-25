@@ -5,7 +5,7 @@
 
 A headless, self-hosted music server and control point for lossless hi-res playback from your local library and Qobuz to network renderers (UPnP/DLNA, WiiM/Linkplay, Google Cast) and web browsers.
 
-`tacet` streams original, untouched audio files by default—up to 24-bit/192 kHz FLAC and DSD—while keeping playback queues running on the server so phones and browsers can disconnect without interrupting music. Everything ships in a single Go binary with an embedded web remote.
+`tacet` streams original, untouched audio files by default—up to 24-bit/192 kHz FLAC and DSD—while keeping playback queues running on the server so phones and browsers can disconnect without interrupting music. Everything ships in a single Rust binary with an embedded web remote.
 
 ## Features
 
@@ -131,7 +131,7 @@ Every CLI flag can also be set via an environment variable. Explicit CLI flags a
 
 ### Prerequisites
 
-- **Go 1.27+** (see [`go.mod`](go.mod))
+- **Rust 1.85+ (2024 edition)** (see [`Cargo.toml`](Cargo.toml))
 - **Node.js 24+** (for building the embedded React/Vite frontend)
 - **ffmpeg** *(optional)* — required only for per-zone Opus/WAV transcoding (included automatically in the Docker image)
 
@@ -148,16 +148,16 @@ Open `http://localhost:4320` (or `http://<your-lan-ip>:4320` from another device
 ### Development & Testing
 
 ```bash
-make check        # web typecheck + vitest + vite build, gofmt check, go vet, golangci-lint, go test -race
+make check        # web typecheck + vitest + vite build, cargo fmt check, clippy, cargo test
 ```
 
-To run the Vite dev server with hot reload against a running Go server on `:4320`:
+To run the Vite dev server with hot reload against a running Rust server on `:4320`:
 
 ```bash
 cd web && npm run dev
 ```
 
-The OpenAPI 3.1 specification is stored at [`internal/api/openapi.yaml`](internal/api/openapi.yaml) and served at `GET /api/v1/openapi.yaml`.
+The OpenAPI 3.1 specification is stored at [`src/api/openapi.yaml`](src/api/openapi.yaml) and served at `GET /api/v1/openapi.yaml`.
 
 ## Scope & Limitations
 

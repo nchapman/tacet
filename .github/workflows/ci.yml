@@ -27,9 +27,11 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - uses: actions/setup-go@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version-file: go.mod
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Install web dependencies
         working-directory: web
@@ -40,21 +42,16 @@ jobs:
         run: npm run check
 
       - name: Format check
-        run: make fmt-check
+        run: cargo fmt --all -- --check
 
-      - name: Vet
-        run: go vet ./...
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
 
-      - name: Lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.14.0
+      - name: Test
+        run: cargo test --locked
 
-      - name: Test with race detector
-        run: go test -race -cover ./...
-
-      - name: Build single binary
-        run: go build ./cmd/tacet
+      - name: Build release binary
+        run: cargo build --release --locked
 
   docker:
     name: Docker Build & Publish
