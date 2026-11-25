@@ -54,6 +54,23 @@ impl LinkplayRenderer {
         }
     }
 
+    async fn soap_call_no_retry(&self, action: &str, inner_body: &str) -> Result<String> {
+        match self
+            .base
+            .soap_action_no_retry(
+                &self.play_queue_url,
+                URN_LINKPLAY_PLAYQUEUE_1,
+                action,
+                inner_body,
+            )
+            .await
+        {
+            Ok(body) => Ok(body),
+            Err(e) if e.is_action_unsupported() => Err(UpnpError::ActionUnsupported),
+            Err(e) => Err(e),
+        }
+    }
+
     async fn get_queue_index(&self) -> Option<i32> {
         let raw = self
             .soap_call(
@@ -75,7 +92,8 @@ impl LinkplayRenderer {
             let end = (start + LINKPLAY_BATCH_SIZE).min(items.len());
             let qctx = build_queue_context_xml(list_name, &items[start..end], &sinks);
             let body = format!("<QueueContext>{}</QueueContext>", escape_xml_text(&qctx));
-            self.soap_call("AppendTracksInQueue", &body).await?;
+            self.soap_call_no_retry("AppendTracksInQueue", &body)
+                .await?;
             start = end;
         }
         Ok(())

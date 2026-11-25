@@ -262,6 +262,22 @@ impl Manager {
         self.stop.cancel();
     }
 
+    pub async fn close_async(&self) {
+        self.persist_zone_queues();
+        self.stop.cancel();
+        let ctrls: Vec<Arc<dyn Controller>> = {
+            let g = self.zones.read().unwrap_or_else(|e| e.into_inner());
+            g.values()
+                .map(|z| Arc::clone(&z.inner.lock().unwrap_or_else(|e| e.into_inner()).ctrl))
+                .collect()
+        };
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            futures_util::future::join_all(ctrls.iter().map(|c| c.close_session())),
+        )
+        .await;
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events_tx.subscribe()
     }
@@ -405,9 +421,14 @@ impl Manager {
             .zones
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(zone_id)
-            .is_some();
-        if removed {
+            .remove(zone_id);
+        if let Some(zone) = removed {
+            let ctrl = Arc::clone(&zone.inner.lock().unwrap_or_else(|e| e.into_inner()).ctrl);
+            if tokio::runtime::Handle::try_current().is_ok() {
+                tokio::spawn(async move {
+                    ctrl.close_session().await;
+                });
+            }
             let zones = self.list_zones();
             self.emit("zones.updated", "", &serde_json::json!({ "zones": zones }));
         }

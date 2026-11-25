@@ -362,11 +362,12 @@ impl Controller for CastRenderer {
     }
 
     async fn stop(&self) -> Result<()> {
-        let st = self.state.lock().await;
+        let mut st = self.state.lock().await;
         let Some(client) = st.client.as_ref() else {
             return Ok(());
         };
         let _ = client.stop_media().await;
+        st.media_session_id = 0;
         Ok(())
     }
 
@@ -411,10 +412,19 @@ impl Controller for CastRenderer {
             ts.has_vol_value = true;
             ts.muted = rs.volume.muted;
             ts.has_mute_val = true;
-            if let Some(app) = rs.applications.first() {
+            if let Some(app) = rs.applications.first()
+                && app.app_id == DEFAULT_MEDIA_RECEIVER_APP_ID
+            {
                 st.transport_id = app.transport_id.clone();
-                our_app_active = app.app_id == DEFAULT_MEDIA_RECEIVER_APP_ID;
+                our_app_active = true;
+            } else {
+                st.transport_id.clear();
+                st.media_session_id = 0;
             }
+        }
+
+        if our_app_active && matches!(ms_res, Ok(None)) {
+            st.media_session_id = 0;
         }
 
         if our_app_active && let Ok(Some(ms)) = ms_res {
@@ -469,6 +479,10 @@ impl Controller for CastRenderer {
 
     fn as_queue_controller(&self) -> Option<&dyn QueueController> {
         Some(self)
+    }
+
+    async fn close_session(&self) {
+        self.close().await;
     }
 }
 
@@ -593,10 +607,10 @@ impl QueueController for CastRenderer {
     async fn set_loop_mode(&self, repeat: &str, shuffle: bool) -> Result<()> {
         let mut st = self.state.lock().await;
         let mode = map_repeat_mode(repeat, shuffle);
-        st.repeat_mode = mode;
         let dest = st.transport_id.clone();
         let msid = st.media_session_id;
         if dest.is_empty() || msid == 0 {
+            st.repeat_mode = mode;
             return Ok(());
         }
         let client = self.ensure_connected(&mut st).await?;
@@ -612,6 +626,7 @@ impl QueueController for CastRenderer {
             )
             .await
             .map_err(|e| UpnpError::Other(format!("cast set_loop_mode: {e}")))?;
+        st.repeat_mode = mode;
         Ok(())
     }
 }

@@ -716,9 +716,8 @@ fn append_player_cookies(resp: &mut Response, zone_id: &str, token: Option<&str>
 
 fn extract_player_token(headers: &HeaderMap, query: &HashMap<String, String>) -> String {
     if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok())
-        && let Some(tok) = auth
-            .strip_prefix("Bearer ")
-            .or_else(|| auth.strip_prefix("bearer "))
+        && let Some((scheme, tok)) = auth.trim().split_once(' ')
+        && scheme.eq_ignore_ascii_case("bearer")
     {
         return tok.trim().to_string();
     }

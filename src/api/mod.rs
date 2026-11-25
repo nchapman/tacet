@@ -176,7 +176,7 @@ impl AppState {
         if let Some(ref qb) = self.qobuz {
             qb.close();
         }
-        self.manager.close();
+        self.manager.close_async().await;
         if let Some(ref g) = self.gena {
             g.close_async().await;
         }

@@ -145,6 +145,8 @@ pub trait Controller: Send + Sync {
     fn as_queue_controller(&self) -> Option<&dyn QueueController> {
         None
     }
+    /// Gracefully closes any persistent device session (e.g. Cast TLS socket).
+    async fn close_session(&self) {}
 }
 
 #[async_trait]
@@ -373,6 +375,24 @@ impl Renderer {
             SOAP_DEFAULT_TIMEOUT,
         )
         .await
+    }
+
+    /// Sends a non-idempotent SOAP action (e.g. `AppendTracksInQueue`) serialized under
+    /// `soap_mu` WITHOUT EOF retry so a lost response cannot duplicate side effects.
+    pub async fn soap_action_no_retry(
+        &self,
+        control_url: &str,
+        service_urn: &str,
+        action: &str,
+        inner_body: &str,
+    ) -> Result<String> {
+        let _guard = self.soap_mu.lock().await;
+        let env = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:{action} xmlns:u="{service_urn}">{inner_body}</u:{action}></s:Body></s:Envelope>"#
+        );
+        let soap_action_hdr = format!(r#""{service_urn}#{action}""#);
+        self.send_soap_once(control_url, &soap_action_hdr, &env, SOAP_DEFAULT_TIMEOUT)
+            .await
     }
 
     pub async fn next(&self) -> Result<()> {

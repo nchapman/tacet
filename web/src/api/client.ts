@@ -493,9 +493,14 @@ export class TacetClient {
       onReplaced?: (reason: string) => void;
       onError?: () => void;
     },
+    token?: string,
   ): () => void {
     const Ctor = this.eventSourceImpl ?? globalThis.EventSource;
-    const url = this.url(`/api/v1/players/${encodeURIComponent(zoneId)}/commands`);
+    const base = this.url(`/api/v1/players/${encodeURIComponent(zoneId)}/commands`);
+    // Same-origin browsers authenticate via the HttpOnly player cookie; cross-origin
+    // clients (e.g. Tauri / --cors-origin) pass the token in query since EventSource
+    // cannot send Authorization headers.
+    const url = this.baseUrl && token ? `${base}?token=${encodeURIComponent(token)}` : base;
     const es = new Ctor(url, { withCredentials: true });
     const parse = <T,>(ev: Event): T | null => {
       try {

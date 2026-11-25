@@ -155,7 +155,7 @@ impl AudioQuality {
 }
 
 pub fn renderer_supports_opus(info: &RendererInfo) -> bool {
-    if info.kind == "player" || info.sink_protocols.is_empty() {
+    if info.sink_protocols.is_empty() {
         return true;
     }
     info.sink_protocols

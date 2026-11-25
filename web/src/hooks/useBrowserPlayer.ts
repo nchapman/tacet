@@ -288,7 +288,7 @@ export function useBrowserPlayer(options?: UseBrowserPlayerOptions): BrowserPlay
               }, delay);
             }
           },
-        });
+        }, reg.token);
 
         if (selectAfter) {
           onZoneRegisteredRef.current?.(reg.zoneId);
