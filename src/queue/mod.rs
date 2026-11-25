@@ -530,4 +530,34 @@ mod tests {
         assert_eq!(snap.repeat, RepeatMode::All);
         mgr2.close();
     }
+
+    #[test]
+    fn opus_container_negotiation_and_endpoint_mime_check() {
+        let mk_player = |protos: &[&str]| crate::upnp::RendererInfo {
+            id: "player:1".into(),
+            kind: "player".into(),
+            name: "Browser".into(),
+            sink_protocols: protos.iter().map(|s| (*s).to_string()).collect(),
+            ..Default::default()
+        };
+
+        // Chrome / Firefox -> ogg
+        let chrome = mk_player(&["audio/ogg; codecs=\"opus\"", "audio/webm; codecs=\"opus\""]);
+        assert_eq!(negotiate_opus_container(&chrome), "ogg");
+
+        // Safari 17.4+ -> webm
+        let safari_new = mk_player(&["audio/webm; codecs=\"opus\"", "audio/mp4; codecs=\"opus\""]);
+        assert_eq!(negotiate_opus_container(&safari_new), "webm");
+
+        // Older Safari / iOS -> mp4
+        let safari_old = mk_player(&["audio/mp4; codecs=\"opus\"", "audio/aac"]);
+        assert_eq!(negotiate_opus_container(&safari_old), "mp4");
+
+        // Endpoint MIME capability check
+        assert!(check_endpoint_mime(&safari_old, "audio/mp4").is_ok());
+        assert!(matches!(
+            check_endpoint_mime(&safari_old, "audio/flac"),
+            Err(QueueError::CapabilityUnsupported(_))
+        ));
+    }
 }

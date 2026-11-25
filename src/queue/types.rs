@@ -186,27 +186,113 @@ pub fn renderer_supports_dsd(info: &RendererInfo) -> bool {
     })
 }
 
+pub fn transcoded_mime(quality: AudioQuality, container: &str) -> &'static str {
+    if quality == AudioQuality::Wav {
+        return "audio/wav";
+    }
+    match container {
+        "webm" => "audio/webm",
+        "mp4" => "audio/mp4",
+        "adts" | "aac" => "audio/aac",
+        _ => "audio/ogg",
+    }
+}
+
+fn sink_has_exact_codec(protocols: &[String], container_mime: &str, codec: &str) -> bool {
+    let cm = container_mime.trim().to_ascii_lowercase();
+    let cd = codec.trim().to_ascii_lowercase();
+    let prefix = format!("{cm};");
+    protocols.iter().any(|proto| {
+        let p = proto.trim().to_ascii_lowercase();
+        p.starts_with(&prefix) && p.contains(&cd)
+    })
+}
+
+pub fn sink_supports_mime(protocols: &[String], mime: &str) -> bool {
+    let m = mime.trim().to_ascii_lowercase();
+    let colon = format!(":{m}:");
+    let semi = format!("{m};");
+    protocols.iter().any(|proto| {
+        let p = proto.trim().to_ascii_lowercase();
+        if p == m || p.contains(&colon) || p.starts_with(&semi) {
+            return true;
+        }
+        if (m == "audio/flac" || m == "audio/x-flac")
+            && (p.contains("audio/flac") || p.contains("audio/x-flac"))
+        {
+            return true;
+        }
+        if (m == "audio/mp4" || m == "audio/x-m4a")
+            && (p.contains("audio/mp4") || p.contains("audio/x-m4a") || p.contains("audio/aac"))
+        {
+            return true;
+        }
+        false
+    })
+}
+
+pub fn check_endpoint_mime(info: &RendererInfo, mime: &str) -> Result<()> {
+    if info.kind != "player" || info.sink_protocols.is_empty() {
+        return Ok(());
+    }
+    let m = mime.trim().to_ascii_lowercase();
+    if m.is_empty() || sink_supports_mime(&info.sink_protocols, &m) {
+        return Ok(());
+    }
+    Err(QueueError::CapabilityUnsupported(format!(
+        "player endpoint {:?} does not support {m}",
+        info.name
+    )))
+}
+
+pub fn negotiate_opus_container(info: &RendererInfo) -> &'static str {
+    if info.kind == "player" && !info.sink_protocols.is_empty() {
+        if sink_has_exact_codec(&info.sink_protocols, "audio/ogg", "opus") {
+            return "ogg";
+        }
+        if sink_has_exact_codec(&info.sink_protocols, "audio/webm", "opus") {
+            return "webm";
+        }
+        if sink_has_exact_codec(&info.sink_protocols, "audio/mp4", "opus") {
+            return "mp4";
+        }
+        if !sink_supports_mime(&info.sink_protocols, "audio/ogg") {
+            if sink_supports_mime(&info.sink_protocols, "audio/webm") {
+                return "webm";
+            }
+            if sink_supports_mime(&info.sink_protocols, "audio/mp4") {
+                return "mp4";
+            }
+        }
+    }
+    if !renderer_supports_opus(info) {
+        return "adts";
+    }
+    "ogg"
+}
+
+pub fn is_dsd_track(track: &Track) -> bool {
+    let low_mime = track.mime.to_ascii_lowercase();
+    (track.bit_depth == 1 && track.sample_rate >= 2_000_000)
+        || track.ext.eq_ignore_ascii_case(".dsf")
+        || track.ext.eq_ignore_ascii_case(".dff")
+        || low_mime.contains("dsf")
+        || low_mime.contains("dsd")
+}
+
 pub fn resolve_track_quality(
     requested: AudioQuality,
     track: &Track,
     info: &RendererInfo,
     transcoder_available: bool,
 ) -> (AudioQuality, &'static str) {
-    let low_mime = track.mime.to_ascii_lowercase();
-    let is_dsd = (track.bit_depth == 1 && track.sample_rate >= 2_000_000)
-        || track.ext.eq_ignore_ascii_case(".dsf")
-        || track.ext.eq_ignore_ascii_case(".dff")
-        || low_mime.contains("dsf")
-        || low_mime.contains("dsd");
-    if is_dsd && !renderer_supports_dsd(info) && transcoder_available {
+    if is_dsd_track(track) && !renderer_supports_dsd(info) && transcoder_available {
         return (AudioQuality::Wav, "wav");
     }
     if requested.is_opus() && transcoder_available {
-        if renderer_supports_opus(info) {
-            return (requested, "ogg");
-        }
-        if renderer_supports_aac(info) {
-            return (requested, "adts");
+        let container = negotiate_opus_container(info);
+        if container != "adts" || renderer_supports_aac(info) {
+            return (requested, container);
         }
     }
     if requested == AudioQuality::Wav && transcoder_available {

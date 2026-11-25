@@ -4,12 +4,13 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use rand::seq::SliceRandom;
 
-use crate::library::Track;
+use crate::library::{SOURCE_LOCAL, Track};
 use crate::upnp::Controller;
 
 use super::{Manager, Zone, current_item_pair};
 use crate::queue::types::{
     AudioQuality, Item, PlaybackState, QueueError, RepeatMode, Result, VolumeEvent, ZoneSnapshot,
+    is_dsd_track,
 };
 
 impl Manager {
@@ -610,10 +611,28 @@ impl Manager {
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
-        let ctrl = Arc::clone(&z.inner.lock().unwrap_or_else(|e| e.into_inner()).ctrl);
+        let (ctrl, non_seekable_transcode) = {
+            let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let info = zi.ctrl.info();
+            let cur_track = current_item_pair(&zi).1;
+            let live_transcode = info.kind != "player"
+                && zi.active_quality.is_some_and(|q| {
+                    q.is_opus()
+                        || (q == AudioQuality::Wav
+                            && cur_track
+                                .as_ref()
+                                .is_none_or(|t| t.source != SOURCE_LOCAL || is_dsd_track(t)))
+                });
+            (Arc::clone(&zi.ctrl), live_transcode)
+        };
         if !ctrl.info().supports_seek {
             return Err(QueueError::CapabilityUnsupported(
                 "renderer does not support seek".into(),
+            ));
+        }
+        if non_seekable_transcode {
+            return Err(QueueError::CapabilityUnsupported(
+                "seeking is not supported on live-transcoded streams".into(),
             ));
         }
         let pos = Duration::from_secs(position_sec as u64);

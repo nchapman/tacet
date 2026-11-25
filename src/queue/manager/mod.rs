@@ -19,7 +19,8 @@ use crate::upnp::{Controller, GenaClient, MediaItem, RendererInfo, TransportStat
 
 use super::types::{
     AudioQuality, Event, Item, ItemsEvent, PlaybackEvent, PlaybackState, QueueError, RepeatMode,
-    Result, StreamMode, ZoneErrorEvent, ZoneErrorPayload, ZoneSnapshot, resolve_track_quality,
+    Result, StreamMode, ZoneErrorEvent, ZoneErrorPayload, ZoneSnapshot, check_endpoint_mime,
+    is_dsd_track, resolve_track_quality, transcoded_mime,
 };
 
 pub(super) struct ZoneInner {
@@ -658,7 +659,7 @@ impl Manager {
             if eff_q.needs_transcode() {
                 append_transcode_params(&mut u, eff_q, container);
                 mime = transcoded_mime(eff_q, container).into();
-                seekable = false;
+                seekable = eff_q == AudioQuality::Wav && !is_dsd_track(track);
                 transcoded = true;
             }
             u
@@ -699,6 +700,7 @@ impl Manager {
         if mime.is_empty() || mime == "audio/x-flac" {
             mime = "audio/flac".into();
         }
+        check_endpoint_mime(&ctrl.info(), &mime)?;
         Ok(ResolvedMedia {
             url,
             mime,
@@ -764,14 +766,4 @@ pub(super) fn compute_next_index(zi: &ZoneInner) -> Option<i32> {
     } else {
         None
     }
-}
-
-fn transcoded_mime(q: AudioQuality, container: &str) -> &'static str {
-    if q == AudioQuality::Wav {
-        return "audio/wav";
-    }
-    if container == "adts" {
-        return "audio/aac";
-    }
-    "audio/ogg; codecs=\"opus\""
 }
