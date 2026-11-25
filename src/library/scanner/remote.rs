@@ -13,6 +13,7 @@ impl Catalog {
             .remote_source(&prov)
             .ok_or_else(|| LibraryError::ProviderNotFound(prov.clone()))?;
         if !src.is_connected() {
+            let _ = self.set_provider_available(&prov, false);
             return Err(LibraryError::ProviderOffline(prov));
         }
 
@@ -39,7 +40,7 @@ impl Catalog {
         let (albums, tracks) = merge_remote_collection(&prov, coll);
         let track_count = tracks.len();
         self.store
-            .replace_provider(&prov, SOURCE_TYPE_REMOTE, &albums, &tracks, false)?;
+            .replace_provider(&prov, SOURCE_TYPE_REMOTE, &albums, &tracks, true)?;
         self.notify_change();
         Ok(track_count)
     }
@@ -58,8 +59,8 @@ impl Catalog {
         if !src.is_connected() {
             return Err(LibraryError::ProviderOffline(prov));
         }
-        src.add_favorite("album", external_id).await?;
         let mut album = src.get_album(external_id).await?;
+        src.add_favorite("album", external_id).await?;
         normalize_remote_album(&prov, &mut album);
         let aid = album.id.clone();
         let mut tracks = std::mem::take(&mut album.tracks);
@@ -73,19 +74,24 @@ impl Catalog {
 
     pub async fn remove_remote_album(&self, provider: &str, external_id: &str) -> Result<()> {
         let prov = provider.trim().to_ascii_lowercase();
-        let src = self
-            .remote_source(&prov)
-            .ok_or_else(|| LibraryError::ProviderNotFound(prov.clone()))?;
-        if !src.is_connected() {
-            return Err(LibraryError::ProviderOffline(prov));
-        }
-        src.remove_favorite("album", external_id).await?;
         let id = if external_id.starts_with(&format!("{prov}:")) {
             external_id.to_string()
         } else {
             format!("{prov}:{external_id}")
         };
-        let _ = self.store.delete_album(&id);
+        let existing = self.store.get_album(&id)?.ok_or(LibraryError::NotFound)?;
+        if existing.source_type != SOURCE_TYPE_REMOTE {
+            return Err(LibraryError::InvalidArgument(
+                "cannot remove local album via remote endpoint".into(),
+            ));
+        }
+        if let Some(src) = self.remote_source(&prov)
+            && src.is_connected()
+        {
+            let raw_id = id.strip_prefix(&format!("{prov}:")).unwrap_or(&id);
+            src.remove_favorite("album", raw_id).await?;
+        }
+        self.store.delete_album(&id)?;
         self.notify_change();
         Ok(())
     }
@@ -98,8 +104,8 @@ impl Catalog {
         if !src.is_connected() {
             return Err(LibraryError::ProviderOffline(prov));
         }
-        src.add_favorite("track", external_id).await?;
         let mut track = src.get_track(external_id).await?;
+        src.add_favorite("track", external_id).await?;
         let aid = if track.album_id.is_empty() {
             format!("{prov}:track-album:{external_id}")
         } else {
@@ -120,19 +126,24 @@ impl Catalog {
 
     pub async fn remove_remote_track(&self, provider: &str, external_id: &str) -> Result<()> {
         let prov = provider.trim().to_ascii_lowercase();
-        let src = self
-            .remote_source(&prov)
-            .ok_or_else(|| LibraryError::ProviderNotFound(prov.clone()))?;
-        if !src.is_connected() {
-            return Err(LibraryError::ProviderOffline(prov));
-        }
-        src.remove_favorite("track", external_id).await?;
         let id = if external_id.starts_with(&format!("{prov}:")) {
             external_id.to_string()
         } else {
             format!("{prov}:{external_id}")
         };
-        let _ = self.store.delete_track(&id);
+        let existing = self.store.get_track(&id)?.ok_or(LibraryError::NotFound)?;
+        if existing.source_type != SOURCE_TYPE_REMOTE {
+            return Err(LibraryError::InvalidArgument(
+                "cannot remove local track via remote endpoint".into(),
+            ));
+        }
+        if let Some(src) = self.remote_source(&prov)
+            && src.is_connected()
+        {
+            let raw_id = id.strip_prefix(&format!("{prov}:")).unwrap_or(&id);
+            src.remove_favorite("track", raw_id).await?;
+        }
+        self.store.delete_track(&id)?;
         self.notify_change();
         Ok(())
     }

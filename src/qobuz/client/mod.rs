@@ -497,7 +497,7 @@ impl Client {
 
         let mut last_err = QobuzError::Other("qobuz request failed".into());
         for attempt in 0..MAX_RETRY_ATTEMPTS {
-            self.wait_for_cooldown().await;
+            self.wait_for_cooldown().await?;
             let _permit = self
                 .req_sem
                 .acquire()
@@ -599,7 +599,7 @@ impl Client {
         form: &[(&str, &str)],
         token: &str,
     ) -> Result<T> {
-        self.wait_for_cooldown().await;
+        self.wait_for_cooldown().await?;
         let app_id = self.app_id();
         let url = format!("{}{}", self.base_url, path);
         let _permit = self
@@ -663,13 +663,17 @@ impl Client {
         Ok(resp.text().await?)
     }
 
-    async fn wait_for_cooldown(&self) {
+    async fn wait_for_cooldown(&self) -> Result<()> {
         let until = self.cooldown_until_ms.load(Ordering::Relaxed);
         let now = now_ms();
         if until > now {
-            let wait = Duration::from_millis((until - now).min(60_000) as u64);
-            tokio::time::sleep(wait).await;
+            let rem_ms = (until - now) as u64;
+            if rem_ms > 15_000 {
+                return Err(QobuzError::RateLimited);
+            }
+            tokio::time::sleep(Duration::from_millis(rem_ms)).await;
         }
+        Ok(())
     }
 
     fn note_rate_limit(&self, retry_after: &str) -> Duration {

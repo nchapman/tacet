@@ -309,7 +309,7 @@ fn rebuild_provider_fts(tx: &Transaction<'_>, provider: &str) -> Result<()> {
     )?;
     tx.execute(
         "INSERT INTO albums_fts(album_id, title, artist, genre)
-         SELECT id, title, artist, genre FROM albums WHERE provider = ?1",
+         SELECT id, title, artist, genre FROM albums WHERE provider = ?1 AND available = 1",
         params![provider],
     )?;
 
@@ -323,7 +323,7 @@ fn rebuild_provider_fts(tx: &Transaction<'_>, provider: &str) -> Result<()> {
     )?;
     tx.execute(
         "INSERT INTO tracks_fts(track_id, title, artist, album_artist, album, genre)
-         SELECT id, title, artist, album_artist, album, genre FROM tracks WHERE provider = ?1",
+         SELECT id, title, artist, album_artist, album, genre FROM tracks WHERE provider = ?1 AND available = 1",
         params![provider],
     )?;
     Ok(())
@@ -363,12 +363,12 @@ fn upsert_album_row(
             sort_title = excluded.sort_title,
             artist = excluded.artist,
             sort_artist = excluded.sort_artist,
-            genre = excluded.genre,
-            year = excluded.year,
+            genre = CASE WHEN excluded.genre != '' THEN excluded.genre ELSE albums.genre END,
+            year = CASE WHEN excluded.year > 0 THEN excluded.year ELSE albums.year END,
             track_count = excluded.track_count,
             duration_sec = excluded.duration_sec,
             artwork_url = CASE WHEN excluded.artwork_url != '' THEN excluded.artwork_url ELSE albums.artwork_url END,
-            primary_format = excluded.primary_format,
+            primary_format = CASE WHEN excluded.primary_format != '' THEN excluded.primary_format ELSE albums.primary_format END,
             max_bit_depth = excluded.max_bit_depth,
             max_sample_rate = excluded.max_sample_rate,
             version_key = excluded.version_key,
@@ -520,7 +520,7 @@ fn refresh_album_aggregates_tx(tx: &Transaction<'_>, album_id: &str) -> Result<(
 
     {
         let mut stmt = tx.prepare(
-            "SELECT duration_sec, sample_rate, bit_depth, mime, ext FROM tracks WHERE album_id = ?1",
+            "SELECT duration_sec, sample_rate, bit_depth, mime, ext FROM tracks WHERE album_id = ?1 AND available = 1",
         )?;
         let rows = stmt.query_map(params![album_id], |r| {
             Ok((

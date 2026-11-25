@@ -41,7 +41,7 @@ impl LibraryStore {
                         bit_depth, channels, mime, ext, size_bytes, artwork_url, file_path,
                         file_mtime_ns, folder_art, has_embed_art, qobuz_track_id, play_count,
                         last_played_at, loved, available, added_at
-                 FROM tracks WHERE album_id = ?1
+                 FROM tracks WHERE album_id = ?1 AND available = 1
                  ORDER BY disc_number ASC, track_number ASC, sort_title ASC, id ASC",
             )?;
             let rows = stmt.query_map(params![album.id], row_to_track)?;
@@ -54,7 +54,7 @@ impl LibraryStore {
             let mut stmt = conn.prepare(
                 "SELECT id, source_type, provider, title, year, track_count,
                         primary_format, max_sample_rate, max_bit_depth, is_primary, available
-                 FROM albums WHERE version_group_id = ?1
+                 FROM albums WHERE version_group_id = ?1 AND available = 1
                  ORDER BY is_primary DESC, max_bit_depth DESC, max_sample_rate DESC, id ASC",
             )?;
             let rows = stmt.query_map(params![album.version_group_id], |r| {
@@ -359,6 +359,8 @@ fn pick_top_result(
 
 fn row_to_album(r: &rusqlite::Row<'_>, with_version_count: bool) -> rusqlite::Result<Album> {
     let provider: String = r.get(2)?;
+    let is_partial = r.get::<_, i32>(16)? != 0;
+    let available = r.get::<_, i32>(17)? != 0;
     Ok(Album {
         id: r.get(0)?,
         source: provider.clone(),
@@ -377,12 +379,12 @@ fn row_to_album(r: &rusqlite::Row<'_>, with_version_count: bool) -> rusqlite::Re
         max_sample_rate: r.get(13)?,
         version_group_id: r.get(14)?,
         is_primary: r.get::<_, i32>(15)? != 0,
-        is_partial: r.get::<_, i32>(16)? != 0,
-        available: r.get::<_, i32>(17)? != 0,
+        is_partial,
+        available,
         added_at: unix_to_dt(r.get(18)?),
         play_count: r.get(19)?,
         version_count: if with_version_count { r.get(20)? } else { 0 },
-        in_library: true,
+        in_library: available && !is_partial,
         ..Default::default()
     })
 }
@@ -419,10 +421,13 @@ fn build_album_filter_where(f: &AlbumFilter) -> (String, Vec<Value>) {
     }
     let fts = build_fts_query(&f.query);
     if !fts.is_empty() {
+        bind_vals.push(Value::Text(fts.clone()));
+        let alb_idx = bind_vals.len();
         bind_vals.push(Value::Text(fts));
+        let trk_idx = bind_vals.len();
         clauses.push(format!(
-            "a.id IN (SELECT album_id FROM albums_fts WHERE albums_fts MATCH ?{})",
-            bind_vals.len()
+            "(a.id IN (SELECT album_id FROM albums_fts WHERE albums_fts MATCH ?{alb_idx}) \
+             OR a.id IN (SELECT t.album_id FROM tracks t WHERE t.available = 1 AND t.id IN (SELECT track_id FROM tracks_fts WHERE tracks_fts MATCH ?{trk_idx})))"
         ));
     }
     let where_sql = if clauses.is_empty() {
@@ -444,10 +449,10 @@ fn query_albums_conn(conn: &Connection, f: &AlbumFilter) -> Result<(Vec<Album>, 
 
     let order_by = match f.sort.trim().to_ascii_lowercase().as_str() {
         "title" => "a.sort_title ASC, a.sort_artist ASC, a.id ASC",
-        "year" => "a.year DESC, a.sort_title ASC, a.id ASC",
+        "year" => "a.year DESC, a.sort_artist ASC, a.sort_title ASC, a.id ASC",
         "added" => "a.added_at DESC, a.sort_title ASC, a.id ASC",
-        "plays" => "play_count DESC, a.sort_title ASC, a.id ASC",
-        _ => "a.sort_artist ASC, a.year ASC, a.sort_title ASC, a.id ASC",
+        "plays" => "play_count DESC, a.sort_artist ASC, a.sort_title ASC, a.id ASC",
+        _ => "a.sort_artist ASC, a.sort_title ASC, a.id ASC",
     };
 
     let limit = if f.limit <= 0 {
@@ -470,7 +475,7 @@ fn query_albums_conn(conn: &Connection, f: &AlbumFilter) -> Result<(Vec<Album>, 
                 a.is_partial, a.available, a.added_at,
                 COALESCE((SELECT SUM(t.play_count) FROM tracks t WHERE t.album_id = a.id), 0) AS play_count,
                 CASE WHEN a.version_group_id != '' THEN
-                    (SELECT COUNT(*) FROM albums b WHERE b.version_group_id = a.version_group_id)
+                    (SELECT COUNT(*) FROM albums b WHERE b.version_group_id = a.version_group_id AND b.available = 1)
                 ELSE 1 END AS version_count
          FROM albums a
          {where_sql}
@@ -559,12 +564,14 @@ fn track_order_by(f: &TrackFilter) -> String {
         "year" => format!(
             "t.year {dir}, t.sort_album ASC, t.disc_number ASC, t.track_number ASC, t.id ASC"
         ),
-        "added" => format!("t.added_at {dir}, t.sort_title ASC, t.id ASC"),
-        "plays" => format!("t.play_count {dir}, t.sort_title ASC, t.id ASC"),
+        "added" => format!(
+            "t.added_at {dir}, t.sort_artist ASC, t.sort_album ASC, t.disc_number ASC, t.track_number ASC, t.id ASC"
+        ),
+        "plays" => format!("t.play_count {dir}, t.last_played_at DESC, t.sort_title ASC, t.id ASC"),
         "duration" => format!("t.duration_sec {dir}, t.sort_title ASC, t.id ASC"),
         "quality" => format!("t.bit_depth {dir}, t.sample_rate {dir}, t.sort_title ASC, t.id ASC"),
         _ => format!(
-            "t.sort_album {dir}, t.disc_number ASC, t.track_number ASC, t.sort_title ASC, t.id ASC"
+            "t.sort_artist {dir}, t.sort_album ASC, t.disc_number ASC, t.track_number ASC, t.sort_title ASC, t.id ASC"
         ),
     }
 }

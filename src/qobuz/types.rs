@@ -517,8 +517,9 @@ impl QAlbum {
         if track_count == 0 && !tracks.is_empty() {
             track_count = tracks.len() as i32;
         }
-        let duration_sec = if include_tracks && !tracks.is_empty() {
-            tracks.iter().map(|t| t.duration_sec).sum()
+        let summed_duration: i32 = tracks.iter().map(|t| t.duration_sec).sum();
+        let duration_sec = if include_tracks && summed_duration > 0 {
+            summed_duration
         } else {
             self.duration
         };
@@ -759,16 +760,16 @@ fn format_credit_role(raw: &str) -> String {
     if s.is_empty() {
         return String::new();
     }
-    match s {
-        "MainArtist" => "Main Artist".into(),
-        "FeaturedArtist" => "Featured Artist".into(),
-        "AssociatedPerformer" => "Performer".into(),
-        "ComposerLyricist" => "Composer / Lyricist".into(),
-        "MixingEngineer" => "Mixing Engineer".into(),
-        "MasteringEngineer" => "Mastering Engineer".into(),
-        "RecordingEngineer" => "Recording Engineer".into(),
-        "AssistantRecordingEngineer" => "Assistant Engineer".into(),
-        "StudioPersonnel" | "MusicPublisher" => String::new(),
+    match s.to_ascii_lowercase().as_str() {
+        "mainartist" | "main artist" => "Main Artist".into(),
+        "featuredartist" | "featured artist" => "Featured Artist".into(),
+        "associatedperformer" => "Performer".into(),
+        "composerlyricist" => "Composer / Lyricist".into(),
+        "mixingengineer" => "Mixing Engineer".into(),
+        "masteringengineer" => "Mastering Engineer".into(),
+        "recordingengineer" => "Recording Engineer".into(),
+        "assistantrecordingengineer" => "Assistant Engineer".into(),
+        "studiopersonnel" | "musicpublisher" => String::new(),
         _ => s.to_string(),
     }
 }

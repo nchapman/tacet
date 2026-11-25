@@ -201,4 +201,89 @@ mod tests {
         let props = probe::probe_audio(&dsf_path);
         assert_eq!(props.duration, std::time::Duration::ZERO);
     }
+
+    #[test]
+    fn soft_delete_fts_track_search_and_partial_in_library_parity() {
+        let store = super::store::LibraryStore::open(":memory:").unwrap();
+        let alb = Album {
+            id: "qobuz:a1".into(),
+            source: SOURCE_QOBUZ.into(),
+            source_type: SOURCE_TYPE_REMOTE.into(),
+            provider: SOURCE_QOBUZ.into(),
+            title: "Kind of Blue".into(),
+            artist: "Miles Davis".into(),
+            genre: "Jazz".into(),
+            year: 1959,
+            available: true,
+            is_partial: false,
+            ..Default::default()
+        };
+        let tr = Track {
+            id: "qobuz:t1".into(),
+            album_id: "qobuz:a1".into(),
+            source: SOURCE_QOBUZ.into(),
+            source_type: SOURCE_TYPE_REMOTE.into(),
+            provider: SOURCE_QOBUZ.into(),
+            title: "Flamenco Sketches".into(),
+            artist: "Miles Davis".into(),
+            album: "Kind of Blue".into(),
+            available: true,
+            ..Default::default()
+        };
+        store
+            .replace_provider(
+                SOURCE_QOBUZ,
+                SOURCE_TYPE_REMOTE,
+                std::slice::from_ref(&alb),
+                &[tr],
+                true,
+            )
+            .unwrap();
+
+        // Searching albums by track title must surface the album via tracks_fts.
+        let (found, total) = store
+            .query_albums(&AlbumFilter {
+                query: "Flamenco".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(found[0].id, "qobuz:a1");
+        assert!(found[0].in_library);
+
+        // Partial album must report in_library = false and preserve genre/year when incoming blank.
+        let partial = Album {
+            id: "qobuz:a1".into(),
+            source: SOURCE_QOBUZ.into(),
+            source_type: SOURCE_TYPE_REMOTE.into(),
+            provider: SOURCE_QOBUZ.into(),
+            title: "Kind of Blue".into(),
+            artist: "Miles Davis".into(),
+            is_partial: true,
+            available: true,
+            ..Default::default()
+        };
+        store.upsert_album_with_tracks(&partial, &[]).unwrap();
+        let got = store.get_album("qobuz:a1").unwrap().unwrap();
+        assert!(!got.in_library);
+        assert_eq!(got.genre, "Jazz");
+        assert_eq!(got.year, 1959);
+
+        // Soft-deleting provider removes rows from FTS and track lists.
+        store
+            .replace_provider(SOURCE_QOBUZ, SOURCE_TYPE_REMOTE, &[], &[], true)
+            .unwrap();
+        let (after, total_after) = store
+            .query_albums(&AlbumFilter {
+                query: "Flamenco".into(),
+                include_unavailable: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(total_after, 0);
+        assert!(after.is_empty());
+        let got_after = store.get_album("qobuz:a1").unwrap().unwrap();
+        assert!(!got_after.in_library);
+        assert!(got_after.tracks.is_empty());
+    }
 }
