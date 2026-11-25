@@ -4,7 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
-const outDir = path.resolve(import.meta.dirname, "../internal/api/web/dist");
+const outDir = path.resolve(import.meta.dirname, "dist");
 
 function preserveGitkeep(): Plugin {
   return {

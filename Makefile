@@ -1,9 +1,8 @@
 BINARY := tacet
-CMD := ./cmd/tacet
-GO := go
+CARGO := cargo
 WEB_DIR := web
 
-.PHONY: all build web-install web-build web-test web-check check fmt fmt-check vet lint test test-race cover build-linux-arm64 build-linux-amd64 clean
+.PHONY: all build web-install web-build web-test web-check check fmt fmt-check lint test clean
 
 all: build
 
@@ -20,41 +19,24 @@ web-check:
 	cd $(WEB_DIR) && npm run check
 
 build: web-build
-	$(GO) build -o $(BINARY) $(CMD)
-
-build-linux-arm64: web-build
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags="-s -w" -o dist/$(BINARY)-linux-arm64 $(CMD)
-
-build-linux-amd64: web-build
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags="-s -w" -o dist/$(BINARY)-linux-amd64 $(CMD)
+	$(CARGO) build --release
+	cp target/release/$(BINARY) $(BINARY)
 
 fmt:
-	gofmt -s -w .
+	$(CARGO) fmt --all
 
 fmt-check:
-	@unformatted=$$(gofmt -l .); \
-	if [ -n "$$unformatted" ]; then \
-		echo "Files need gofmt:"; echo "$$unformatted"; exit 1; \
-	fi
+	$(CARGO) fmt --all -- --check
 
-vet:
-	$(GO) vet ./...
-
-lint:
-	golangci-lint run ./...
+lint: web-build
+	$(CARGO) clippy --all-targets --locked -- -D warnings
 
 test: web-build
-	$(GO) test ./...
+	$(CARGO) test --locked
 
-test-race: web-build
-	$(GO) test -race -count=1 ./...
-
-cover: web-build
-	$(GO) test -race -coverprofile=coverage.out ./...
-	$(GO) tool cover -func=coverage.out
-
-check: web-check fmt-check vet lint test-race
+check: web-check fmt-check lint test
 
 clean:
-	rm -rf $(BINARY) dist/ coverage.out internal/api/web/dist/*
-	touch internal/api/web/dist/.gitkeep
+	$(CARGO) clean
+	rm -rf $(BINARY) dist/ web/dist/*
+	mkdir -p web/dist && touch web/dist/.gitkeep
