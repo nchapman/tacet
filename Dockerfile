@@ -10,12 +10,25 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-# Stage 2: Build the Rust binary for the target architecture.
-FROM rust:1-alpine AS rust-builder
+# Stage 2: Base Rust + cargo-chef toolchain for the target architecture.
+FROM lukemathwalker/cargo-chef:latest-rust-1-alpine AS chef
 
 RUN apk add --no-cache build-base musl-dev pkgconfig
-
 WORKDIR /src
+
+# Stage 3: Compute the dependency recipe (stable across src/ and web/ edits).
+FROM chef AS planner
+
+COPY Cargo.toml Cargo.lock ./
+COPY src/ ./src/
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Stage 4: Cook external dependencies in a cacheable layer, then build tacet.
+FROM chef AS rust-builder
+
+COPY --from=planner /src/recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json
+
 COPY Cargo.toml Cargo.lock ./
 COPY src/ ./src/
 COPY --from=web-builder /src/web/dist ./web/dist
