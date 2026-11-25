@@ -16,6 +16,7 @@ use crate::upnp::{
 };
 
 const CAST_MEDIA_NAMESPACE: &str = "urn:x-cast:com.google.cast.media";
+const DEFAULT_MEDIA_RECEIVER_APP_ID: &str = "CC1AD845";
 
 /// Native audio formats supported by Google Cast Default Media Receiver (CC1AD845).
 /// DSD is intentionally omitted so tacet auto-decodes 1-bit DSD to 24-bit/88.2kHz WAV.
@@ -250,10 +251,12 @@ impl Controller for CastRenderer {
             ..Default::default()
         };
 
-        let (rs_res, ms_res) = {
-            let client = self.ensure_connected(&mut st).await?;
-            (client.receiver_status().await, client.media_status().await)
+        // Do not connect or wake idle Cast devices during periodic status polling.
+        let Some(client) = st.client.as_ref() else {
+            return Ok(ts);
         };
+
+        let (rs_res, ms_res) = (client.receiver_status().await, client.media_status().await);
 
         // If both receiver and media status fail, tear down the stale Cast client so the next call reconnects.
         if rs_res.is_err() && ms_res.is_err() {
@@ -265,6 +268,7 @@ impl Controller for CastRenderer {
             ));
         }
 
+        let mut our_app_active = false;
         if let Ok(rs) = rs_res {
             ts.volume = (rs.volume.level.clamp(0.0, 1.0) * 100.0).round() as i32;
             ts.has_vol_value = true;
@@ -272,10 +276,11 @@ impl Controller for CastRenderer {
             ts.has_mute_val = true;
             if let Some(app) = rs.applications.first() {
                 st.transport_id = app.transport_id.clone();
+                our_app_active = app.app_id == DEFAULT_MEDIA_RECEIVER_APP_ID;
             }
         }
 
-        if let Ok(Some(ms)) = ms_res {
+        if our_app_active && let Ok(Some(ms)) = ms_res {
             st.media_session_id = ms.media_session_id;
             ts.state = match ms.player_state {
                 PlayerState::Playing => "PLAYING",
@@ -460,6 +465,7 @@ pub async fn discover_cast(timeout: Duration) -> Vec<Arc<CastRenderer>> {
     };
     devices
         .into_iter()
+        .filter(|d| d.port >= 1024 && crate::upnp::is_allowed_renderer_ip(d.ip))
         .map(|d| {
             let uuid = d.uuid.unwrap_or_else(|| format!("{}:{}", d.ip, d.port));
             CastRenderer::new(CastDeviceDesc {
@@ -477,6 +483,7 @@ pub type RemovedCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 pub struct CastMonitorCallbacks {
     pub list_cast: Arc<dyn Fn() -> Vec<RendererInfo> + Send + Sync>,
+    pub list_upnp_hosts: Arc<dyn Fn() -> HashSet<String> + Send + Sync>,
     pub is_active: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     pub on_found: Arc<dyn Fn(Arc<CastRenderer>) + Send + Sync>,
     pub on_removed: RemovedCallback,
@@ -515,12 +522,21 @@ impl CastMonitor {
         }
         let this = Arc::clone(self);
         tokio::spawn(async move {
+            // Brief startup delay so UPnP discovery registers dual-protocol devices first.
+            tokio::select! {
+                _ = this.cancel.cancelled() => return,
+                _ = tokio::time::sleep(Duration::from_secs(3)) => {}
+            }
             let mut missed: HashMap<String, usize> = HashMap::new();
             loop {
                 let found = discover_cast(Duration::from_secs(3)).await;
+                let upnp_hosts = (this.cb.list_upnp_hosts)();
                 let mut seen: HashSet<String> = HashSet::with_capacity(found.len());
                 for r in found {
                     let info = r.info();
+                    if upnp_hosts.contains(&info.host) {
+                        continue;
+                    }
                     seen.insert(info.id.clone());
                     missed.remove(&info.id);
                     (this.cb.on_found)(r);

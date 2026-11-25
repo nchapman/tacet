@@ -254,14 +254,17 @@ impl RemotePlayer {
                 ..Default::default()
             };
 
-            let state_up = rep.state.trim().to_ascii_uppercase();
-            if matches!(
-                state_up.as_str(),
-                "PLAYING" | "PAUSED_PLAYBACK" | "STOPPED" | "TRANSITIONING"
-            ) {
-                st.status.state = state_up.clone();
+            let norm_state = match rep.state.trim().to_ascii_uppercase().as_str() {
+                "PLAYING" => Some("PLAYING"),
+                "PAUSED" | "PAUSED_PLAYBACK" => Some("PAUSED_PLAYBACK"),
+                "STOPPED" | "IDLE" | "NO_MEDIA_PRESENT" => Some("STOPPED"),
+                "TRANSITIONING" | "BUFFERING" => Some("TRANSITIONING"),
+                _ => None,
+            };
+            if let Some(state_up) = norm_state {
+                st.status.state = state_up.into();
                 ev.has_state = true;
-                ev.state = state_up;
+                ev.state = state_up.into();
             }
             if let Some(pos) = rep.position_sec
                 && pos.is_finite()
@@ -350,7 +353,9 @@ impl RemotePlayer {
         match tokio::time::timeout(self.command_timeout, ack_rx).await {
             Ok(Ok(res)) if res.ok => Ok(()),
             Ok(Ok(res)) => {
-                if res.error_code.eq_ignore_ascii_case("PLAYBACK_BLOCKED") {
+                if res.error_code.eq_ignore_ascii_case("PLAYBACK_BLOCKED")
+                    || res.error_code.eq_ignore_ascii_case("AUTOPLAY_BLOCKED")
+                {
                     Err(UpnpError::Other(PlayerError::PlaybackBlocked.to_string()))
                 } else {
                     let msg = if res.error_message.is_empty() {
@@ -405,10 +410,15 @@ impl Controller for RemotePlayer {
     }
 
     async fn set_next_uri(&self, item: &MediaItem) -> UpnpResult<()> {
+        let media = if item.url.trim().is_empty() {
+            None
+        } else {
+            Some(to_media_payload(item))
+        };
         self.send_command(Command {
             id: String::new(),
             cmd_type: "set_next_uri".into(),
-            media: Some(to_media_payload(item)),
+            media,
             position_sec: None,
             volume: None,
             muted: None,

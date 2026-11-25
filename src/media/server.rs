@@ -48,6 +48,7 @@ impl MediaHandler {
     pub fn new(catalog: Arc<Catalog>, qobuz: Option<Arc<QobuzClient>>) -> Arc<Self> {
         let relay_http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(30))
             .pool_max_idle_per_host(8)
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 5 {
@@ -172,7 +173,11 @@ impl MediaHandler {
         }
 
         let quality = query.get("q").map(String::as_str).unwrap_or("");
-        let container = query.get("c").map(String::as_str).unwrap_or("");
+        let container = query
+            .get("container")
+            .or_else(|| query.get("c"))
+            .map(String::as_str)
+            .unwrap_or("");
         let tc_info = detect_transcoder();
         if let Some(spec) = parse_transcode_spec(quality, container, &track, tc_info) {
             let Some(ref ffmpeg) = tc_info.ffmpeg_path else {
@@ -225,7 +230,11 @@ impl MediaHandler {
         };
 
         let quality = query.get("q").map(String::as_str).unwrap_or("");
-        let container = query.get("c").map(String::as_str).unwrap_or("");
+        let container = query
+            .get("container")
+            .or_else(|| query.get("c"))
+            .map(String::as_str)
+            .unwrap_or("");
         let tc_info = detect_transcoder();
         let synthetic_track = crate::library::Track {
             sample_rate: info.sample_rate,
@@ -257,6 +266,26 @@ impl MediaHandler {
             };
         }
 
+        if query
+            .get("handoff")
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        {
+            return Response::builder()
+                .status(StatusCode::FOUND)
+                .header(header::LOCATION, &info.url)
+                .body(Body::empty())
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        }
+
+        self.relay_qobuz_stream(method, &info, headers).await
+    }
+
+    async fn relay_qobuz_stream(
+        &self,
+        method: Method,
+        info: &crate::qobuz::StreamInfo,
+        headers: &HeaderMap,
+    ) -> Response {
         // Direct HTTP relay from Qobuz CDN with Range forwarding
         let mut req = if method == Method::HEAD {
             self.relay_http.head(&info.url)
@@ -330,16 +359,31 @@ impl MediaHandler {
             ART_FORMAT_JPEG
         };
 
+        let key = if is_art_hash(id) {
+            id.to_string()
+        } else {
+            hash_art_key(id)
+        };
+        let etag = format!("\"art-{key}-{bucket}-{}\"", fmt.ext);
+        if headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|m| m.trim() == etag)
+        {
+            return Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(header::ETAG, etag)
+                .header(header::VARY, "Accept")
+                .body(Body::empty())
+                .unwrap_or_else(|_| StatusCode::NOT_MODIFIED.into_response());
+        }
+
         let cat = Arc::clone(&self.catalog);
         let art = self.art.get();
         let id_owned = id.to_string();
+        let key_owned = key.clone();
         let res = tokio::task::spawn_blocking(move || {
-            let key = if is_art_hash(&id_owned) {
-                id_owned.clone()
-            } else {
-                hash_art_key(&id_owned)
-            };
-            art.get_or_build(&key, bucket, fmt, || {
+            art.get_or_build(&key_owned, bucket, fmt, || {
                 if is_art_hash(&id_owned) {
                     cat.cover_art_by_hash(&id_owned)
                 } else {
@@ -364,7 +408,10 @@ impl MediaHandler {
         Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, mime)
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .header(header::ETAG, etag)
             .header(header::CACHE_CONTROL, cache_ctrl)
+            .header("X-Content-Type-Options", "nosniff")
             .header(header::VARY, "Accept")
             .body(Body::from(bytes))
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())

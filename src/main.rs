@@ -372,6 +372,7 @@ fn start_device_monitors(manager: &Arc<QueueManager>) -> (Arc<Monitor>, Arc<Cast
     upnp_monitor.start();
 
     let mgr_c1 = Arc::clone(manager);
+    let mgr_c_upnp = Arc::clone(manager);
     let mgr_c2 = Arc::clone(manager);
     let mgr_c3 = Arc::clone(manager);
     let mgr_c4 = Arc::clone(manager);
@@ -379,6 +380,14 @@ fn start_device_monitors(manager: &Arc<QueueManager>) -> (Arc<Monitor>, Arc<Cast
         Duration::from_secs(60),
         CastMonitorCallbacks {
             list_cast: Arc::new(move || mgr_c1.list_renderers_by_kind("cast")),
+            list_upnp_hosts: Arc::new(move || {
+                mgr_c_upnp
+                    .list_renderers_by_kind("upnp")
+                    .into_iter()
+                    .filter(|r| !r.host.is_empty())
+                    .map(|r| r.host)
+                    .collect()
+            }),
             is_active: Arc::new(move |id| mgr_c2.is_zone_active(id)),
             on_found: Arc::new(move |r| mgr_c3.register_renderer(r)),
             on_removed: Arc::new(move |id, name| {

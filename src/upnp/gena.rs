@@ -226,8 +226,10 @@ impl GenaClient {
     pub fn is_active(&self, renderer_id: &str) -> bool {
         let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
         g.by_renderer.get(renderer_id).is_some_and(|subs| {
-            subs.iter()
-                .any(|s| s.state.read().unwrap_or_else(|e| e.into_inner()).1)
+            subs.iter().any(|s| {
+                s.service == SERVICE_AV_TRANSPORT
+                    && s.state.read().unwrap_or_else(|e| e.into_inner()).1
+            })
         })
     }
 
@@ -333,6 +335,11 @@ impl GenaClient {
         self.stop.cancel();
         for s in all {
             s.cancel.cancel();
+            if tokio::runtime::Handle::try_current().is_ok() {
+                tokio::spawn(async move {
+                    unsubscribe_sub(&s).await;
+                });
+            }
         }
     }
 
@@ -442,7 +449,7 @@ async fn sub_lifecycle(sub: Arc<GenaSub>) {
                 backoff = Duration::from_secs(5);
                 let mut cur_timeout = timeout;
                 loop {
-                    let renew_in = cur_timeout.mul_f64(0.75).max(Duration::from_secs(20));
+                    let renew_in = (cur_timeout / 2).max(Duration::from_secs(15));
                     tokio::select! {
                         _ = sub.cancel.cancelled() => {
                             let _ = raw_gena_unsubscribe(&sub.event_sub_url, &sid).await;
@@ -526,7 +533,12 @@ async fn raw_gena_subscribe(
     let resp_text = send_raw_http(host, port, req.as_bytes()).await?;
     let mut lines = resp_text.lines();
     let status_line = lines.next().unwrap_or("");
-    if !status_line.contains(" 200 ") {
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    if !(200..300).contains(&status_code) {
         return Err(format!("GENA SUBSCRIBE failed: {status_line}"));
     }
 

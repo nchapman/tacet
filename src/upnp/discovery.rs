@@ -345,7 +345,7 @@ async fn build_renderer_from_xml(xml: &str, loc: &Url) -> Result<Arc<Renderer>> 
         has_volume: !rc_control.is_empty(),
         supports_set_next,
         supports_seek,
-        supports_events: !av_event.is_empty() || !rc_event.is_empty(),
+        supports_events: !av_event.is_empty(),
         supports_queue: false,
         sink_protocols: Vec::new(),
     };
