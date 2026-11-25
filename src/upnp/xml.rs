@@ -67,7 +67,7 @@ pub fn unescape_lenient(s: &str) -> String {
 }
 
 fn decode_entity(entity: &str) -> Option<char> {
-    match entity {
+    let ch = match entity {
         "amp" => Some('&'),
         "lt" => Some('<'),
         "gt" => Some('>'),
@@ -80,6 +80,12 @@ fn decode_entity(entity: &str) -> Option<char> {
         }
         _ if entity.starts_with('#') => entity[1..].parse::<u32>().ok().and_then(char::from_u32),
         _ => None,
+    }?;
+    let code = ch as u32;
+    if code >= 0x20 || matches!(ch, '\t' | '\n' | '\r') {
+        Some(ch)
+    } else {
+        None
     }
 }
 

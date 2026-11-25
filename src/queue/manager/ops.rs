@@ -849,7 +849,7 @@ impl Manager {
                 zi.next_index = -1;
                 zi.revision += 1;
             }
-            let tail_tracks: Vec<Track> = if changed && enabled && zi.current_index == 0 {
+            let tail_tracks: Vec<Track> = if changed && zi.current_index == 0 {
                 zi.queue.iter().skip(1).map(|it| it.track.clone()).collect()
             } else {
                 Vec::new()
@@ -869,7 +869,6 @@ impl Manager {
         self.emit("zone.playback", zone_id, &pb_ev);
         self.persist_zone_queues();
         if changed
-            && enabled
             && prev_len > 1
             && old_cur_idx >= 0
             && (old_cur_idx as usize) < prev_len

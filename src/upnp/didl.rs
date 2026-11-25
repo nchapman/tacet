@@ -7,6 +7,8 @@ pub const DLNA_FEATURES_STREAMING: &str =
     "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000";
 pub const DLNA_FEATURES_TRANSCODED: &str =
     "DLNA.ORG_OP=00;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=01700000000000000000000000000000";
+pub const DLNA_FEATURES_TRANSCODED_SEEKABLE: &str =
+    "DLNA.ORG_OP=01;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=01700000000000000000000000000000";
 
 #[derive(Debug, Clone, Default)]
 pub struct MediaItem {
@@ -81,7 +83,9 @@ pub fn negotiate_mime(preferred: &str, sink_protocols: &[String]) -> String {
 /// Builds raw (unescaped) DIDL-Lite XML for AVTransport URI metadata.
 pub fn build_didl(m: &MediaItem, sink_protocols: &[String]) -> String {
     let mime = negotiate_mime(&m.mime, sink_protocols);
-    let features = if m.transcoded {
+    let features = if m.transcoded && m.seekable {
+        DLNA_FEATURES_TRANSCODED_SEEKABLE
+    } else if m.transcoded {
         DLNA_FEATURES_TRANSCODED
     } else if m.seekable {
         DLNA_FEATURES_SEEKABLE

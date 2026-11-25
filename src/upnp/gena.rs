@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use super::didl::parse_upnp_duration;
-use super::http::{send_raw_http_bytes, url_path_and_query};
+use super::http::{format_host_header, send_raw_http_bytes, url_path_and_query};
 use super::xml::{decode_xml_bytes, lenient_reader, local_name, sanitize_xml, unescape_lenient};
 
 pub const SERVICE_AV_TRANSPORT: &str = "AVTransport";
@@ -509,7 +509,7 @@ async fn sub_lifecycle(sub: Arc<GenaSub>) {
                 backoff = Duration::from_secs(5);
                 let mut cur_timeout = timeout;
                 loop {
-                    let renew_in = (cur_timeout / 2).max(Duration::from_secs(15));
+                    let renew_in = (cur_timeout / 2).max(Duration::from_secs(5));
                     tokio::select! {
                         _ = sub.cancel.cancelled() => {
                             unsubscribe_sub(&sub).await;
@@ -581,9 +581,10 @@ async fn raw_gena_subscribe(
     }
     let host = u.host_str().ok_or("missing host")?;
     let port = u.port_or_known_default().unwrap_or(80);
+    let host_hdr = format_host_header(host, Some(port));
     let path = url_path_and_query(&u);
 
-    let mut req = format!("SUBSCRIBE {path} HTTP/1.1\r\nHOST: {host}:{port}\r\n");
+    let mut req = format!("SUBSCRIBE {path} HTTP/1.1\r\nHOST: {host_hdr}\r\n");
     if let Some(sid) = renew_sid {
         req.push_str(&format!("SID: {sid}\r\n"));
     } else {
@@ -631,9 +632,10 @@ async fn raw_gena_unsubscribe(event_sub_url: &str, sid: &str) -> std::result::Re
     }
     let host = u.host_str().ok_or("missing host")?;
     let port = u.port_or_known_default().unwrap_or(80);
+    let host_hdr = format_host_header(host, Some(port));
     let path = url_path_and_query(&u);
     let req = format!(
-        "UNSUBSCRIBE {path} HTTP/1.1\r\nHOST: {host}:{port}\r\nSID: {sid}\r\nCONNECTION: close\r\n\r\n"
+        "UNSUBSCRIBE {path} HTTP/1.1\r\nHOST: {host_hdr}\r\nSID: {sid}\r\nCONNECTION: close\r\n\r\n"
     );
     let _ = send_raw_http_bytes(
         host,
@@ -654,7 +656,7 @@ pub fn parse_gena_timeout(hdr: &str) -> Duration {
         && let Ok(sec) = rest.trim().parse::<u64>()
         && sec > 0
     {
-        return Duration::from_secs(sec.clamp(30, 1800));
+        return Duration::from_secs(sec.clamp(10, 1800));
     }
     Duration::from_secs(DEFAULT_GENA_TIMEOUT_SEC)
 }

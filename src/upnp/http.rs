@@ -136,15 +136,19 @@ pub async fn send_raw_http_bytes(
         .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
         .and_then(|(_, v)| v.trim().parse::<usize>().ok());
 
-    if !read_full_body {
+    if !read_full_body || matches!(status, 204 | 304) {
         // Drain up to 4 KiB with a short timeout so lwIP/libupnp does not receive RST.
-        if let Some(cl) = content_length
+        if !matches!(status, 204 | 304)
+            && let Some(cl) = content_length
             && cl > 0
             && body.len() < cl.min(DRAIN_LIMIT_BYTES)
         {
             let target = cl.min(DRAIN_LIMIT_BYTES);
             let drain_deadline = tokio::time::Instant::now() + Duration::from_millis(150);
             let _ = read_up_to(&mut stream, &mut body, target, drain_deadline).await;
+        }
+        if matches!(status, 204 | 304) {
+            body.clear();
         }
         return Ok(RawHttpResponse {
             status,
@@ -156,15 +160,19 @@ pub async fn send_raw_http_bytes(
     if is_chunked {
         body = read_chunked_body(&mut stream, body, max_body_bytes, deadline).await?;
     } else if let Some(cl) = content_length {
-        let want = cl.min(max_body_bytes);
-        read_up_to(&mut stream, &mut body, want, deadline).await?;
-        if body.len() < want {
+        if cl > max_body_bytes {
+            return Err(RawHttpError::Other(format!(
+                "HTTP response body ({cl} bytes) exceeds limit ({max_body_bytes} bytes)"
+            )));
+        }
+        read_up_to(&mut stream, &mut body, cl, deadline).await?;
+        if body.len() < cl {
             return Err(RawHttpError::EofOrReset(format!(
-                "truncated HTTP body: got {} of {want} bytes",
+                "truncated HTTP body: got {} of {cl} bytes",
                 body.len()
             )));
         }
-        body.truncate(want);
+        body.truncate(cl);
     } else {
         read_to_eof(&mut stream, &mut body, max_body_bytes, deadline).await?;
     }
@@ -185,10 +193,16 @@ pub fn url_path_and_query(u: &Url) -> String {
     }
 }
 
-fn format_host_header(host: &str, port: Option<u16>) -> String {
+pub(crate) fn format_host_header(host: &str, port: Option<u16>) -> String {
+    let bare = host.trim_matches(['[', ']']);
+    let formatted_host = if bare.contains(':') {
+        format!("[{bare}]")
+    } else {
+        bare.to_string()
+    };
     match port {
-        Some(p) => format!("{host}:{p}"),
-        None => host.to_string(),
+        Some(p) => format!("{formatted_host}:{p}"),
+        None => formatted_host,
     }
 }
 
@@ -326,7 +340,14 @@ async fn read_chunked_body(
         if chunk_len == 0 {
             return Ok(out);
         }
-        let need = chunk_len + 2;
+        if out.len().saturating_add(chunk_len) > max_bytes {
+            return Err(RawHttpError::Other(format!(
+                "chunked HTTP body exceeds limit ({max_bytes} bytes)"
+            )));
+        }
+        let need = chunk_len
+            .checked_add(2)
+            .ok_or_else(|| RawHttpError::Other("chunk size overflow".into()))?;
         while raw.len() < need {
             let n = tokio::time::timeout_at(deadline, stream.read(&mut tmp))
                 .await
@@ -339,9 +360,7 @@ async fn read_chunked_body(
             }
             raw.extend_from_slice(&tmp[..n]);
         }
-        let avail = chunk_len.min(raw.len());
-        let space = max_bytes.saturating_sub(out.len());
-        out.extend_from_slice(&raw[..avail.min(space)]);
-        raw.drain(..need.min(raw.len()));
+        out.extend_from_slice(&raw[..chunk_len]);
+        raw.drain(..need);
     }
 }

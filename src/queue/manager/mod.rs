@@ -170,7 +170,13 @@ impl Manager {
         if !explicit.is_empty() {
             return explicit;
         }
-        format!("http://{}:{}", ctrl.local_ip(), self.server_port)
+        let ip = ctrl.local_ip();
+        let host = if ip.contains(':') && !ip.starts_with('[') {
+            format!("[{ip}]")
+        } else {
+            ip
+        };
+        format!("http://{host}:{}", self.server_port)
     }
 
     pub fn load_persisted_zones(&self) {

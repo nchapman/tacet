@@ -7,9 +7,9 @@ pub mod renderer;
 pub(crate) mod xml;
 
 pub use didl::{
-    DLNA_FEATURES_SEEKABLE, DLNA_FEATURES_STREAMING, DLNA_FEATURES_TRANSCODED, MediaItem,
-    build_didl, escape_xml, escape_xml_attr, escape_xml_text, format_upnp_duration, negotiate_mime,
-    parse_upnp_duration,
+    DLNA_FEATURES_SEEKABLE, DLNA_FEATURES_STREAMING, DLNA_FEATURES_TRANSCODED,
+    DLNA_FEATURES_TRANSCODED_SEEKABLE, MediaItem, build_didl, escape_xml, escape_xml_attr,
+    escape_xml_text, format_upnp_duration, negotiate_mime, parse_upnp_duration,
 };
 pub use discovery::{
     connect_by_url, discover, is_allowed_renderer_ip, local_ip_for_host, probe_location,
@@ -60,6 +60,34 @@ mod tests {
         // Parameterized MIME types in sink protocols are stripped to base MIME.
         let param_sinks = vec!["http-get:*:audio/flac;rate=44100:*".into()];
         assert_eq!(negotiate_mime("audio/x-flac", &param_sinks), "audio/flac");
+
+        // Seekable transcoded WAV advertises OP=01;CI=1 (not OP=00).
+        let mut wav_item = item.clone();
+        wav_item.mime = "audio/wav".into();
+        wav_item.transcoded = true;
+        wav_item.seekable = true;
+        let wav_didl = build_didl(&wav_item, &[]);
+        assert!(wav_didl.contains(DLNA_FEATURES_TRANSCODED_SEEKABLE));
+
+        // IPv6 Host header formatting always wraps literal IPv6 addresses in brackets.
+        assert_eq!(
+            http::format_host_header("fd00::5", Some(1400)),
+            "[fd00::5]:1400"
+        );
+        assert_eq!(
+            http::format_host_header("[fd00::5]", Some(1400)),
+            "[fd00::5]:1400"
+        );
+        assert_eq!(
+            http::format_host_header("192.168.1.5", Some(80)),
+            "192.168.1.5:80"
+        );
+
+        // Short GENA timeouts (e.g. Second-10) are preserved rather than clamped above expiry.
+        assert_eq!(parse_gena_timeout("Second-10"), Duration::from_secs(10));
+
+        // Numeric control-char entity &#0; is not decoded into a NUL byte.
+        assert!(!xml::unescape_lenient("a&#0;b").contains('\0'));
     }
 
     #[test]

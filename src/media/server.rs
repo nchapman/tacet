@@ -708,7 +708,10 @@ async fn serve_seekable_wav(
             .header(header::ACCEPT_RANGES, "bytes")
             .header(header::CONTENT_LENGTH, len.to_string())
             .header("transferMode.dlna.org", "Streaming")
-            .header("contentFeatures.dlna.org", DLNA_FEATURES_TRANSCODED);
+            .header(
+                "contentFeatures.dlna.org",
+                crate::upnp::DLNA_FEATURES_TRANSCODED_SEEKABLE,
+            );
         if is_partial {
             b = b.header(
                 header::CONTENT_RANGE,

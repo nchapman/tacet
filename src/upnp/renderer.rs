@@ -276,25 +276,6 @@ impl Renderer {
         &self.http
     }
 
-    /// Serializes a SOAP action under the per-renderer mutex, holding the mutex across
-    /// the 120ms retry sleep so queued actions (e.g. `Play`) cannot overtake a retrying
-    /// `SetAVTransportURI` (matches Go `renderer.doSOAP`).
-    pub async fn do_soap<F, Fut, T>(&self, mut f: F) -> Result<T>
-    where
-        F: FnMut() -> Fut,
-        Fut: std::future::Future<Output = Result<T>>,
-    {
-        let _guard = self.soap_mu.lock().await;
-        match f().await {
-            Ok(v) => Ok(v),
-            Err(e) if e.is_transient_conn() => {
-                tokio::time::sleep(Duration::from_millis(120)).await;
-                f().await
-            }
-            Err(e) => Err(e),
-        }
-    }
-
     async fn send_soap_once(
         &self,
         control_url: &str,
@@ -330,11 +311,12 @@ impl Renderer {
             let status = resp.status().as_u16();
             let mut bytes = Vec::new();
             while let Some(chunk) = resp.chunk().await? {
-                let space = MAX_SOAP_BODY_BYTES.saturating_sub(bytes.len());
-                if space == 0 {
-                    break;
+                if bytes.len().saturating_add(chunk.len()) > MAX_SOAP_BODY_BYTES {
+                    return Err(UpnpError::Other(format!(
+                        "HTTPS SOAP response exceeds limit ({MAX_SOAP_BODY_BYTES} bytes)"
+                    )));
                 }
-                bytes.extend_from_slice(&chunk[..chunk.len().min(space)]);
+                bytes.extend_from_slice(&chunk);
             }
             (status, decode_xml_bytes(&bytes))
         };
