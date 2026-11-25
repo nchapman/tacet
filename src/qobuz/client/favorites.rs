@@ -184,8 +184,22 @@ impl Client {
                 if key.is_empty() || !seen_a.insert(key) {
                     continue;
                 }
-                if client.get_cached_artist_name(&name).is_some() {
-                    continue;
+                if let Some(id) = client.get_cached_artist_name(&name) {
+                    if id == 0 {
+                        continue;
+                    }
+                    let aid_s = id.to_string();
+                    if client.has_cached_json(
+                        "/artist/get",
+                        &[
+                            ("artist_id", aid_s.as_str()),
+                            ("extra", "albums"),
+                            ("limit", "50"),
+                            ("offset", "0"),
+                        ],
+                    ) {
+                        continue;
+                    }
                 }
                 match client.get_artist_by_name(&name, 50).await {
                     Ok(_) => warmed_artists += 1,
@@ -208,8 +222,16 @@ impl Client {
                 if key == "|" || !seen_alb.insert(key) {
                     continue;
                 }
-                if client.get_cached_album_match(&a.artist, &a.title).is_some() {
-                    continue;
+                if let Some(alb_id) = client.get_cached_album_match(&a.artist, &a.title) {
+                    if alb_id.is_empty() {
+                        continue;
+                    }
+                    if client.has_cached_json(
+                        "/album/get",
+                        &[("album_id", alb_id.as_str()), ("limit", "500")],
+                    ) {
+                        continue;
+                    }
                 }
                 match client.match_album(&a.artist, &a.title).await {
                     Ok(_) => warmed_albums += 1,

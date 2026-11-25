@@ -394,12 +394,12 @@ impl QArtist {
             .biography
             .as_ref()
             .map(|b| {
-                let raw = if !b.content.trim().is_empty() {
-                    &b.content
+                let cleaned = clean_qobuz_text(&b.content);
+                if cleaned.is_empty() {
+                    clean_qobuz_text(&b.summary)
                 } else {
-                    &b.summary
-                };
-                clean_qobuz_text(raw)
+                    cleaned
+                }
             })
             .unwrap_or_default();
         Artist {
@@ -431,6 +431,20 @@ pub(crate) struct QTracksList {
 }
 
 #[derive(Debug, Default, Deserialize)]
+pub(crate) struct QAward {
+    #[serde(default)]
+    pub name: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct QGoody {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub original_url: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
 pub(crate) struct QAlbum {
     #[serde(default)]
     pub id: String,
@@ -442,6 +456,12 @@ pub(crate) struct QAlbum {
     pub genre: QGenre,
     #[serde(default)]
     pub label: QLabel,
+    #[serde(default)]
+    pub copyright: String,
+    #[serde(default)]
+    pub awards: Vec<QAward>,
+    #[serde(default)]
+    pub goodies: Vec<QGoody>,
     #[serde(default)]
     pub release_date_original: String,
     #[serde(default)]
@@ -479,7 +499,7 @@ impl QAlbum {
         {
             year = dt.format("%Y").to_string().parse().unwrap_or(0);
         }
-        let tracks = if include_tracks {
+        let tracks: Vec<Track> = if include_tracks {
             self.tracks
                 .items
                 .iter()
@@ -497,6 +517,38 @@ impl QAlbum {
         if track_count == 0 && !tracks.is_empty() {
             track_count = tracks.len() as i32;
         }
+        let duration_sec = if include_tracks && !tracks.is_empty() {
+            tracks.iter().map(|t| t.duration_sec).sum()
+        } else {
+            self.duration
+        };
+        let mut awards = Vec::new();
+        let mut seen_awards = std::collections::HashSet::new();
+        for aw in &self.awards {
+            let name = aw.name.trim();
+            if !name.is_empty() && seen_awards.insert(name.to_ascii_lowercase()) {
+                awards.push(name.to_string());
+            }
+        }
+        let booklet_url = self
+            .goodies
+            .iter()
+            .filter_map(|g| {
+                let u = g.url.trim();
+                let u = if u.is_empty() {
+                    g.original_url.trim()
+                } else {
+                    u
+                };
+                if u.starts_with("https://") && u.to_ascii_lowercase().ends_with(".pdf") {
+                    Some(u.to_string())
+                } else {
+                    None
+                }
+            })
+            .next()
+            .unwrap_or_default();
+
         Album {
             id: format!("qobuz:{}", self.id),
             source: SOURCE_QOBUZ.into(),
@@ -508,10 +560,14 @@ impl QAlbum {
             genre: self.genre.name.trim().to_string(),
             label: self.label.name.trim().to_string(),
             description: clean_qobuz_text(&self.description),
+            copyright: self.copyright.trim().to_string(),
+            release_date: self.release_date_original.trim().to_string(),
+            awards,
+            booklet_url,
             credits,
             year,
             track_count,
-            duration_sec: self.duration,
+            duration_sec,
             artwork_url: self.image.best(),
             primary_format: "FLAC".into(),
             max_bit_depth: self.maximum_bit_depth,
@@ -547,6 +603,8 @@ pub(crate) struct QTrack {
     pub maximum_sampling_rate: f64,
     #[serde(default)]
     pub maximum_bit_depth: i32,
+    #[serde(default)]
+    pub parental_warning: bool,
     #[serde(default)]
     pub performers: String,
     #[serde(default)]
@@ -600,12 +658,6 @@ impl QTrack {
         {
             bd = a.maximum_bit_depth;
         }
-        if sr == 0 {
-            sr = 44100;
-        }
-        if bd == 0 {
-            bd = 16;
-        }
 
         Track {
             id: format!("qobuz:{}", self.id),
@@ -629,6 +681,7 @@ impl QTrack {
             mime: "audio/flac".into(),
             ext: ".flac".into(),
             artwork_url: artwork,
+            explicit: self.parental_warning,
             qobuz_track_id: self.id,
             available: true,
             ..Default::default()
@@ -637,18 +690,23 @@ impl QTrack {
 }
 
 pub(crate) fn is_primary_artist_album_or_ep(qa: &QAlbum, artist_id: i64, artist_key: &str) -> bool {
-    let rtype = qa.release_type.trim().to_ascii_lowercase();
-    if matches!(rtype.as_str(), "single" | "compilation") {
-        return false;
-    }
-    if qa.artist.id > 0 && artist_id > 0 && qa.artist.id != artist_id {
-        return false;
-    }
-    if !artist_key.is_empty() {
-        let alb_artist = norm_match_key(&qa.artist.name);
-        if !alb_artist.is_empty() && alb_artist != artist_key {
+    if qa.artist.id > 0 && artist_id > 0 {
+        if qa.artist.id != artist_id {
             return false;
         }
+    } else if !qa.artist.name.trim().is_empty()
+        && !artist_key.is_empty()
+        && norm_match_key(&qa.artist.name) != artist_key
+    {
+        return false;
+    }
+
+    let rtype = qa.release_type.trim().to_ascii_lowercase();
+    if matches!(rtype.as_str(), "single" | "compilation" | "other") {
+        return false;
+    }
+    if qa.tracks_count > 0 && qa.tracks_count < 3 {
+        return false;
     }
     true
 }
@@ -701,11 +759,16 @@ fn format_credit_role(raw: &str) -> String {
     if s.is_empty() {
         return String::new();
     }
-    match s.to_ascii_lowercase().as_str() {
-        "mainartist" | "main artist" => "Main Artist".into(),
-        "featured artist" | "featuredartist" => "Featured Artist".into(),
-        "composerlyricist" => "Composer & Lyricist".into(),
-        "associatedperformer" => "Performer".into(),
+    match s {
+        "MainArtist" => "Main Artist".into(),
+        "FeaturedArtist" => "Featured Artist".into(),
+        "AssociatedPerformer" => "Performer".into(),
+        "ComposerLyricist" => "Composer / Lyricist".into(),
+        "MixingEngineer" => "Mixing Engineer".into(),
+        "MasteringEngineer" => "Mastering Engineer".into(),
+        "RecordingEngineer" => "Recording Engineer".into(),
+        "AssistantRecordingEngineer" => "Assistant Engineer".into(),
+        "StudioPersonnel" | "MusicPublisher" => String::new(),
         _ => s.to_string(),
     }
 }

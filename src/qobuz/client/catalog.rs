@@ -117,10 +117,11 @@ impl Client {
             return Err(QobuzError::NotFound);
         }
         let qa: QAlbum = self
-            .get_cached_json(
+            .get_cached_json_valid(
                 "/album/get",
                 &[("album_id", raw_id), ("limit", "500")],
                 ALBUM_CACHE_TTL,
+                |a: &QAlbum| !a.id.is_empty() && !a.tracks.items.is_empty(),
             )
             .await
             .map_err(|e| match e {
@@ -199,8 +200,12 @@ impl Client {
             ("limit", lim_s.as_str()),
             ("offset", "0"),
         ];
-        let artist_fut =
-            self.get_cached_json::<Resp>("/artist/get", &artist_params, ARTIST_CACHE_TTL);
+        let artist_fut = self.get_cached_json_valid::<Resp, _>(
+            "/artist/get",
+            &artist_params,
+            ARTIST_CACHE_TTL,
+            |r| r.artist.id > 0 || !r.artist.name.trim().is_empty(),
+        );
         let page_fut = self.fetch_artist_page_extras(artist_id);
         let (resp_res, page_res) = tokio::join!(artist_fut, page_fut);
 
@@ -276,13 +281,28 @@ impl Client {
             }
             return self.get_artist(cached_id, limit).await;
         }
-        let res = self.search(name, 10, 0).await?;
-        let want = norm_match_key(name);
-        let picked = res
+        #[derive(Default, Deserialize)]
+        struct ArtistsWrap {
+            #[serde(default)]
+            items: Vec<QArtist>,
+        }
+        #[derive(Deserialize)]
+        struct ArtistSearchResp {
+            #[serde(default)]
+            artists: ArtistsWrap,
+        }
+        let resp: ArtistSearchResp = self
+            .get_cached_json(
+                "/artist/search",
+                &[("query", name), ("limit", "10"), ("offset", "0")],
+                ARTIST_CACHE_TTL,
+            )
+            .await?;
+        let picked = resp
             .artists
+            .items
             .iter()
-            .find(|a| norm_match_key(&a.name) == want)
-            .or_else(|| res.artists.first());
+            .find(|a| a.name.trim().eq_ignore_ascii_case(name));
         let Some(art) = picked else {
             self.cache_artist_name(name, 0, true);
             return Err(QobuzError::NotFound);
@@ -294,7 +314,7 @@ impl Client {
     pub async fn match_album(&self, artist: &str, title: &str) -> Result<Album> {
         let artist = artist.trim();
         let title = title.trim();
-        if title.is_empty() {
+        if artist.is_empty() || title.is_empty() {
             return Err(QobuzError::NotFound);
         }
         if let Some(cached_id) = self.get_cached_album_match(artist, title) {
@@ -307,8 +327,7 @@ impl Client {
         let want_artist = norm_match_key(artist);
         let want_title = norm_match_key(title);
 
-        if !artist.is_empty()
-            && let Ok(detail) = self.get_artist_by_name(artist, 50).await
+        if let Ok(detail) = self.get_artist_by_name(artist, 50).await
             && let Some(id) =
                 pick_matching_album_id(&detail.albums, &want_artist, &want_title, false)
         {
@@ -316,15 +335,9 @@ impl Client {
             return self.get_album(&id).await;
         }
 
-        let query = if artist.is_empty() {
-            title.to_string()
-        } else {
-            format!("{artist} {title}")
-        };
-        let res = self.search(&query, 15, 0).await?;
-        let matched =
-            pick_matching_album_id(&res.albums, &want_artist, &want_title, !artist.is_empty())
-                .or_else(|| pick_matching_album_id(&res.albums, "", &want_title, false));
+        let query = format!("{artist} {title}");
+        let res = self.search(&query, 10, 0).await?;
+        let matched = pick_matching_album_id(&res.albums, &want_artist, &want_title, true);
         let Some(id) = matched else {
             self.put_cached_album_match(artist, title, "");
             return Err(QobuzError::NotFound);

@@ -323,4 +323,90 @@ mod tests {
 
         srv.abort();
     }
+
+    #[tokio::test]
+    async fn album_editorial_explicit_and_exact_artist_search_parity() {
+        use axum::{Json, Router, routing::get};
+        let app = Router::new()
+            .route(
+                "/album/get",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "id": "ed1",
+                        "title": "Kind of Blue",
+                        "artist": {"id": 10, "name": "Miles Davis"},
+                        "genre": {"name": "Jazz"},
+                        "label": {"name": "Columbia"},
+                        "copyright": "(P) 1959 Columbia Records",
+                        "release_date_original": "1959-08-17",
+                        "awards": [{"name": "Qobuzissime"}, {"name": "qobuzissime"}, {"name": "Diapason d'Or"}],
+                        "goodies": [
+                            {"url": "http://insecure.example/a.pdf"},
+                            {"original_url": "https://static.qobuz.com/goodies/booklet.pdf"}
+                        ],
+                        "tracks_count": 2,
+                        "maximum_bit_depth": 24,
+                        "maximum_sampling_rate": 192.0,
+                        "tracks": {
+                            "items": [
+                                {"id": 1, "title": "So What", "duration": 562, "track_number": 1, "media_number": 1, "parental_warning": true, "performers": "Miles Davis, MainArtist - Bill Evans, AssociatedPerformer, StudioPersonnel"},
+                                {"id": 2, "title": "Freddie Freeloader", "duration": 586, "track_number": 2, "media_number": 1, "parental_warning": false}
+                            ]
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/artist/search",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "artists": {
+                            "items": [
+                                {"id": 99, "name": "Miles Davis Quintet"}
+                            ]
+                        }
+                    }))
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let c = Client::new(Config {
+            base_url: format!("http://{addr}"),
+            app_id: "123".into(),
+            app_secret: "sec".into(),
+            auth_token: "tok".into(),
+            ..Default::default()
+        });
+        assert!(c.status().configured);
+
+        let alb = c.get_album("ed1").await.unwrap();
+        assert_eq!(alb.copyright, "(P) 1959 Columbia Records");
+        assert_eq!(alb.release_date, "1959-08-17");
+        assert_eq!(alb.awards, vec!["Qobuzissime", "Diapason d'Or"]);
+        assert_eq!(
+            alb.booklet_url,
+            "https://static.qobuz.com/goodies/booklet.pdf"
+        );
+        assert_eq!(alb.duration_sec, 562 + 586);
+        assert!(alb.tracks[0].explicit);
+        assert!(!alb.tracks[1].explicit);
+        assert!(
+            alb.credits
+                .iter()
+                .all(|cr| !cr.roles.iter().any(|r| r == "StudioPersonnel"))
+        );
+
+        // Exact artist match only: "Miles Davis" must NOT match "Miles Davis Quintet".
+        assert!(matches!(
+            c.get_artist_by_name("Miles Davis", 50).await,
+            Err(QobuzError::NotFound)
+        ));
+
+        srv.abort();
+    }
 }

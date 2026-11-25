@@ -22,13 +22,13 @@ use super::types::{
 pub(super) const MAX_URL_CACHE_ENTRIES: usize = 512;
 const MAX_TRACK_CACHE_ENTRIES: usize = 4096;
 
-pub(super) const ALBUM_CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
-pub(super) const ARTIST_CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
+pub(super) const ALBUM_CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+pub(super) const ARTIST_CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 const ARTIST_NAME_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
-const ARTIST_MISS_TTL: Duration = Duration::from_secs(6 * 3600);
+const ARTIST_MISS_TTL: Duration = Duration::from_secs(24 * 3600);
 const ALBUM_MATCH_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
-const ALBUM_MISS_TTL: Duration = Duration::from_secs(6 * 3600);
-pub(super) const SEARCH_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
+const ALBUM_MISS_TTL: Duration = Duration::from_secs(24 * 3600);
+pub(super) const SEARCH_CACHE_TTL: Duration = Duration::from_secs(3600);
 
 const MAX_CONCURRENT_REQUESTS: usize = 3;
 const MAX_RETRY_ATTEMPTS: usize = 3;
@@ -139,7 +139,7 @@ impl Client {
     pub fn status(&self) -> Status {
         let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
         Status {
-            configured: !g.app_id.is_empty(),
+            configured: !g.app_id.is_empty() && !g.app_secret.is_empty(),
             authenticated: !g.auth_token.is_empty() && !g.app_id.is_empty(),
             user_name: g.user_name.clone(),
             subscription: g.subscription.clone(),
@@ -392,16 +392,40 @@ impl Client {
         String::from_utf8(raw).ok()
     }
 
+    pub(crate) fn has_cached_json(&self, path: &str, params: &[(&str, &str)]) -> bool {
+        let Some(kv) = &self.kv else {
+            return false;
+        };
+        let key = cache_key_for_req(path, params);
+        matches!(kv.get(&key), Ok(Some(_)))
+    }
+
     pub(crate) async fn get_cached_json<T: DeserializeOwned>(
         &self,
         path: &str,
         params: &[(&str, &str)],
         ttl: Duration,
     ) -> Result<T> {
+        self.get_cached_json_valid(path, params, ttl, |_| true)
+            .await
+    }
+
+    pub(crate) async fn get_cached_json_valid<T, F>(
+        &self,
+        path: &str,
+        params: &[(&str, &str)],
+        ttl: Duration,
+        valid: F,
+    ) -> Result<T>
+    where
+        T: DeserializeOwned,
+        F: Fn(&T) -> bool,
+    {
         let key = cache_key_for_req(path, params);
         if let Some(kv) = &self.kv
             && let Ok(Some(raw)) = kv.get(&key)
             && let Ok(val) = decode_qobuz_json::<T>(&raw)
+            && valid(&val)
         {
             return Ok(val);
         }
@@ -441,6 +465,7 @@ impl Client {
 
         let parsed: T = decode_qobuz_json(&raw)?;
         if self.auth_gen.load(Ordering::Relaxed) == auth_gen
+            && valid(&parsed)
             && let Some(kv) = &self.kv
         {
             let _ = kv.set(&key, &raw, Ttl::After(ttl));
@@ -479,8 +504,15 @@ impl Client {
                 .await
                 .map_err(|_| QobuzError::Other("semaphore closed".into()))?;
 
-            let mut req = self.http.get(&url).query(params);
+            let mut req = self
+                .http
+                .get(&url)
+                .query(params)
+                .header("User-Agent", "Mozilla/5.0");
             if !app_id.is_empty() {
+                if !params.iter().any(|(k, _)| *k == "app_id") {
+                    req = req.query(&[("app_id", app_id.as_str())]);
+                }
                 req = req.header("X-App-Id", &app_id);
             }
             if with_auth && !token.is_empty() {
@@ -576,7 +608,11 @@ impl Client {
             .await
             .map_err(|_| QobuzError::Other("semaphore closed".into()))?;
 
-        let mut req = self.http.post(&url).form(form);
+        let mut req = self
+            .http
+            .post(&url)
+            .form(form)
+            .header("User-Agent", "Mozilla/5.0");
         if !app_id.is_empty() {
             req = req.header("X-App-Id", &app_id);
         }
@@ -631,24 +667,37 @@ impl Client {
         let until = self.cooldown_until_ms.load(Ordering::Relaxed);
         let now = now_ms();
         if until > now {
-            let wait = Duration::from_millis((until - now).min(5000) as u64);
+            let wait = Duration::from_millis((until - now).min(60_000) as u64);
             tokio::time::sleep(wait).await;
         }
     }
 
     fn note_rate_limit(&self, retry_after: &str) -> Duration {
         let n = self.consecutive_429.fetch_add(1, Ordering::Relaxed) + 1;
-        let secs = retry_after
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|&s| s > 0)
-            .unwrap_or_else(|| (1u64 << n.min(4)).min(30));
+        let secs =
+            parse_retry_after_secs(retry_after).unwrap_or_else(|| (1u64 << n.min(5)).min(60));
         let delay = Duration::from_secs(secs.min(60));
         let target = now_ms() + delay.as_millis() as i64;
         self.cooldown_until_ms.fetch_max(target, Ordering::Relaxed);
         delay
     }
+}
+
+fn parse_retry_after_secs(raw: &str) -> Option<u64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(s) = trimmed.parse::<u64>() {
+        return (s > 0).then_some(s);
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(trimmed) {
+        let delta = dt.timestamp() - chrono::Utc::now().timestamp();
+        if delta > 0 {
+            return Some(delta as u64);
+        }
+    }
+    None
 }
 
 /// Computes the Qobuz MD5 request_sig for `/track/getFileUrl`.
@@ -666,7 +715,18 @@ pub fn sign_file_url(
 }
 
 pub(super) fn cache_key_for_req(path: &str, params: &[(&str, &str)]) -> String {
-    let mut pairs: Vec<(&str, &str)> = params.to_vec();
+    let mut pairs: Vec<(String, String)> = params
+        .iter()
+        .filter(|(k, _)| *k != "app_id")
+        .map(|(k, v)| {
+            let val = if *k == "query" {
+                v.trim().to_ascii_lowercase()
+            } else {
+                (*v).to_string()
+            };
+            ((*k).to_string(), val)
+        })
+        .collect();
     pairs.sort_unstable();
     let mut out = String::from(path);
     out.push('?');
