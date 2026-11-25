@@ -31,7 +31,7 @@ pub fn transcode_semaphore() -> Arc<Semaphore> {
         let slots = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
-            .max(4);
+            .clamp(2, 6);
         Arc::new(Semaphore::new(slots))
     }))
 }

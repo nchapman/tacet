@@ -48,9 +48,10 @@ impl RwLockArt {
 
 impl MediaHandler {
     pub fn new(catalog: Arc<Catalog>, qobuz: Option<Arc<QobuzClient>>) -> Arc<Self> {
+        // No read_timeout on the streaming relay client: renderers that pause
+        // or buffer slowly can legitimately leave a stream idle for >30s.
         let relay_http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .read_timeout(Duration::from_secs(30))
             .pool_max_idle_per_host(8)
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 5 {
@@ -282,11 +283,15 @@ impl MediaHandler {
             req = req.header("Range", rs);
         }
 
-        let upstream = match req.send().await {
-            Ok(r) => r,
-            Err(e) => {
+        let upstream = match tokio::time::timeout(Duration::from_secs(20), req.send()).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
                 tracing::warn!(error = %e.without_url(), "qobuz relay upstream request failed");
                 return (StatusCode::BAD_GATEWAY, "qobuz relay failed").into_response();
+            }
+            Err(_) => {
+                tracing::warn!("qobuz relay upstream headers timed out after 20s");
+                return (StatusCode::GATEWAY_TIMEOUT, "qobuz relay timed out").into_response();
             }
         };
 

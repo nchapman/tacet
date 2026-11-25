@@ -237,6 +237,18 @@ USN: uuid:speaker-1::urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n";
             })
         );
 
+        let root_byebye = "NOTIFY * HTTP/1.1\r\n\
+NT: upnp:rootdevice\r\n\
+NTS: ssdp:byebye\r\n\
+USN: uuid:speaker-1::upnp:rootdevice\r\n\r\n";
+        assert_eq!(
+            monitor::parse_ssdp_notify(root_byebye),
+            Some(monitor::SsdpNotify::Byebye {
+                usn: "uuid:speaker-1::upnp:rootdevice".into(),
+                location: String::new(),
+            })
+        );
+
         let non_renderer = "NOTIFY * HTTP/1.1\r\n\
 NT: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\
 NTS: ssdp:alive\r\n\

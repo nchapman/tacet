@@ -291,7 +291,14 @@ pub(crate) fn parse_ssdp_notify(raw: &str) -> Option<SsdpNotify> {
     }
 
     let nt_low = nt.to_ascii_lowercase();
-    if !nt_low.contains("avtransport") && !nt_low.contains("mediarenderer") {
+    let usn_low = usn.to_ascii_lowercase();
+    let is_renderer_nt = nt_low.contains("avtransport")
+        || nt_low.contains("mediarenderer")
+        || usn_low.contains("avtransport")
+        || usn_low.contains("mediarenderer");
+    let is_root_byebye =
+        nt_low.contains("upnp:rootdevice") && nts.eq_ignore_ascii_case("ssdp:byebye");
+    if !is_renderer_nt && !is_root_byebye {
         return None;
     }
 
