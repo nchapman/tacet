@@ -609,6 +609,51 @@ use futures_util::StreamExt;
 // --- Remote HTTP/SSE Players ---
 
 const PLAYER_COOKIE_NAME: &str = "tacet_player_session";
+const LEGACY_PLAYER_COOKIE_PATH: &str = "/api/v1/players";
+const PLAYER_COOKIE_MAX_AGE_SECS: u64 = 86400 * 30;
+
+fn player_cookie_path(zone_id: &str) -> String {
+    // Match JavaScript encodeURIComponent (RFC 6265 cookie path matching is literal,
+    // and browsers request /api/v1/players/player%3A<id>/commands).
+    let mut encoded = String::with_capacity(zone_id.len() + 4);
+    for b in zone_id.bytes() {
+        let unreserved = b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+            );
+        if unreserved {
+            encoded.push(b as char);
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{b:02X}");
+        }
+    }
+    format!("{LEGACY_PLAYER_COOKIE_PATH}/{encoded}")
+}
+
+fn append_player_cookies(resp: &mut Response, zone_id: &str, token: Option<&str>) {
+    // Always expire any pre-existing broad-path cookie from older builds so browsers
+    // never send both a stale /api/v1/players cookie and a scoped zone cookie.
+    let clear_legacy = format!(
+        "{PLAYER_COOKIE_NAME}=; Path={LEGACY_PLAYER_COOKIE_PATH}; HttpOnly; SameSite=Lax; Max-Age=0"
+    );
+    if let Ok(hv) = HeaderValue::from_str(&clear_legacy) {
+        resp.headers_mut().append(header::SET_COOKIE, hv);
+    }
+    let scoped_path = player_cookie_path(zone_id);
+    let scoped = match token {
+        Some(tok) => format!(
+            "{PLAYER_COOKIE_NAME}={tok}; Path={scoped_path}; HttpOnly; SameSite=Lax; Max-Age={PLAYER_COOKIE_MAX_AGE_SECS}"
+        ),
+        None => {
+            format!("{PLAYER_COOKIE_NAME}=; Path={scoped_path}; HttpOnly; SameSite=Lax; Max-Age=0")
+        }
+    };
+    if let Ok(hv) = HeaderValue::from_str(&scoped) {
+        resp.headers_mut().append(header::SET_COOKIE, hv);
+    }
+}
 
 fn extract_player_token(headers: &HeaderMap, query: &HashMap<String, String>) -> String {
     if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok())
@@ -644,13 +689,7 @@ pub async fn register_player(
     let existing_token = extract_player_token(&headers, &q);
     let reg = st.players.register(req, &existing_token)?;
     let mut resp = Json(serde_json::to_value(&reg).unwrap_or_default()).into_response();
-    let cookie = format!(
-        "{PLAYER_COOKIE_NAME}={}; Path=/api/v1/players; HttpOnly; SameSite=Strict",
-        reg.token
-    );
-    if let Ok(hv) = HeaderValue::from_str(&cookie) {
-        resp.headers_mut().insert(header::SET_COOKIE, hv);
-    }
+    append_player_cookies(&mut resp, &reg.zone_id, Some(&reg.token));
     Ok(resp)
 }
 
@@ -779,11 +818,14 @@ pub async fn unregister_player(
     Path(zone_id): Path<String>,
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
-) -> ApiResult<Json<serde_json::Value>> {
+) -> ApiResult<Response> {
     let tok = extract_player_token(&headers, &q);
     st.players.unregister(&zone_id, &tok)?;
-    Ok(Json(serde_json::json!({
+    let mut resp = Json(serde_json::json!({
         "unregistered": true,
         "zoneId": zone_id,
-    })))
+    }))
+    .into_response();
+    append_player_cookies(&mut resp, &zone_id, None);
+    Ok(resp)
 }

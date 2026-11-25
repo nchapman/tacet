@@ -226,14 +226,25 @@ async fn api_wire_contract_regression() {
     )
     .await;
     assert_eq!(reg_resp.status(), StatusCode::OK);
-    let set_cookie = reg_resp
+    let set_cookies: Vec<String> = reg_resp
         .headers()
-        .get(header::SET_COOKIE)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(set_cookie.starts_with("tacet_player_session="));
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert!(
+        set_cookies
+            .iter()
+            .any(|c| c.contains("Path=/api/v1/players;") && c.contains("Max-Age=0")),
+        "expected legacy /api/v1/players cookie to be cleared: {set_cookies:?}"
+    );
+    assert!(
+        set_cookies
+            .iter()
+            .any(|c| c.starts_with("tacet_player_session=")
+                && c.contains("Path=/api/v1/players/player%3Atest_1;")),
+        "expected per-zone scoped cookie: {set_cookies:?}"
+    );
     let reg_json = json_body(reg_resp).await;
     let zone_id = reg_json["zoneId"].as_str().unwrap().to_string();
     let token = reg_json["token"].as_str().unwrap().to_string();
