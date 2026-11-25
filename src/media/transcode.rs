@@ -289,16 +289,34 @@ pub fn build_wav_header(
 
 /// Spawns `ffmpeg` to transcode `input` (file path or HTTPS URL) according to `spec`
 /// and streams stdout chunks into an `axum::body::Body`.
-pub fn spawn_ffmpeg_stream(
+///
+/// Acquires a concurrency permit before spawning and kills/reaps `ffmpeg` immediately
+/// if the HTTP client disconnects (`tx.closed()`).
+pub async fn spawn_ffmpeg_stream(
     ffmpeg_path: &Path,
     input: &str,
     spec: &TranscodeSpec,
     seek_sec: Option<f64>,
 ) -> std::io::Result<axum::body::Body> {
+    let permit = transcode_semaphore()
+        .acquire_owned()
+        .await
+        .map_err(|_| std::io::Error::other("transcode semaphore closed"))?;
+
     let mut cmd = Command::new(ffmpeg_path);
     cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin"]);
+    if input.starts_with("http://") || input.starts_with("https://") {
+        cmd.args([
+            "-protocol_whitelist",
+            "http,https,tls,tcp",
+            "-rw_timeout",
+            "15000000",
+        ]);
+    }
     if let Some(ss) = seek_sec
+        && ss.is_finite()
         && ss > 0.0
+        && ss < 86_400.0
     {
         cmd.args(["-ss", &format!("{ss:.3}")]);
     }
@@ -321,15 +339,26 @@ pub fn spawn_ffmpeg_stream(
     let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<bytes::Bytes>>(16);
 
     tokio::spawn(async move {
-        let _permit = transcode_semaphore().acquire_owned().await.ok();
+        let _permit = permit;
         if let Some(hdr) = header_prefix
             && tx.send(Ok(bytes::Bytes::from(hdr))).await.is_err()
         {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
             return;
         }
         let mut buf = vec![0u8; 64 * 1024];
         loop {
-            match stdout.read(&mut buf).await {
+            let read_res = tokio::select! {
+                biased;
+                _ = tx.closed() => {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    return;
+                }
+                res = stdout.read(&mut buf) => res,
+            };
+            match read_res {
                 Ok(0) => break,
                 Ok(n) => {
                     if tx
@@ -337,11 +366,15 @@ pub fn spawn_ffmpeg_stream(
                         .await
                         .is_err()
                     {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
                         return;
                     }
                 }
                 Err(e) => {
                     let _ = tx.send(Err(e)).await;
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
                     return;
                 }
             }

@@ -192,13 +192,15 @@ impl ArtCache {
         }
 
         let (raw, _orig_mime) = loader()?;
-        let (encoded, out_mime) = match resize_and_encode(&raw, size, fmt) {
-            Some(pair) => pair,
-            None => (raw, ART_FORMAT_JPEG.mime),
-        };
+        // Never serve unvalidated raw bytes on decode failure (prevents arbitrary file / SSRF oracle).
+        let (encoded, out_mime) = resize_and_encode(&raw, size, fmt)?;
 
         if let Some(path) = self.disk_path(key, size, fmt) {
-            let tmp = path.with_extension("tmp");
+            let suffix: u64 = rand::random();
+            let tmp = path.with_file_name(format!(
+                "{}.{suffix:016x}.tmp",
+                path.file_name().and_then(|n| n.to_str()).unwrap_or("art")
+            ));
             if std::fs::write(&tmp, &encoded).is_ok() {
                 let _ = std::fs::rename(&tmp, &path);
             }

@@ -9,13 +9,14 @@ use std::time::{Duration, Instant};
 use axum::Json;
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, delete, get, patch, post, put};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use crate::library::{
     AutoScanConfig, AutoScanner, Catalog, PREF_LIBRARY_SCAN_INTERVAL_MIN,
@@ -56,6 +57,8 @@ pub struct AppState {
     pub media: Arc<MediaHandler>,
     pub gena: Option<Arc<GenaClient>>,
     pub cors_origin: String,
+    pub public_url: RwLock<String>,
+    pub shutdown: CancellationToken,
     pub oauth_state: Mutex<HashMap<String, Instant>>,
 }
 
@@ -92,6 +95,8 @@ impl AppState {
             media,
             gena,
             cors_origin: cors_origin.trim().to_string(),
+            public_url: RwLock::new(String::new()),
+            shutdown: CancellationToken::new(),
             oauth_state: Mutex::new(HashMap::new()),
         })
     }
@@ -100,7 +105,13 @@ impl AppState {
         *self.auto_scanner.write().unwrap_or_else(|e| e.into_inner()) = Some(scanner);
     }
 
+    pub fn set_public_url(&self, url: impl Into<String>) {
+        *self.public_url.write().unwrap_or_else(|e| e.into_inner()) =
+            url.into().trim().trim_end_matches('/').to_string();
+    }
+
     pub fn close(&self) {
+        self.shutdown.cancel();
         self.players.close();
         self.media.close();
         if let Some(ref qb) = self.qobuz {
@@ -337,6 +348,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/v1/artists/{id}/similar",
             get(handlers_library::similar_artists),
         )
+        .layer(DefaultBodyLimit::max(128 * 1024))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             cors_and_csrf_middleware,
@@ -513,6 +525,7 @@ fn is_allowed_origin(origin: &str, host: &str, custom_cors: &str) -> bool {
         return true;
     }
     if let Ok(u) = url::Url::parse(o)
+        && matches!(u.scheme(), "http" | "https")
         && let Some(ohost) = u.host_str()
     {
         let origin_host_port = match u.port() {
@@ -775,6 +788,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rep.status(), StatusCode::OK);
+
+        // Cross-site player commands SSE must be rejected
+        let cross_sse = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/players/{zone_id}/commands"))
+                    .header(header::COOKIE, format!("tacet_player_session={token}"))
+                    .header("sec-fetch-site", "cross-site")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cross_sse.status(), StatusCode::FORBIDDEN);
 
         // DELETE /players/{zoneId} returns 200 {unregistered: true, zoneId}
         let del = app

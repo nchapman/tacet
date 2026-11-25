@@ -240,7 +240,12 @@ fn probe_dsf<R: Read + Seek>(r: &mut R) -> AudioProps {
     let bit_depth = u32::from_le_bytes([f[32], f[33], f[34], f[35]]) as i32;
     let sample_count = u64::from_le_bytes([f[36], f[37], f[38], f[39], f[40], f[41], f[42], f[43]]);
     let duration = if sample_rate > 0 && sample_count > 0 {
-        Duration::from_secs_f64(sample_count as f64 / f64::from(sample_rate))
+        let secs = sample_count as f64 / f64::from(sample_rate);
+        if secs.is_finite() && (0.0..1e12).contains(&secs) {
+            Duration::from_secs_f64(secs)
+        } else {
+            Duration::ZERO
+        }
     } else {
         Duration::ZERO
     };

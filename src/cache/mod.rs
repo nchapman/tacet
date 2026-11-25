@@ -256,18 +256,26 @@ CREATE INDEX IF NOT EXISTS idx_kv_cache_accessed ON kv_cache(accessed_at);
         if key.is_empty() {
             return Err(CacheError::EmptyKey);
         }
+        // Skip caching blobs larger than the entire cache budget so one item never wipes the cache.
+        if self.max_bytes > 0 && (value.len() as i64) > self.max_bytes {
+            return Ok(());
+        }
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let conn = inner.conn.as_mut().ok_or(CacheError::Closed)?;
         let now = self.now_ms();
 
+        let add_ttl = |d: Duration| -> i64 {
+            let ms = i64::try_from(d.as_millis()).unwrap_or(i64::MAX);
+            now.saturating_add(ms)
+        };
         let expires_at: Option<i64> = match ttl {
             Ttl::Never => None,
-            Ttl::Default => self.default_ttl.map(|d| now + d.as_millis() as i64),
+            Ttl::Default => self.default_ttl.map(add_ttl),
             Ttl::After(d) => {
                 if d.is_zero() {
-                    self.default_ttl.map(|dd| now + dd.as_millis() as i64)
+                    self.default_ttl.map(add_ttl)
                 } else {
-                    Some(now + d.as_millis() as i64)
+                    Some(add_ttl(d))
                 }
             }
         };
@@ -303,14 +311,10 @@ CREATE INDEX IF NOT EXISTS idx_kv_cache_accessed ON kv_cache(accessed_at);
             let n = conn.execute("DELETE FROM kv_cache", [])?;
             return Ok(n as u64);
         }
-        let n = if let Some(upper) = prefix_upper_bound(prefix) {
-            conn.execute(
-                "DELETE FROM kv_cache WHERE key >= ?1 AND key < ?2",
-                params![prefix, upper],
-            )?
-        } else {
-            conn.execute("DELETE FROM kv_cache WHERE key >= ?1", params![prefix])?
-        };
+        let n = conn.execute(
+            "DELETE FROM kv_cache WHERE SUBSTR(key, 1, LENGTH(?1)) = ?1",
+            params![prefix],
+        )?;
         Ok(n as u64)
     }
 
@@ -373,9 +377,10 @@ CREATE INDEX IF NOT EXISTS idx_kv_cache_accessed ON kv_cache(accessed_at);
             )?;
             return Ok(n > 0);
         }
+        let ms = i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX);
         let n = conn.execute(
             "UPDATE kv_cache SET expires_at = ?1 WHERE key = ?2 AND (expires_at IS NULL OR expires_at > ?3)",
-            params![now + ttl.as_millis() as i64, key, now],
+            params![now.saturating_add(ms), key, now],
         )?;
         Ok(n > 0)
     }
@@ -640,21 +645,6 @@ fn evict_locked(conn: &mut Connection, now: i64, max_bytes: i64) {
     }
 }
 
-fn prefix_upper_bound(p: &str) -> Option<String> {
-    let mut b = p.as_bytes().to_vec();
-    for i in (0..b.len()).rev() {
-        if b[i] < 0x7f {
-            // Keep valid UTF-8 for ASCII prefixes (and fall back cleanly if non-ASCII).
-            b[i] += 1;
-            b.truncate(i + 1);
-            if let Ok(s) = String::from_utf8(b.clone()) {
-                return Some(s);
-            }
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,8 +704,23 @@ mod tests {
         assert!(ns.exists("b").unwrap());
         assert!(ns.exists("c").unwrap());
         assert_eq!(ns.keys("*").unwrap(), vec!["b", "c"]);
+        // Oversized entry (> max_bytes) must not wipe existing entries
+        ns.set("huge", b"0123456789ABCDEF", Ttl::Never).unwrap();
+        assert!(ns.exists("b").unwrap());
+        assert!(ns.exists("c").unwrap());
         ns.clear().unwrap();
         assert!(ns.keys("*").unwrap().is_empty());
+    }
+
+    #[test]
+    fn del_prefix_handles_non_ascii_utf8_cleanly() {
+        let c = Cache::open(":memory:", CacheOptions::default()).unwrap();
+        c.set("café:1", b"a", Ttl::Never).unwrap();
+        c.set("café:2", b"b", Ttl::Never).unwrap();
+        c.set("cafê:1", b"c", Ttl::Never).unwrap();
+        assert_eq!(c.del_prefix("café:").unwrap(), 2);
+        assert!(!c.exists("café:1").unwrap());
+        assert!(c.exists("cafê:1").unwrap());
     }
 
     #[test]

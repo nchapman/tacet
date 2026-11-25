@@ -290,25 +290,24 @@ pub async fn jump_queue(
     body: Bytes,
 ) -> ApiResult<Json<serde_json::Value>> {
     let req: JumpQueueReq = parse_strict_json(&body)?;
-    let idx = if let Some(i) = req.index {
-        i
+    let snap = if let Some(i) = req.index {
+        st.manager.play_index(&zone_id, i).await?
     } else if let Some(item_id) = req.item_id {
-        let snap = st.manager.zone_snapshot(&zone_id)?;
-        snap.queue
-            .iter()
-            .position(|it| it.item_id == item_id)
-            .ok_or_else(|| {
-                ApiError::new(
+        st.manager
+            .play_item_by_id(&zone_id, &item_id)
+            .await
+            .map_err(|e| match e {
+                crate::queue::QueueError::InvalidIndex => ApiError::new(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "QUEUE_ITEM_NOT_FOUND",
                     "queue item not found",
                     false,
-                )
+                ),
+                other => other.into(),
             })?
     } else {
         return Err(ApiError::bad_request("index or itemId is required"));
     };
-    let snap = st.manager.play_index(&zone_id, idx).await?;
     Ok(Json(serde_json::to_value(snap).unwrap_or_default()))
 }
 
@@ -316,20 +315,19 @@ pub async fn remove_queue_item(
     State(st): State<Arc<AppState>>,
     Path((zone_id, item_id)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let snap = st.manager.zone_snapshot(&zone_id)?;
-    let idx = snap
-        .queue
-        .iter()
-        .position(|it| it.item_id == item_id)
-        .ok_or_else(|| {
-            ApiError::new(
+    let next = st
+        .manager
+        .remove_item_by_id(&zone_id, &item_id)
+        .await
+        .map_err(|e| match e {
+            crate::queue::QueueError::InvalidIndex => ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "QUEUE_ITEM_NOT_FOUND",
                 "queue item not found",
                 false,
-            )
+            ),
+            other => other.into(),
         })?;
-    let next = st.manager.remove_item(&zone_id, idx).await?;
     Ok(Json(serde_json::to_value(next).unwrap_or_default()))
 }
 
@@ -345,20 +343,19 @@ pub async fn move_queue_item(
     body: Bytes,
 ) -> ApiResult<Json<serde_json::Value>> {
     let req: MoveQueueItemReq = parse_strict_json(&body)?;
-    let snap = st.manager.zone_snapshot(&zone_id)?;
-    let from = snap
-        .queue
-        .iter()
-        .position(|it| it.item_id == item_id)
-        .ok_or_else(|| {
-            ApiError::new(
+    let next = st
+        .manager
+        .move_item_by_id(&zone_id, &item_id, req.to_index)
+        .await
+        .map_err(|e| match e {
+            crate::queue::QueueError::InvalidIndex => ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "QUEUE_ITEM_NOT_FOUND",
                 "queue item not found",
                 false,
-            )
+            ),
+            other => other.into(),
         })?;
-    let next = st.manager.move_item(&zone_id, from, req.to_index).await?;
     Ok(Json(serde_json::to_value(next).unwrap_or_default()))
 }
 
@@ -568,28 +565,36 @@ pub async fn events_sse(
         .event("snapshot")
         .data(init_payload.to_string());
 
+    let shutdown = st.shutdown.clone();
     let stream = futures_util::stream::once(async move { Ok(init_event) }).chain(
-        futures_util::stream::unfold((rx, zone_filters), |(mut rx, filters)| async move {
-            loop {
-                match rx.recv().await {
-                    Ok(ev) => {
-                        if !filters.is_empty()
-                            && !ev.zone_id.is_empty()
-                            && !filters.iter().any(|f| f == &ev.zone_id)
-                        {
-                            continue;
+        futures_util::stream::unfold(
+            (rx, zone_filters, shutdown),
+            |(mut rx, filters, shutdown)| async move {
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = shutdown.cancelled() => return None,
+                        res = rx.recv() => match res {
+                            Ok(ev) => {
+                                if !filters.is_empty()
+                                    && !ev.zone_id.is_empty()
+                                    && !filters.iter().any(|f| f == &ev.zone_id)
+                                {
+                                    continue;
+                                }
+                                let sse_ev = SseEvent::default()
+                                    .id(ev.id.to_string())
+                                    .event(ev.event_type)
+                                    .data(ev.data.to_string());
+                                return Some((Ok(sse_ev), (rx, filters, shutdown)));
+                            }
+                            Err(RecvError::Lagged(_)) => continue,
+                            Err(RecvError::Closed) => return None,
                         }
-                        let sse_ev = SseEvent::default()
-                            .id(ev.id.to_string())
-                            .event(ev.event_type)
-                            .data(ev.data.to_string());
-                        return Some((Ok(sse_ev), (rx, filters)));
                     }
-                    Err(RecvError::Lagged(_)) => continue,
-                    Err(RecvError::Closed) => return None,
                 }
-            }
-        }),
+            },
+        ),
     );
 
     Sse::new(stream).keep_alive(
@@ -640,7 +645,7 @@ pub async fn register_player(
     let reg = st.players.register(req, &existing_token)?;
     let mut resp = Json(serde_json::to_value(&reg).unwrap_or_default()).into_response();
     let cookie = format!(
-        "{PLAYER_COOKIE_NAME}={}; Path=/api/v1/players; HttpOnly; SameSite=Lax",
+        "{PLAYER_COOKIE_NAME}={}; Path=/api/v1/players; HttpOnly; SameSite=Strict",
         reg.token
     );
     if let Ok(hv) = HeaderValue::from_str(&cookie) {
@@ -671,6 +676,18 @@ pub async fn player_commands_sse(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult<Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>>> {
+    if headers
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|s| s.eq_ignore_ascii_case("cross-site"))
+    {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "CSRF_REJECTED",
+            "cross-site player command stream blocked",
+            false,
+        ));
+    }
     let tok = extract_player_token(&headers, &q);
     let rp = st.players.get(&zone_id, &tok)?;
     let stream_handle = rp.attach_stream();
@@ -703,24 +720,33 @@ pub async fn player_commands_sse(
         .to_string(),
     );
 
+    let shutdown = st.shutdown.clone();
     let cmd_stream = futures_util::stream::unfold(
-        (stream_handle.commands, stream_handle.replaced, guard, false),
-        |(mut cmds, mut replaced, guard, done)| async move {
+        (
+            stream_handle.commands,
+            stream_handle.replaced,
+            guard,
+            shutdown,
+            false,
+        ),
+        |(mut cmds, mut replaced, guard, shutdown, done)| async move {
             if done {
                 return None;
             }
             tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => None,
                 _ = &mut replaced => {
                     let ev = SseEvent::default()
                         .event("replaced")
                         .data(serde_json::json!({ "reason": "replaced" }).to_string());
-                    Some((Ok(ev), (cmds, replaced, guard, true)))
+                    Some((Ok(ev), (cmds, replaced, guard, shutdown, true)))
                 }
                 cmd = cmds.recv() => {
                     let cmd = cmd?;
                     let data = serde_json::to_string(&cmd).unwrap_or_default();
                     let ev = SseEvent::default().id(cmd.id).event("command").data(data);
-                    Some((Ok(ev), (cmds, replaced, guard, false)))
+                    Some((Ok(ev), (cmds, replaced, guard, shutdown, false)))
                 }
             }
         },

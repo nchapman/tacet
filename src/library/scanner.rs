@@ -48,6 +48,15 @@ struct ScanState {
     last_err: Option<String>,
 }
 
+type LocalAlbumMap = Arc<HashMap<String, Album>>;
+type LocalTrackMap = Arc<HashMap<String, Vec<Track>>>;
+
+struct LocalLookupCache {
+    etag: String,
+    albums: LocalAlbumMap,
+    tracks: LocalTrackMap,
+}
+
 pub struct Catalog {
     roots: RwLock<Vec<PathBuf>>,
     store: Arc<LibraryStore>,
@@ -55,6 +64,7 @@ pub struct Catalog {
     scan_state: Mutex<ScanState>,
     syncing_provs: Mutex<HashMap<String, bool>>,
     on_change: RwLock<Option<OnChangeFn>>,
+    local_lookup: RwLock<LocalLookupCache>,
 }
 
 impl Catalog {
@@ -80,6 +90,11 @@ impl Catalog {
             }),
             syncing_provs: Mutex::new(HashMap::new()),
             on_change: RwLock::new(None),
+            local_lookup: RwLock::new(LocalLookupCache {
+                etag: String::new(),
+                albums: Arc::new(HashMap::new()),
+                tracks: Arc::new(HashMap::new()),
+            }),
         }))
     }
 
@@ -435,34 +450,39 @@ impl Catalog {
             track.album_id.clone()
         };
         normalize_remote_track(&prov, &aid, &mut track);
-        let mut album = Album {
-            id: aid.clone(),
-            source: prov.clone(),
-            source_type: SOURCE_TYPE_REMOTE.into(),
-            provider: prov.clone(),
-            external_id: aid.strip_prefix(&format!("{prov}:")).unwrap_or(&aid).into(),
-            title: if track.album.is_empty() {
-                track.title.clone()
-            } else {
-                track.album.clone()
-            },
-            artist: if track.album_artist.is_empty() {
-                track.artist.clone()
-            } else {
-                track.album_artist.clone()
-            },
-            genre: track.genre.clone(),
-            year: track.year,
-            artwork_url: track.artwork_url.clone(),
-            primary_format: format_name_from_mime_or_ext(&track.mime, &track.ext),
-            max_sample_rate: track.sample_rate,
-            max_bit_depth: track.bit_depth,
-            is_partial: !self.store.has_album(&aid),
-            available: true,
-            in_library: true,
-            ..Default::default()
+        let album = if let Some(existing) = self.store.get_album(&aid).ok().flatten() {
+            existing
+        } else {
+            let mut alb = Album {
+                id: aid.clone(),
+                source: prov.clone(),
+                source_type: SOURCE_TYPE_REMOTE.into(),
+                provider: prov.clone(),
+                external_id: aid.strip_prefix(&format!("{prov}:")).unwrap_or(&aid).into(),
+                title: if track.album.is_empty() {
+                    track.title.clone()
+                } else {
+                    track.album.clone()
+                },
+                artist: if track.album_artist.is_empty() {
+                    track.artist.clone()
+                } else {
+                    track.album_artist.clone()
+                },
+                genre: track.genre.clone(),
+                year: track.year,
+                artwork_url: track.artwork_url.clone(),
+                primary_format: format_name_from_mime_or_ext(&track.mime, &track.ext),
+                max_sample_rate: track.sample_rate,
+                max_bit_depth: track.bit_depth,
+                is_partial: true,
+                available: true,
+                in_library: true,
+                ..Default::default()
+            };
+            normalize_remote_album(&prov, &mut alb);
+            alb
         };
-        normalize_remote_album(&prov, &mut album);
         self.store
             .upsert_album_with_tracks(&album, std::slice::from_ref(&track))?;
         self.notify_change();
@@ -552,9 +572,13 @@ impl Catalog {
         self.store.unified_search(query, limit)
     }
 
-    pub fn prefer_local_albums(&self, albums: Vec<Album>) -> Vec<Album> {
-        if albums.is_empty() {
-            return albums;
+    fn local_lookup_maps(&self) -> (LocalAlbumMap, LocalTrackMap) {
+        let cur_etag = self.etag();
+        {
+            let g = self.local_lookup.read().unwrap_or_else(|e| e.into_inner());
+            if g.etag == cur_etag && !cur_etag.is_empty() {
+                return (Arc::clone(&g.albums), Arc::clone(&g.tracks));
+            }
         }
         let local_albs = self
             .store
@@ -565,8 +589,7 @@ impl Catalog {
             })
             .map(|(v, _)| v)
             .unwrap_or_default();
-
-        let mut local_by_key: HashMap<String, Album> = HashMap::with_capacity(local_albs.len());
+        let mut alb_map = HashMap::with_capacity(local_albs.len());
         for mut la in local_albs {
             let k = format!(
                 "{}|{}",
@@ -575,9 +598,47 @@ impl Catalog {
             );
             if k != "|" {
                 la.in_library = true;
-                local_by_key.entry(k).or_insert(la);
+                alb_map.entry(k).or_insert(la);
             }
         }
+        let local_tracks = self
+            .store
+            .query_tracks(&TrackFilter {
+                source_type: SOURCE_TYPE_LOCAL.into(),
+                limit: 100_000,
+                ..Default::default()
+            })
+            .map(|(v, _)| v)
+            .unwrap_or_default();
+        let mut by_key: HashMap<String, Vec<Track>> = HashMap::new();
+        for mut lt in local_tracks {
+            if !lt.available {
+                continue;
+            }
+            let k = format!(
+                "{}|{}",
+                norm_media_key(&lt.artist),
+                norm_media_key(&lt.title)
+            );
+            if k != "|" {
+                lt.in_library = true;
+                by_key.entry(k).or_default().push(lt);
+            }
+        }
+        let albums = Arc::new(alb_map);
+        let tracks = Arc::new(by_key);
+        let mut g = self.local_lookup.write().unwrap_or_else(|e| e.into_inner());
+        g.etag = cur_etag;
+        g.albums = Arc::clone(&albums);
+        g.tracks = Arc::clone(&tracks);
+        (albums, tracks)
+    }
+
+    pub fn prefer_local_albums(&self, albums: Vec<Album>) -> Vec<Album> {
+        if albums.is_empty() {
+            return albums;
+        }
+        let (local_by_key, _) = self.local_lookup_maps();
 
         albums
             .into_iter()
@@ -602,31 +663,7 @@ impl Catalog {
         if tracks.is_empty() {
             return tracks;
         }
-        let local_tracks = self
-            .store
-            .query_tracks(&TrackFilter {
-                source_type: SOURCE_TYPE_LOCAL.into(),
-                limit: 100_000,
-                ..Default::default()
-            })
-            .map(|(v, _)| v)
-            .unwrap_or_default();
-
-        let mut by_key: HashMap<String, Vec<Track>> = HashMap::new();
-        for mut lt in local_tracks {
-            if !lt.available {
-                continue;
-            }
-            let k = format!(
-                "{}|{}",
-                norm_media_key(&lt.artist),
-                norm_media_key(&lt.title)
-            );
-            if k != "|" {
-                lt.in_library = true;
-                by_key.entry(k).or_default().push(lt);
-            }
-        }
+        let (_, by_key) = self.local_lookup_maps();
 
         tracks
             .into_iter()
@@ -715,6 +752,17 @@ impl Catalog {
 fn scan_roots_blocking(store: &LibraryStore, roots: &[PathBuf]) -> Result<(usize, bool)> {
     if roots.is_empty() {
         return Ok((0, false));
+    }
+
+    // Guard against unmounted NAS / disconnected drives wiping the local library.
+    for root in roots {
+        if std::fs::read_dir(root).is_err() {
+            tracing::warn!(
+                root = %root.display(),
+                "skipping local library scan because configured music root is unavailable"
+            );
+            return Ok((0, false));
+        }
     }
 
     let file_cache = store.load_local_file_cache().unwrap_or_default();
@@ -1049,7 +1097,8 @@ fn find_folder_art(dir: &Path) -> String {
     };
     let mut by_lower: HashMap<String, PathBuf> = HashMap::new();
     for e in entries.flatten() {
-        if e.file_type().map(|ft| !ft.is_dir()).unwrap_or(false) {
+        // Reject symlinks to prevent exposing arbitrary files outside music roots.
+        if e.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
             let name = e.file_name().to_string_lossy().to_ascii_lowercase();
             by_lower.insert(name, e.path());
         }

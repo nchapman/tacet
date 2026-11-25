@@ -138,7 +138,10 @@ impl From<LibraryError> for ApiError {
                 true,
             ),
             LibraryError::InvalidArgument(m) => ApiError::bad_request(m),
-            other => ApiError::internal("LIBRARY_ERROR", other.to_string()),
+            other => {
+                tracing::error!(error = %other, "library operation failed");
+                ApiError::internal("LIBRARY_ERROR", "library operation failed")
+            }
         }
     }
 }
@@ -150,17 +153,31 @@ impl From<QobuzError> for ApiError {
             QobuzError::RateLimited => ApiError::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 "QOBUZ_RATE_LIMITED",
-                e.to_string(),
+                "qobuz rate limit reached; try again shortly",
                 true,
             ),
             QobuzError::NotFound => ApiError::not_found("NOT_FOUND", "qobuz resource not found"),
             QobuzError::InvalidQuality => ApiError::bad_request(e.to_string()),
-            other => ApiError::new(
-                StatusCode::BAD_GATEWAY,
-                "QOBUZ_ERROR",
-                other.to_string(),
-                true,
-            ),
+            QobuzError::Http(err) => {
+                // Strip query params so credentials/tokens/signatures never leak to clients or logs.
+                let safe = err.without_url();
+                tracing::warn!(error = %safe, "qobuz upstream HTTP error");
+                ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    "QOBUZ_ERROR",
+                    "qobuz upstream request failed",
+                    true,
+                )
+            }
+            other => {
+                tracing::warn!(error = %other, "qobuz error");
+                ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    "QOBUZ_ERROR",
+                    "qobuz request failed",
+                    true,
+                )
+            }
         }
     }
 }

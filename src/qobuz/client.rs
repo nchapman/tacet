@@ -1173,9 +1173,10 @@ impl Client {
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
 
+        let sf_key = format!("{auth_gen}:{key}");
         let raw_res = self
             .sf
-            .work_inline(key.clone(), async {
+            .work_inline(sf_key, async {
                 let refs: Vec<(&str, &str)> = params_owned
                     .iter()
                     .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -1189,6 +1190,8 @@ impl Client {
         let raw = raw_res.map_err(|msg| {
             if msg.contains("rate limited") {
                 QobuzError::RateLimited
+            } else if msg.contains("returned 401") || msg.contains("not authenticated") {
+                QobuzError::Unauthenticated
             } else if msg.contains("returned 404") {
                 QobuzError::Api {
                     status: 404,
@@ -1320,6 +1323,7 @@ impl Client {
         form: &[(&str, &str)],
         token: &str,
     ) -> Result<T> {
+        self.wait_for_cooldown().await;
         let app_id = self.app_id();
         let url = format!("{}{}", self.base_url, path);
         let _permit = self
@@ -1337,6 +1341,18 @@ impl Client {
         }
         let resp = req.send().await?;
         let status = resp.status().as_u16();
+        if status == 429 {
+            let ra = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            self.note_rate_limit(ra);
+            return Err(QobuzError::RateLimited);
+        }
+        if status == 401 {
+            return Err(QobuzError::Unauthenticated);
+        }
         let body = resp.bytes().await?;
         if !(200..300).contains(&status) {
             return Err(QobuzError::Api {

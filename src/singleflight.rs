@@ -69,13 +69,30 @@ where
                 let inflight = Arc::clone(&self.inflight);
                 let key_clone = key.clone();
                 tokio::spawn(async move {
+                    struct Cleanup<K: Eq + Hash, V, E> {
+                        inflight: Arc<Mutex<InflightMap<K, V, E>>>,
+                        key: Option<K>,
+                    }
+                    impl<K: Eq + Hash, V, E> Drop for Cleanup<K, V, E> {
+                        fn drop(&mut self) {
+                            if let Some(k) = self.key.take() {
+                                let mut map =
+                                    self.inflight.lock().unwrap_or_else(|e| e.into_inner());
+                                map.remove(&k);
+                            }
+                        }
+                    }
+                    let mut guard = Cleanup {
+                        inflight,
+                        key: Some(key_clone),
+                    };
                     let res = fut.await;
                     // Remove before sending so any new caller arriving after wake
                     // starts a fresh flight rather than seeing a completed entry.
-                    {
-                        let mut map = inflight.lock().unwrap_or_else(|e| e.into_inner());
-                        map.remove(&key_clone);
-                    }
+                    drop(guard.key.take().map(|k| {
+                        let mut map = guard.inflight.lock().unwrap_or_else(|e| e.into_inner());
+                        map.remove(&k)
+                    }));
                     let _ = tx.send(Some(res));
                 });
                 rx
@@ -90,7 +107,8 @@ where
                 if let Some(res) = rx.borrow().clone() {
                     return res;
                 }
-                unreachable!("singleflight producer dropped without sending result");
+                // Producer panicked; panic is not swallowed silently, re-report cleanly.
+                panic!("singleflight producer panicked before sending result");
             }
         }
     }

@@ -38,4 +38,16 @@ mod tests {
         assert_eq!(&hdr[8..12], b"WAVE");
         assert_eq!(&hdr[36..40], b"data");
     }
+
+    #[test]
+    fn art_cache_rejects_non_image_raw_bytes() {
+        let cache = ArtCache::new(None);
+        let res = cache.get_or_build("secret", art::ART_SIZE_SMALL, art::ART_FORMAT_JPEG, || {
+            Some((
+                b"not an image: ssh-rsa AAAAB3...".to_vec(),
+                "image/jpeg".into(),
+            ))
+        });
+        assert!(res.is_none());
+    }
 }

@@ -156,7 +156,12 @@ impl Manager {
             let mut g = self.zones.write().unwrap_or_else(|e| e.into_inner());
             if let Some(existing) = g.get(&zone_id) {
                 let mut zi = existing.inner.lock().unwrap_or_else(|e| e.into_inner());
-                zi.ctrl = ctrl;
+                let old_info = zi.ctrl.info();
+                // Keep live controller instance intact when endpoint is unchanged so periodic
+                // discovery sweeps do not tear down active Cast sessions or UPnP SOAP locks.
+                if old_info.location != info.location || old_info.host != info.host {
+                    zi.ctrl = ctrl;
+                }
                 false
             } else {
                 let z = Arc::new(Zone {
@@ -680,8 +685,18 @@ impl Manager {
         };
         self.emit("zone.queue", zone_id, &q_ev);
 
-        if let Some(qc) = ctrl.as_queue_controller() {
-            let _ = qc.remove_queue_range(index, index).await;
+        if let Some(qc) = ctrl.as_queue_controller()
+            && qc.remove_queue_range(index, index).await.is_err()
+            && !removed_current
+        {
+            let is_playing = {
+                let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+                !zi.queue.is_empty()
+                    && PlaybackState::normalize(&zi.status.state) == PlaybackState::Playing
+            };
+            if is_playing {
+                let _ = self.start_current_locked(zone_id, &z, &ctrl, true).await;
+            }
         }
         if removed_current {
             let has_items = !z
@@ -698,6 +713,20 @@ impl Manager {
         }
 
         Ok(self.snapshot_zone(zone_id, &z))
+    }
+
+    pub async fn remove_item_by_id(&self, zone_id: &str, item_id: &str) -> Result<ZoneSnapshot> {
+        let z = self
+            .get_zone(zone_id)
+            .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
+        let idx = {
+            let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            zi.queue
+                .iter()
+                .position(|it| it.item_id == item_id)
+                .ok_or(QueueError::InvalidIndex)?
+        };
+        self.remove_item(zone_id, idx).await
     }
 
     pub async fn move_item(&self, zone_id: &str, from: usize, to: usize) -> Result<ZoneSnapshot> {
@@ -725,6 +754,8 @@ impl Manager {
                     }
                 }
                 zi.next_preloaded = false;
+                zi.next_uri.clear();
+                zi.next_index = -1;
                 zi.revision += 1;
             }
             let q_ev = Self::make_items_event(zone_id, &zi);
@@ -734,11 +765,38 @@ impl Manager {
 
         if from != to
             && let Some(qc) = ctrl.as_queue_controller()
+            && qc.move_queue_item(from, to).await.is_err()
         {
-            let _ = qc.move_queue_item(from, to).await;
+            let is_playing = {
+                let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+                !zi.queue.is_empty()
+                    && PlaybackState::normalize(&zi.status.state) == PlaybackState::Playing
+            };
+            if is_playing {
+                let _ = self.start_current_locked(zone_id, &z, &ctrl, true).await;
+            }
         }
 
         Ok(self.snapshot_zone(zone_id, &z))
+    }
+
+    pub async fn move_item_by_id(
+        &self,
+        zone_id: &str,
+        item_id: &str,
+        to: usize,
+    ) -> Result<ZoneSnapshot> {
+        let z = self
+            .get_zone(zone_id)
+            .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
+        let from = {
+            let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            zi.queue
+                .iter()
+                .position(|it| it.item_id == item_id)
+                .ok_or(QueueError::InvalidIndex)?
+        };
+        self.move_item(zone_id, from, to).await
     }
 
     pub async fn clear(&self, zone_id: &str) -> Result<ZoneSnapshot> {
@@ -746,6 +804,20 @@ impl Manager {
     }
 
     // --- Transport controls ---
+
+    pub async fn play_item_by_id(&self, zone_id: &str, item_id: &str) -> Result<ZoneSnapshot> {
+        let z = self
+            .get_zone(zone_id)
+            .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
+        let idx = {
+            let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            zi.queue
+                .iter()
+                .position(|it| it.item_id == item_id)
+                .ok_or(QueueError::InvalidIndex)?
+        };
+        self.play_index(zone_id, idx).await
+    }
 
     pub async fn play_index(&self, zone_id: &str, index: usize) -> Result<ZoneSnapshot> {
         let z = self
@@ -760,12 +832,52 @@ impl Manager {
             }
             zi.current_index = index as i32;
             zi.next_preloaded = false;
+            zi.next_uri.clear();
+            zi.next_index = -1;
             zi.revision += 1;
             Arc::clone(&zi.ctrl)
         };
 
-        self.start_current_locked(zone_id, &z, &ctrl, false).await?;
+        self.jump_or_start_locked(zone_id, &z, &ctrl, index).await?;
         Ok(self.snapshot_zone(zone_id, &z))
+    }
+
+    async fn jump_or_start_locked(
+        &self,
+        zone_id: &str,
+        z: &Zone,
+        ctrl: &Arc<dyn Controller>,
+        index: usize,
+    ) -> Result<()> {
+        if let Some(qc) = ctrl.as_queue_controller() {
+            if qc.play_index(index).await.is_ok() {
+                let (tr, pb_ev) = {
+                    let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+                    zi.status.state = "PLAYING".into();
+                    zi.status.position = Duration::ZERO;
+                    zi.position_updated_at = Utc::now();
+                    zi.last_command_at = Instant::now();
+                    zi.revision += 1;
+                    let tr = zi.queue.get(index).map(|it| it.track.clone());
+                    (tr, self.make_playback_event(zone_id, &zi))
+                };
+                if let Some(tr) = tr {
+                    self.record_play_async(tr);
+                }
+                self.emit("zone.playback", zone_id, &pb_ev);
+                return Ok(());
+            }
+            // Fall back to reloading the native queue so multi-track queues stay intact.
+            return self.start_current_locked(zone_id, z, ctrl, true).await;
+        }
+        self.start_current_locked(zone_id, z, ctrl, false).await
+    }
+
+    fn record_play_async(&self, track: Track) {
+        let cat = Arc::clone(&self.catalog);
+        tokio::task::spawn_blocking(move || {
+            cat.record_play(&track);
+        });
     }
 
     pub async fn play(&self, zone_id: &str) -> Result<ZoneSnapshot> {
@@ -872,7 +984,8 @@ impl Manager {
             (Arc::clone(&zi.ctrl), next_idx)
         };
         if next_idx >= 0 {
-            self.start_current_locked(zone_id, &z, &ctrl, false).await?;
+            self.jump_or_start_locked(zone_id, &z, &ctrl, next_idx as usize)
+                .await?;
         }
         Ok(self.snapshot_zone(zone_id, &z))
     }
@@ -883,13 +996,13 @@ impl Manager {
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
 
-        let (ctrl, restart_only) = {
+        let (ctrl, restart_only, target_idx) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             if zi.queue.is_empty() {
                 return Err(QueueError::EmptyQueue);
             }
             if zi.status.position > Duration::from_secs(3) {
-                (Arc::clone(&zi.ctrl), true)
+                (Arc::clone(&zi.ctrl), true, zi.current_index)
             } else {
                 let len = zi.queue.len() as i32;
                 let prev = if zi.current_index > 0 {
@@ -901,8 +1014,10 @@ impl Manager {
                 };
                 zi.current_index = prev;
                 zi.next_preloaded = false;
+                zi.next_uri.clear();
+                zi.next_index = -1;
                 zi.revision += 1;
-                (Arc::clone(&zi.ctrl), false)
+                (Arc::clone(&zi.ctrl), false, prev)
             }
         };
 
@@ -916,8 +1031,9 @@ impl Manager {
                 self.make_playback_event(zone_id, &zi)
             };
             self.emit("zone.playback", zone_id, &pb);
-        } else {
-            self.start_current_locked(zone_id, &z, &ctrl, false).await?;
+        } else if target_idx >= 0 {
+            self.jump_or_start_locked(zone_id, &z, &ctrl, target_idx as usize)
+                .await?;
         }
         Ok(self.snapshot_zone(zone_id, &z))
     }
@@ -1135,7 +1251,7 @@ impl Manager {
             }
             if !all_media.is_empty() && qc.replace_queue(&all_media, cur_idx as usize).await.is_ok()
             {
-                let pb = {
+                let (pb, rec_tr) = {
                     let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
                     zi.current_uri = media_item.url.clone();
                     zi.active_quality = Some(eff_q);
@@ -1145,12 +1261,17 @@ impl Manager {
                     zi.position_updated_at = Utc::now();
                     zi.last_command_at = Instant::now();
                     zi.revision += 1;
-                    if zi.last_played_item_id != cur_item.item_id {
+                    let rec = if zi.last_played_item_id != cur_item.item_id {
                         zi.last_played_item_id = cur_item.item_id.clone();
-                        self.catalog.record_play(&cur_item.track);
-                    }
-                    self.make_playback_event(zone_id, &zi)
+                        Some(cur_item.track.clone())
+                    } else {
+                        None
+                    };
+                    (self.make_playback_event(zone_id, &zi), rec)
                 };
+                if let Some(tr) = rec_tr {
+                    self.record_play_async(tr);
+                }
                 self.emit("zone.playback", zone_id, &pb);
                 return Ok(());
             }
@@ -1163,7 +1284,7 @@ impl Manager {
             .await
             .map_err(|e| QueueError::Renderer(e.to_string()))?;
 
-        let pb = {
+        let (pb, rec_tr) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             zi.current_uri = media_item.url;
             zi.active_quality = Some(eff_q);
@@ -1174,23 +1295,35 @@ impl Manager {
             zi.last_command_at = Instant::now();
             zi.next_preloaded = false;
             zi.revision += 1;
-            if zi.last_played_item_id != cur_item.item_id {
+            let rec = if zi.last_played_item_id != cur_item.item_id {
                 zi.last_played_item_id = cur_item.item_id.clone();
-                self.catalog.record_play(&cur_item.track);
-            }
-            self.make_playback_event(zone_id, &zi)
+                Some(cur_item.track.clone())
+            } else {
+                None
+            };
+            (self.make_playback_event(zone_id, &zi), rec)
         };
+        if let Some(tr) = rec_tr {
+            self.record_play_async(tr);
+        }
         self.emit("zone.playback", zone_id, &pb);
         Ok(())
     }
 
     /// Handles push events from UPnP GENA or remote HTTP/SSE players.
-    pub fn apply_device_event(&self, ev: DeviceEvent) {
+    pub fn apply_device_event(self: &Arc<Self>, ev: DeviceEvent) {
         let Some(z) = self.get_zone(&ev.renderer_id) else {
             return;
         };
-        let (vol_ev, pb_ev) = {
+        let mut need_advance = false;
+        let mut need_preload: Option<(i32, Track, AudioQuality, u64)> = None;
+        let mut recorded_track: Option<Track> = None;
+        let advance_rev: u64;
+
+        let (ctrl, vol_ev, pb_ev) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let ctrl = Arc::clone(&zi.ctrl);
+            let prev_state = PlaybackState::normalize(&zi.status.state);
             let mut vol_changed = false;
             let mut pb_changed = false;
 
@@ -1205,7 +1338,7 @@ impl Manager {
                 vol_changed = true;
             }
             if ev.has_state && zi.status.state != ev.state {
-                zi.status.state = ev.state;
+                zi.status.state = ev.state.clone();
                 pb_changed = true;
             }
             if ev.has_position {
@@ -1219,11 +1352,61 @@ impl Manager {
                 pb_changed = true;
             }
             if ev.has_track_uri && !ev.track_uri.is_empty() {
-                zi.status.track_uri = ev.track_uri;
+                zi.status.track_uri = ev.track_uri.clone();
             }
+
+            let new_state = PlaybackState::normalize(&zi.status.state);
+
+            // Detect gapless transition on push/GENA TrackURI update
+            if zi.next_preloaded
+                && !zi.status.track_uri.is_empty()
+                && zi.status.track_uri == zi.next_uri
+                && zi.next_index >= 0
+                && (zi.next_index as usize) < zi.queue.len()
+            {
+                zi.current_index = zi.next_index;
+                zi.current_uri = zi.next_uri.clone();
+                zi.next_preloaded = false;
+                zi.next_uri.clear();
+                zi.next_index = -1;
+                pb_changed = true;
+                recorded_track = Some(zi.queue[zi.current_index as usize].track.clone());
+            }
+
+            // Detect track completion (PLAYING -> STOPPED) for virtual-queue zones (remote players & GENA UPnP).
+            // Ignore GENA initial snapshot (seq == 0 on AVTransport) to avoid spurious advances on subscribe.
+            let is_gena_initial = ev.service == "AVTransport" && ev.seq == 0;
+            if !is_gena_initial
+                && prev_state == PlaybackState::Playing
+                && new_state == PlaybackState::Stopped
+                && ctrl.as_queue_controller().is_none()
+                && zi.last_command_at.elapsed() > Duration::from_secs(3)
+            {
+                need_advance = true;
+            }
+
             if vol_changed || pb_changed {
                 zi.revision += 1;
             }
+            advance_rev = zi.revision;
+
+            // Arm gapless SetNextAVTransportURI when within 25s of end of track on push position updates
+            if new_state == PlaybackState::Playing
+                && !zi.next_preloaded
+                && !zi.set_next_unsupported
+                && ctrl.as_queue_controller().is_none()
+                && !zi.status.duration.is_zero()
+                && zi.status.duration.saturating_sub(zi.status.position) <= Duration::from_secs(25)
+                && let Some(n) = compute_next_index(&zi)
+            {
+                need_preload = Some((
+                    n,
+                    zi.queue[n as usize].track.clone(),
+                    zi.audio_quality,
+                    zi.revision,
+                ));
+            }
+
             let ve = vol_changed.then(|| VolumeEvent {
                 zone_id: ev.renderer_id.clone(),
                 revision: zi.revision,
@@ -1231,14 +1414,87 @@ impl Manager {
                 muted: zi.status.muted,
             });
             let pe = pb_changed.then(|| self.make_playback_event(&ev.renderer_id, &zi));
-            (ve, pe)
+            (ctrl, ve, pe)
         };
 
+        if let Some(tr) = recorded_track {
+            self.record_play_async(tr);
+        }
         if let Some(ve) = vol_ev {
             self.emit("zone.volume", &ev.renderer_id, &ve);
         }
         if let Some(pe) = pb_ev {
             self.emit("zone.playback", &ev.renderer_id, &pe);
+        }
+
+        if let Some((ni, tr, rq, expected_rev)) = need_preload {
+            let mgr = Arc::clone(self);
+            let z_clone = Arc::clone(&z);
+            tokio::spawn(async move {
+                mgr.preload_next_if_unchanged(&z_clone, &ctrl, ni, &tr, rq, expected_rev)
+                    .await;
+            });
+        }
+        if need_advance {
+            let mgr = Arc::clone(self);
+            let zid = ev.renderer_id;
+            let z_clone = Arc::clone(&z);
+            tokio::spawn(async move {
+                mgr.advance_if_unchanged(&zid, &z_clone, advance_rev).await;
+            });
+        }
+    }
+
+    async fn preload_next_if_unchanged(
+        &self,
+        z: &Zone,
+        ctrl: &Arc<dyn Controller>,
+        ni: i32,
+        tr: &Track,
+        rq: AudioQuality,
+        expected_rev: u64,
+    ) {
+        let Ok((mi, _)) = self.build_media_item(tr, ctrl, rq).await else {
+            return;
+        };
+        let _op = z.op_mu.lock().await;
+        {
+            let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if zi.revision != expected_rev || zi.next_preloaded {
+                return;
+            }
+        }
+        match ctrl.set_next_uri(&mi).await {
+            Ok(()) => {
+                let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+                if zi.revision == expected_rev {
+                    zi.next_preloaded = true;
+                    zi.next_uri = mi.url;
+                    zi.next_index = ni;
+                }
+            }
+            Err(e) if e.is_action_unsupported() => {
+                z.inner
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_next_unsupported = true;
+            }
+            Err(_) => {}
+        }
+    }
+
+    async fn advance_if_unchanged(&self, zone_id: &str, z: &Zone, expected_rev: u64) {
+        let next_idx = {
+            let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if zi.revision != expected_rev {
+                return;
+            }
+            compute_next_index(&zi)
+        };
+        if let Some(ni) = next_idx
+            && let Err(e) = self.play_index(zone_id, ni as usize).await
+        {
+            self.emit_zone_error(zone_id, "ADVANCE_FAILED", e.to_string(), true);
         }
     }
 
@@ -1246,6 +1502,7 @@ impl Manager {
         let mgr = Arc::clone(self);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(2));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
                     _ = mgr.stop.cancelled() => break,
@@ -1263,153 +1520,142 @@ impl Manager {
             g.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
         };
 
-        for (zone_id, z) in snapshot {
-            let ctrl = Arc::clone(&z.inner.lock().unwrap_or_else(|e| e.into_inner()).ctrl);
-            if ctrl.push_connected() {
-                continue;
+        let futs = snapshot
+            .into_iter()
+            .map(|(zone_id, z)| async move { self.poll_one_zone(zone_id, z).await });
+        futures_util::future::join_all(futs).await;
+    }
+
+    async fn poll_one_zone(&self, zone_id: String, z: Arc<Zone>) {
+        let ctrl = Arc::clone(&z.inner.lock().unwrap_or_else(|e| e.into_inner()).ctrl);
+        if ctrl.push_connected() {
+            return;
+        }
+        let Ok(st) = ctrl.status().await else {
+            return;
+        };
+
+        let mut need_advance = false;
+        let mut need_preload: Option<(i32, Track, AudioQuality, u64)> = None;
+        let mut recorded_track: Option<Track> = None;
+        let advance_rev: u64;
+
+        let (vol_ev, pb_ev) = {
+            let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let prev_state = PlaybackState::normalize(&zi.status.state);
+            let new_state = PlaybackState::normalize(&st.state);
+
+            let mut vol_changed = false;
+            let mut pb_changed = false;
+
+            if st.has_vol_value && st.volume != zi.status.volume {
+                zi.status.volume = st.volume;
+                vol_changed = true;
             }
-            let Ok(st) = ctrl.status().await else {
-                continue;
-            };
-
-            let mut need_advance = false;
-            let mut need_preload: Option<(i32, Track, AudioQuality)> = None;
-            let (vol_ev, pb_ev) = {
-                let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-                let prev_state = PlaybackState::normalize(&zi.status.state);
-                let new_state = PlaybackState::normalize(&st.state);
-
-                let mut vol_changed = false;
-                let mut pb_changed = false;
-
-                if st.has_vol_value && st.volume != zi.status.volume {
-                    zi.status.volume = st.volume;
-                    vol_changed = true;
-                }
-                if st.has_mute_val && st.muted != zi.status.muted {
-                    zi.status.muted = st.muted;
-                    vol_changed = true;
-                }
-                if st.state != zi.status.state {
-                    zi.status.state = st.state.clone();
+            if st.has_mute_val && st.muted != zi.status.muted {
+                zi.status.muted = st.muted;
+                vol_changed = true;
+            }
+            if st.state != zi.status.state {
+                zi.status.state = st.state.clone();
+                pb_changed = true;
+            }
+            if st.has_position {
+                let diff = zi.status.position.abs_diff(st.position);
+                zi.status.position = st.position;
+                zi.position_updated_at = Utc::now();
+                if diff >= Duration::from_secs(1) {
                     pb_changed = true;
                 }
-                if st.has_position {
-                    let diff = zi.status.position.abs_diff(st.position);
-                    zi.status.position = st.position;
-                    zi.position_updated_at = Utc::now();
-                    if diff >= Duration::from_secs(1) {
-                        pb_changed = true;
-                    }
-                }
-                if !st.duration.is_zero() {
-                    zi.status.duration = st.duration;
-                }
-
-                // Sync native queue index if device advanced on its own (e.g. WiiM hardware Next)
-                if st.has_queue_index
-                    && st.queue_index >= 0
-                    && (st.queue_index as usize) < zi.queue.len()
-                    && st.queue_index != zi.current_index
-                    && zi.last_command_at.elapsed() > Duration::from_secs(3)
-                {
-                    zi.current_index = st.queue_index;
-                    pb_changed = true;
-                }
-
-                // Detect gapless transition via TrackURI
-                if zi.next_preloaded
-                    && !st.track_uri.is_empty()
-                    && st.track_uri == zi.next_uri
-                    && zi.next_index >= 0
-                    && (zi.next_index as usize) < zi.queue.len()
-                {
-                    zi.current_index = zi.next_index;
-                    zi.current_uri = zi.next_uri.clone();
-                    zi.next_preloaded = false;
-                    zi.next_uri.clear();
-                    zi.next_index = -1;
-                    pb_changed = true;
-                    let tr = zi.queue[zi.current_index as usize].track.clone();
-                    self.catalog.record_play(&tr);
-                }
-
-                // Detect track completion (PLAYING -> STOPPED) for virtual queue advance
-                if prev_state == PlaybackState::Playing
-                    && new_state == PlaybackState::Stopped
-                    && ctrl.as_queue_controller().is_none()
-                    && zi.last_command_at.elapsed() > Duration::from_secs(3)
-                {
-                    need_advance = true;
-                }
-
-                // Arm gapless SetNextAVTransportURI when within 25s of end of track
-                if new_state == PlaybackState::Playing
-                    && !zi.next_preloaded
-                    && !zi.set_next_unsupported
-                    && ctrl.as_queue_controller().is_none()
-                    && !zi.status.duration.is_zero()
-                    && zi.status.duration.saturating_sub(zi.status.position)
-                        <= Duration::from_secs(25)
-                {
-                    let ni = compute_next_index(&zi);
-                    if let Some(n) = ni {
-                        need_preload =
-                            Some((n, zi.queue[n as usize].track.clone(), zi.audio_quality));
-                    }
-                }
-
-                if vol_changed || pb_changed {
-                    zi.revision += 1;
-                }
-                let ve = vol_changed.then(|| VolumeEvent {
-                    zone_id: zone_id.clone(),
-                    revision: zi.revision,
-                    volume: zi.status.volume,
-                    muted: zi.status.muted,
-                });
-                let pe = pb_changed.then(|| self.make_playback_event(&zone_id, &zi));
-                (ve, pe)
-            };
-
-            if let Some(ve) = vol_ev {
-                self.emit("zone.volume", &zone_id, &ve);
             }
-            if let Some(pe) = pb_ev {
-                self.emit("zone.playback", &zone_id, &pe);
+            if !st.duration.is_zero() {
+                zi.status.duration = st.duration;
             }
 
-            if let Some((ni, tr, rq)) = need_preload
-                && let Ok((mi, _)) = self.build_media_item(&tr, &ctrl, rq).await
+            // Sync native queue index if device advanced on its own (e.g. WiiM hardware Next)
+            if st.has_queue_index
+                && st.queue_index >= 0
+                && (st.queue_index as usize) < zi.queue.len()
+                && st.queue_index != zi.current_index
+                && zi.last_command_at.elapsed() > Duration::from_secs(3)
             {
-                match ctrl.set_next_uri(&mi).await {
-                    Ok(()) => {
-                        let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-                        zi.next_preloaded = true;
-                        zi.next_uri = mi.url;
-                        zi.next_index = ni;
-                    }
-                    Err(e) if e.is_action_unsupported() => {
-                        z.inner
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .set_next_unsupported = true;
-                    }
-                    Err(_) => {}
-                }
+                zi.current_index = st.queue_index;
+                pb_changed = true;
             }
 
-            if need_advance {
-                let next_idx = {
-                    let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-                    compute_next_index(&zi)
-                };
-                if let Some(ni) = next_idx
-                    && let Err(e) = self.play_index(&zone_id, ni as usize).await
-                {
-                    self.emit_zone_error(&zone_id, "ADVANCE_FAILED", e.to_string(), true);
-                }
+            // Detect gapless transition via TrackURI
+            if zi.next_preloaded
+                && !st.track_uri.is_empty()
+                && st.track_uri == zi.next_uri
+                && zi.next_index >= 0
+                && (zi.next_index as usize) < zi.queue.len()
+            {
+                zi.current_index = zi.next_index;
+                zi.current_uri = zi.next_uri.clone();
+                zi.next_preloaded = false;
+                zi.next_uri.clear();
+                zi.next_index = -1;
+                pb_changed = true;
+                recorded_track = Some(zi.queue[zi.current_index as usize].track.clone());
             }
+
+            // Detect track completion (PLAYING -> STOPPED) for virtual queue advance
+            if prev_state == PlaybackState::Playing
+                && new_state == PlaybackState::Stopped
+                && ctrl.as_queue_controller().is_none()
+                && zi.last_command_at.elapsed() > Duration::from_secs(3)
+            {
+                need_advance = true;
+            }
+
+            if vol_changed || pb_changed {
+                zi.revision += 1;
+            }
+            advance_rev = zi.revision;
+
+            // Arm gapless SetNextAVTransportURI when within 25s of end of track
+            if new_state == PlaybackState::Playing
+                && !zi.next_preloaded
+                && !zi.set_next_unsupported
+                && ctrl.as_queue_controller().is_none()
+                && !zi.status.duration.is_zero()
+                && zi.status.duration.saturating_sub(zi.status.position) <= Duration::from_secs(25)
+                && let Some(n) = compute_next_index(&zi)
+            {
+                need_preload = Some((
+                    n,
+                    zi.queue[n as usize].track.clone(),
+                    zi.audio_quality,
+                    zi.revision,
+                ));
+            }
+
+            let ve = vol_changed.then(|| VolumeEvent {
+                zone_id: zone_id.clone(),
+                revision: zi.revision,
+                volume: zi.status.volume,
+                muted: zi.status.muted,
+            });
+            let pe = pb_changed.then(|| self.make_playback_event(&zone_id, &zi));
+            (ve, pe)
+        };
+
+        if let Some(tr) = recorded_track {
+            self.record_play_async(tr);
+        }
+        if let Some(ve) = vol_ev {
+            self.emit("zone.volume", &zone_id, &ve);
+        }
+        if let Some(pe) = pb_ev {
+            self.emit("zone.playback", &zone_id, &pe);
+        }
+
+        if let Some((ni, tr, rq, expected_rev)) = need_preload {
+            self.preload_next_if_unchanged(&z, &ctrl, ni, &tr, rq, expected_rev)
+                .await;
+        }
+        if need_advance {
+            self.advance_if_unchanged(&zone_id, &z, advance_rev).await;
         }
     }
 }

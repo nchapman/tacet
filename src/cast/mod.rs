@@ -256,6 +256,16 @@ impl Controller for CastRenderer {
             (client.receiver_status().await, client.media_status().await)
         };
 
+        // If both receiver and media status fail, tear down the stale Cast client so the next call reconnects.
+        if rs_res.is_err() && ms_res.is_err() {
+            st.client = None;
+            st.transport_id.clear();
+            st.media_session_id = 0;
+            return Err(UpnpError::Other(
+                "cast status failed on both receiver and media channels".into(),
+            ));
+        }
+
         if let Ok(rs) = rs_res {
             ts.volume = (rs.volume.level.clamp(0.0, 1.0) * 100.0).round() as i32;
             ts.has_vol_value = true;

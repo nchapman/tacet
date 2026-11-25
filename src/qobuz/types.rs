@@ -440,10 +440,11 @@ pub(crate) struct QAlbum {
 
 impl QAlbum {
     pub fn to_library_album(&self, include_tracks: bool) -> Album {
-        let mut year = 0i32;
-        if self.release_date_original.len() >= 4 {
-            year = self.release_date_original[..4].parse().unwrap_or(0);
-        }
+        let mut year = self
+            .release_date_original
+            .get(..4)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
         if year == 0
             && self.released_at > 0
             && let Some(dt) = chrono::DateTime::from_timestamp(self.released_at, 0)
@@ -552,9 +553,11 @@ impl QTrack {
                 album_id = format!("qobuz:{}", a.id);
             }
             genre = a.genre.name.trim().to_string();
-            if a.release_date_original.len() >= 4 {
-                year = a.release_date_original[..4].parse().unwrap_or(0);
-            }
+            year = a
+                .release_date_original
+                .get(..4)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
             artwork = a.image.best();
         }
         let mut sr = normalize_sample_rate_hz(self.maximum_sampling_rate);
@@ -754,11 +757,7 @@ impl QDiscoverAlbum {
         } else {
             &self.dates.stream
         };
-        let year = if date_str.len() >= 4 {
-            date_str[..4].parse().unwrap_or(0)
-        } else {
-            0
-        };
+        let year = date_str.get(..4).and_then(|s| s.parse().ok()).unwrap_or(0);
         Album {
             id: format!("qobuz:{}", self.id),
             source: SOURCE_QOBUZ.into(),

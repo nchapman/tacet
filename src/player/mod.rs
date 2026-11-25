@@ -562,7 +562,7 @@ impl RemotePlayer {
     pub fn attach_stream(&self) -> CommandStream {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>(32);
         let (rep_tx, rep_rx) = oneshot::channel::<()>();
-        let (stream_id, prev_rep) = {
+        let (stream_id, prev_rep, _old_tx) = {
             let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(t) = st.grace_task.take() {
                 t.abort();
@@ -570,12 +570,15 @@ impl RemotePlayer {
             st.stream_id += 1;
             let id = st.stream_id;
             let prev = st.replaced_tx.replace(rep_tx);
-            st.cmd_tx = Some(cmd_tx);
-            (id, prev)
+            let old_tx = st.cmd_tx.replace(cmd_tx);
+            (id, prev, old_tx)
         };
+        // Notify replaced stream BEFORE dropping `_old_tx` so it emits `event: replaced`
+        // rather than observing channel EOF.
         if let Some(prev) = prev_rep {
             let _ = prev.send(());
         }
+        drop(_old_tx);
         CommandStream {
             id: stream_id,
             commands: cmd_rx,
@@ -590,6 +593,13 @@ impl RemotePlayer {
         }
         st.cmd_tx = None;
         st.replaced_tx = None;
+        for (_, tx) in st.pending.drain() {
+            let _ = tx.send(CmdResult {
+                ok: false,
+                error_code: "DISCONNECTED".into(),
+                error_message: "player stream disconnected".into(),
+            });
+        }
         (true, st.grace_period)
     }
 
@@ -1021,5 +1031,30 @@ mod tests {
 
         reg.unregister(&r.zone_id, &r.token).unwrap();
         assert!(reg.get(&r.zone_id, &r.token).is_err());
+    }
+
+    #[tokio::test]
+    async fn attach_stream_signals_replaced_before_channel_eof() {
+        let reg = Registry::new(None, None, None);
+        let r = reg
+            .register(
+                RegisterRequest {
+                    player_id: "tab_test".into(),
+                    name: "Tab".into(),
+                    ..Default::default()
+                },
+                "",
+            )
+            .unwrap();
+        let rp = reg.get(&r.zone_id, &r.token).unwrap();
+        let mut first = rp.attach_stream();
+        let _second = rp.attach_stream();
+
+        let got_replaced = tokio::select! {
+            biased;
+            res = &mut first.replaced => res.is_ok(),
+            _ = first.commands.recv() => false,
+        };
+        assert!(got_replaced, "replaced signal must win over command EOF");
     }
 }

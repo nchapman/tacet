@@ -29,6 +29,7 @@ pub struct MediaHandler {
     qobuz: Option<Arc<QobuzClient>>,
     art: RwLockArt,
     relay_http: reqwest::Client,
+    remote_art_http: reqwest::Client,
     prewarm_cancel: Mutex<Option<CancellationToken>>,
 }
 
@@ -66,11 +67,31 @@ impl MediaHandler {
             .build()
             .expect("build media relay reqwest client");
 
+        let remote_art_http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 3 {
+                    return attempt.error("too many remote art redirects");
+                }
+                if attempt.url().scheme() != "https" {
+                    return attempt.error("refusing non-HTTPS remote art redirect");
+                }
+                let host = attempt.url().host_str().unwrap_or("");
+                if !is_allowed_remote_art_host(host) {
+                    return attempt.error("refusing remote art redirect off allowlisted host");
+                }
+                attempt.follow()
+            }))
+            .build()
+            .expect("build remote art reqwest client");
+
         Arc::new(Self {
             catalog,
             qobuz,
             art: RwLockArt(std::sync::RwLock::new(ArtCache::new(None))),
             relay_http,
+            remote_art_http,
             prewarm_cancel: Mutex::new(None),
         })
     }
@@ -166,7 +187,7 @@ impl MediaHandler {
                     Body::empty(),
                 );
             }
-            return match spawn_ffmpeg_stream(ffmpeg, &track.file_path, &spec, seek_sec) {
+            return match spawn_ffmpeg_stream(ffmpeg, &track.file_path, &spec, seek_sec).await {
                 Ok(body) => dlna_headers_response(spec.mime, DLNA_FEATURES_TRANSCODED, None, body),
                 Err(e) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -198,11 +219,8 @@ impl MediaHandler {
         let info = match qb.stream_url(track_id).await {
             Ok(i) => i,
             Err(e) => {
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    format!("qobuz stream URL failed: {e}"),
-                )
-                    .into_response();
+                tracing::warn!(error = %e, "qobuz stream URL lookup failed");
+                return (StatusCode::BAD_GATEWAY, "qobuz stream URL failed").into_response();
             }
         };
 
@@ -229,7 +247,7 @@ impl MediaHandler {
                     Body::empty(),
                 );
             }
-            return match spawn_ffmpeg_stream(ffmpeg, &info.url, &spec, seek_sec) {
+            return match spawn_ffmpeg_stream(ffmpeg, &info.url, &spec, seek_sec).await {
                 Ok(body) => dlna_headers_response(spec.mime, DLNA_FEATURES_TRANSCODED, None, body),
                 Err(e) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -254,8 +272,8 @@ impl MediaHandler {
         let upstream = match req.send().await {
             Ok(r) => r,
             Err(e) => {
-                return (StatusCode::BAD_GATEWAY, format!("qobuz relay failed: {e}"))
-                    .into_response();
+                tracing::warn!(error = %e.without_url(), "qobuz relay upstream request failed");
+                return (StatusCode::BAD_GATEWAY, "qobuz relay failed").into_response();
             }
         };
 
@@ -394,14 +412,29 @@ impl MediaHandler {
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
         }
 
-        let resp = match self.relay_http.get(parsed.as_str()).send().await {
+        let mut resp = match self.remote_art_http.get(parsed.as_str()).send().await {
             Ok(r) if r.status().is_success() => r,
             _ => return StatusCode::BAD_GATEWAY.into_response(),
         };
-        let Ok(raw_bytes) = resp.bytes().await else {
+        if let Some(cl) = resp.content_length()
+            && cl as usize > MAX_REMOTE_ART_BYTES
+        {
             return StatusCode::BAD_GATEWAY.into_response();
-        };
-        if raw_bytes.is_empty() || raw_bytes.len() > MAX_REMOTE_ART_BYTES {
+        }
+        let mut raw_bytes = Vec::new();
+        loop {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    if raw_bytes.len().saturating_add(chunk.len()) > MAX_REMOTE_ART_BYTES {
+                        return StatusCode::BAD_GATEWAY.into_response();
+                    }
+                    raw_bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
+            }
+        }
+        if raw_bytes.is_empty() {
             return StatusCode::BAD_GATEWAY.into_response();
         }
         let raw_vec = raw_bytes.to_vec();
@@ -569,8 +602,24 @@ pub fn is_allowed_remote_art_host(host: &str) -> bool {
 fn is_private_or_loopback(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
+            let oct = v4.octets();
+            let is_cgnat = oct[0] == 100 && (oct[1] & 0b1100_0000) == 64;
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || is_cgnat
         }
-        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_private_or_loopback(IpAddr::V4(mapped));
+            }
+            let segs = v6.segments();
+            let is_ula = (segs[0] & 0xfe00) == 0xfc00;
+            let is_link_local = (segs[0] & 0xffc0) == 0xfe80;
+            v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() || is_ula || is_link_local
+        }
     }
 }

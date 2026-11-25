@@ -139,9 +139,10 @@ pub async fn connect_by_url(raw_url: &str) -> Result<Arc<Renderer>> {
 }
 
 async fn fetch_xml_text(target: &Url) -> Result<String> {
-    let client = new_soap_http_client(Duration::from_secs(5));
-    let resp = client
+    let client = new_soap_http_client();
+    let mut resp = client
         .get(target.as_str())
+        .timeout(Duration::from_secs(5))
         .header("Connection", "close")
         .send()
         .await?;
@@ -152,9 +153,17 @@ async fn fetch_xml_text(target: &Url) -> Result<String> {
             body: format!("GET {target} returned {status}"),
         });
     }
-    let bytes = resp.bytes().await?;
-    if bytes.len() > MAX_UPNP_XML_BYTES {
+    if let Some(cl) = resp.content_length()
+        && cl as usize > MAX_UPNP_XML_BYTES
+    {
         return Err(UpnpError::Other("UPnP XML exceeds 2 MiB limit".into()));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_UPNP_XML_BYTES {
+            return Err(UpnpError::Other("UPnP XML exceeds 2 MiB limit".into()));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
@@ -377,9 +386,10 @@ pub async fn probe_location(raw_url: &str) -> bool {
     let Ok(loc) = validate_renderer_url(raw_url).await else {
         return false;
     };
-    let client = new_soap_http_client(Duration::from_secs(2));
+    let client = new_soap_http_client();
     match client
         .get(loc.as_str())
+        .timeout(Duration::from_secs(2))
         .header("Connection", "close")
         .send()
         .await

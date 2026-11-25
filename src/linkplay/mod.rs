@@ -36,7 +36,7 @@ impl LinkplayRenderer {
         Self {
             base,
             play_queue_url,
-            http: new_soap_http_client(Duration::from_secs(8)),
+            http: new_soap_http_client(),
         }
     }
 
@@ -90,6 +90,17 @@ impl LinkplayRenderer {
             .await
             .ok()?;
         parse_get_queue_index(&raw)
+    }
+
+    async fn append_queue_named(&self, list_name: &str, items: &[MediaItem]) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let sinks = self.base.info().sink_protocols;
+        let qctx = build_queue_context_xml(list_name, items, &sinks);
+        let body = format!("<QueueContext>{}</QueueContext>", escape_xml(&qctx));
+        self.soap_call("AppendTracksInQueue", &body).await?;
+        Ok(())
     }
 }
 
@@ -181,7 +192,8 @@ impl QueueController for LinkplayRenderer {
         let mut start = first_end;
         while start < items.len() {
             let end = (start + LINKPLAY_BATCH_SIZE).min(items.len());
-            self.append_queue(&items[start..end]).await?;
+            self.append_queue_named(TACET_LIST_NAME, &items[start..end])
+                .await?;
             start = end;
         }
 
@@ -196,14 +208,7 @@ impl QueueController for LinkplayRenderer {
     }
 
     async fn append_queue(&self, items: &[MediaItem]) -> Result<()> {
-        if items.is_empty() {
-            return Ok(());
-        }
-        let sinks = self.base.info().sink_protocols;
-        let qctx = build_queue_context_xml(CURRENT_QUEUE, items, &sinks);
-        let body = format!("<QueueContext>{}</QueueContext>", escape_xml(&qctx));
-        self.soap_call("AppendTracksInQueue", &body).await?;
-        Ok(())
+        self.append_queue_named(CURRENT_QUEUE, items).await
     }
 
     async fn remove_queue_range(&self, start: usize, end: usize) -> Result<()> {

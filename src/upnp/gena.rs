@@ -357,6 +357,24 @@ impl GenaClient {
             return StatusCode::PRECONDITION_FAILED;
         };
 
+        // UPnP DA 1.1 §4.2: validate SID against the active subscription when known.
+        let active_sid = sub
+            .state
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .0
+            .clone();
+        if !active_sid.is_empty() {
+            let hdr_sid = headers
+                .get("sid")
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .unwrap_or("");
+            if hdr_sid != active_sid {
+                return StatusCode::PRECONDITION_FAILED;
+            }
+        }
+
         let mut ev = parse_notify_body(&sub.service, &body);
         ev.renderer_id = sub.renderer_id.clone();
         if let Some(seq_hdr) = headers.get("seq").and_then(|v| v.to_str().ok())
@@ -411,7 +429,11 @@ async fn sub_lifecycle(sub: Arc<GenaSub>) {
         }
         let callback_url = format!("{}/upnp/event/{}", sub.callback_base_url, sub.token);
         match raw_gena_subscribe(&sub.event_sub_url, &callback_url, None).await {
-            Ok((sid, timeout)) => {
+            Ok((mut sid, timeout)) => {
+                if sub.cancel.is_cancelled() {
+                    let _ = raw_gena_unsubscribe(&sub.event_sub_url, &sid).await;
+                    return;
+                }
                 {
                     let mut st = sub.state.write().unwrap_or_else(|e| e.into_inner());
                     *st = (sid.clone(), true);
@@ -421,15 +443,24 @@ async fn sub_lifecycle(sub: Arc<GenaSub>) {
                 loop {
                     let renew_in = cur_timeout.mul_f64(0.75).max(Duration::from_secs(20));
                     tokio::select! {
-                        _ = sub.cancel.cancelled() => return,
+                        _ = sub.cancel.cancelled() => {
+                            let _ = raw_gena_unsubscribe(&sub.event_sub_url, &sid).await;
+                            return;
+                        }
                         _ = tokio::time::sleep(renew_in) => {}
                     }
                     match raw_gena_subscribe(&sub.event_sub_url, "", Some(&sid)).await {
-                        Ok((_, next_to)) => {
+                        Ok((next_sid, next_to)) => {
+                            if !next_sid.is_empty() && next_sid != sid {
+                                sid = next_sid;
+                                let mut st = sub.state.write().unwrap_or_else(|e| e.into_inner());
+                                st.0 = sid.clone();
+                            }
                             cur_timeout = next_to;
                         }
                         Err(_) => {
                             let mut st = sub.state.write().unwrap_or_else(|e| e.into_inner());
+                            st.0.clear();
                             st.1 = false;
                             break;
                         }
@@ -535,10 +566,14 @@ async fn raw_gena_unsubscribe(event_sub_url: &str, sid: &str) -> std::result::Re
 }
 
 async fn send_raw_http(host: &str, port: u16, req: &[u8]) -> std::result::Result<String, String> {
-    let mut stream = tokio::time::timeout(Duration::from_secs(4), TcpStream::connect((host, port)))
-        .await
-        .map_err(|_| "connect timeout".to_string())?
-        .map_err(|e| e.to_string())?;
+    let connect_host = host.trim_matches(['[', ']']);
+    let mut stream = tokio::time::timeout(
+        Duration::from_secs(4),
+        TcpStream::connect((connect_host, port)),
+    )
+    .await
+    .map_err(|_| "connect timeout".to_string())?
+    .map_err(|e| e.to_string())?;
     tokio::time::timeout(Duration::from_secs(4), stream.write_all(req))
         .await
         .map_err(|_| "write timeout".to_string())?

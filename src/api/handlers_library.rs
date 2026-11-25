@@ -457,19 +457,43 @@ pub async fn qobuz_oauth_start(
             false,
         )
     })?;
-    let host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost:4320");
+    let pub_url = st
+        .public_url
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let callback_base = if !pub_url.is_empty() {
+        pub_url
+    } else {
+        let host = headers
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("localhost:4320")
+            .trim();
+        // Reject Host header injection (whitespace, slashes, userinfo, query/fragment).
+        if host.is_empty()
+            || host
+                .contains(|c: char| c.is_whitespace() || matches!(c, '/' | '\\' | '@' | '?' | '#'))
+        {
+            return Err(ApiError::bad_request("invalid Host header"));
+        }
+        format!("http://{host}")
+    };
     let mut state_bytes = [0u8; 16];
     rand::rng().fill_bytes(&mut state_bytes);
     let state_tok = hex::encode(state_bytes);
     {
         let mut g = st.oauth_state.lock().unwrap_or_else(|e| e.into_inner());
         g.retain(|_, t| t.elapsed() < Duration::from_secs(600));
+        if g.len() >= 64 {
+            // Evict oldest pending OAuth state to bound memory
+            if let Some(oldest) = g.iter().min_by_key(|(_, t)| *t).map(|(k, _)| k.clone()) {
+                g.remove(&oldest);
+            }
+        }
         g.insert(state_tok.clone(), Instant::now());
     }
-    let callback = format!("http://{host}/api/v1/qobuz/oauth/callback?state={state_tok}");
+    let callback = format!("{callback_base}/api/v1/qobuz/oauth/callback?state={state_tok}");
     let url = qb.oauth_url(&callback).await?;
     Ok(Redirect::temporary(&url).into_response())
 }
@@ -545,14 +569,7 @@ pub async fn qobuz_login(
     })?;
     let req: QobuzLoginReq = parse_strict_json(&body)?;
     if !req.app_id.trim().is_empty() || !req.app_secret.trim().is_empty() {
-        let mut creds = qb.export_credentials();
-        if !req.app_id.trim().is_empty() {
-            creds.app_id = req.app_id.trim().to_string();
-        }
-        if !req.app_secret.trim().is_empty() {
-            creds.app_secret = req.app_secret.trim().to_string();
-        }
-        qb.restore_credentials(creds);
+        qb.set_credentials(req.app_id.trim(), req.app_secret.trim(), "");
     }
     let status = if !req.auth_token.trim().is_empty() {
         qb.login_with_token(&req.auth_token).await?

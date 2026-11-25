@@ -141,16 +141,24 @@ pub trait QueueController: Send + Sync {
     async fn set_loop_mode(&self, repeat: &str, shuffle: bool) -> Result<()>;
 }
 
-/// Builds a reqwest client configured for UPnP SOAP calls:
-/// keep-alives disabled (embedded libupnp drops pooled sockets), redirects disallowed.
-pub fn new_soap_http_client(timeout: Duration) -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(Duration::from_secs(3))
-        .pool_max_idle_per_host(0)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("build SOAP reqwest client")
+/// Returns a shared reqwest client configured for UPnP SOAP calls:
+/// keep-alives disabled (embedded libupnp drops pooled sockets), redirects disallowed,
+/// and a default 10s request timeout (callers needing a tighter budget pass `.timeout(...)`
+/// on the `RequestBuilder`).
+/// Reuses a single `OnceLock` client to avoid repeatedly loading OS TLS root certificates.
+pub fn new_soap_http_client() -> reqwest::Client {
+    static SHARED_SOAP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    SHARED_SOAP_CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .connect_timeout(Duration::from_secs(3))
+                .pool_max_idle_per_host(0)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("build SOAP reqwest client")
+        })
+        .clone()
 }
 
 struct RendererCaps {
@@ -200,7 +208,7 @@ impl Renderer {
             rc_event_url,
             play_queue_control_url,
             soap_mu: AsyncMutex::new(()),
-            http: new_soap_http_client(Duration::from_secs(5)),
+            http: new_soap_http_client(),
         }
     }
 

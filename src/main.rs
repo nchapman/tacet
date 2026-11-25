@@ -199,6 +199,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Arc::clone(&gena)),
         cli.cors_origin,
     );
+    if !cli.public_url.trim().is_empty() {
+        state.set_public_url(cli.public_url.trim());
+    }
     state.media.set_art_cache_dir(cache_dir.join("art"));
 
     // 5. AutoScanner (filesystem watcher + periodic scan)
@@ -315,15 +318,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     cast_monitor.start();
 
-    // 7. Start Axum HTTP server
+    // 7. Start Axum HTTP server with coordinated shutdown token so SSE/media streams close promptly
     let router = build_router(Arc::clone(&state));
     let addr = SocketAddr::from(([0, 0, 0, 0], cli.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "tacet listening");
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let shutdown_tok = state.shutdown.clone();
+    let serve_fut = axum::serve(listener, router).with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        shutdown_tok.cancel();
+    });
+    if let Err(e) = serve_fut.await {
+        tracing::error!(error = %e, "HTTP server exited with error");
+    }
 
     tracing::info!("shutting down tacet...");
     upnp_monitor.stop();

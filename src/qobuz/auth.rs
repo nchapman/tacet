@@ -68,7 +68,14 @@ impl Client {
             return Err(QobuzError::Other("missing OAuth authorization code".into()));
         }
         self.ensure_app_credentials().await?;
-        let private_key = self.private_key();
+        let mut private_key = self.private_key();
+        if private_key.is_empty()
+            && let Ok((app_id, secrets, pk)) = self.discover_web_player_credentials().await
+            && !pk.is_empty()
+        {
+            self.set_discovered_app_credentials(app_id, secrets, pk.clone());
+            private_key = pk;
+        }
         if private_key.is_empty() {
             return Err(QobuzError::Other(
                 "qobuz OAuth private_key was not found in web player bundle".into(),
@@ -216,7 +223,9 @@ impl Client {
             if combined.len() <= 44 {
                 continue;
             }
-            let b64 = &combined[..combined.len() - 44];
+            let Some(b64) = combined.get(..combined.len() - 44) else {
+                continue;
+            };
             if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(b64)
                 && !decoded.is_empty()
                 && let Ok(s) = String::from_utf8(decoded)
