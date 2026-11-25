@@ -20,7 +20,9 @@ use super::art::{
     ART_FORMAT_JPEG, ART_FORMAT_WEBP, ART_SIZE_SMALL, ArtCache, accepts_webp, hash_art_key,
     is_art_hash, parse_art_bucket,
 };
-use super::transcode::{detect_transcoder, parse_transcode_spec, spawn_ffmpeg_stream};
+use super::transcode::{
+    StreamRange, TranscodeSpec, detect_transcoder, parse_transcode_spec, spawn_ffmpeg_stream,
+};
 
 const MAX_REMOTE_ART_BYTES: usize = 10 << 20;
 
@@ -179,27 +181,24 @@ impl MediaHandler {
             .map(String::as_str)
             .unwrap_or("");
         let tc_info = detect_transcoder();
-        if let Some(spec) = parse_transcode_spec(quality, container, &track, tc_info) {
+        let total_samples = if quality.trim().eq_ignore_ascii_case("wav") {
+            let fp = track.file_path.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::library::probe_audio(std::path::Path::new(&fp)).total_samples
+            })
+            .await
+            .unwrap_or(0)
+        } else {
+            0
+        };
+        if let Some(spec) = parse_transcode_spec(quality, container, &track, total_samples, tc_info)
+        {
             let Some(ref ffmpeg) = tc_info.ffmpeg_path else {
                 return (StatusCode::SERVICE_UNAVAILABLE, "ffmpeg unavailable").into_response();
             };
             let seek_sec = query.get("t").and_then(|s| s.parse::<f64>().ok());
-            if method == Method::HEAD {
-                return dlna_headers_response(
-                    spec.mime,
-                    DLNA_FEATURES_TRANSCODED,
-                    None,
-                    Body::empty(),
-                );
-            }
-            return match spawn_ffmpeg_stream(ffmpeg, &track.file_path, &spec, seek_sec).await {
-                Ok(body) => dlna_headers_response(spec.mime, DLNA_FEATURES_TRANSCODED, None, body),
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("transcode failed: {e}"),
-                )
-                    .into_response(),
-            };
+            return serve_transcode(ffmpeg, &track.file_path, method, headers, &spec, seek_sec)
+                .await;
         }
 
         serve_local_file_range(method, &track.file_path, &track.mime, headers).await
@@ -243,27 +242,12 @@ impl MediaHandler {
             mime: info.mime.clone(),
             ..Default::default()
         };
-        if let Some(spec) = parse_transcode_spec(quality, container, &synthetic_track, tc_info) {
+        if let Some(spec) = parse_transcode_spec(quality, container, &synthetic_track, 0, tc_info) {
             let Some(ref ffmpeg) = tc_info.ffmpeg_path else {
                 return (StatusCode::SERVICE_UNAVAILABLE, "ffmpeg unavailable").into_response();
             };
             let seek_sec = query.get("t").and_then(|s| s.parse::<f64>().ok());
-            if method == Method::HEAD {
-                return dlna_headers_response(
-                    spec.mime,
-                    DLNA_FEATURES_TRANSCODED,
-                    None,
-                    Body::empty(),
-                );
-            }
-            return match spawn_ffmpeg_stream(ffmpeg, &info.url, &spec, seek_sec).await {
-                Ok(body) => dlna_headers_response(spec.mime, DLNA_FEATURES_TRANSCODED, None, body),
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("transcode failed: {e}"),
-                )
-                    .into_response(),
-            };
+            return serve_transcode(ffmpeg, &info.url, method, headers, &spec, seek_sec).await;
         }
 
         if query
@@ -608,6 +592,8 @@ fn dlna_headers_response(
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::ACCEPT_RANGES, "none")
         .header("transferMode.dlna.org", "Streaming")
         .header("contentFeatures.dlna.org", dlna_features);
     if let Some(cl) = content_length {
@@ -616,6 +602,134 @@ fn dlna_headers_response(
     builder
         .body(body)
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_transcode(
+    ffmpeg: &std::path::Path,
+    input: &str,
+    method: Method,
+    headers: &HeaderMap,
+    spec: &TranscodeSpec,
+    seek_sec: Option<f64>,
+) -> Response {
+    let is_remote = input.starts_with("http://") || input.starts_with("https://");
+    let seekable_wav = !is_remote
+        && spec.exact_length.is_some()
+        && spec.wav_header.as_deref().is_some_and(|h| h.len() == 44)
+        && spec.sample_rate > 0
+        && spec.channels > 0
+        && spec.bits_per_sample > 0;
+
+    if !seekable_wav {
+        if method == Method::HEAD {
+            return dlna_headers_response(
+                spec.mime,
+                DLNA_FEATURES_TRANSCODED,
+                spec.exact_length,
+                Body::empty(),
+            );
+        }
+        let range = StreamRange {
+            header_slice: spec.wav_header.clone().unwrap_or_default(),
+            seek_sec,
+            ..Default::default()
+        };
+        return match spawn_ffmpeg_stream(ffmpeg, input, spec, range).await {
+            Ok(body) => {
+                dlna_headers_response(spec.mime, DLNA_FEATURES_TRANSCODED, spec.exact_length, body)
+            }
+            Err(e) => (StatusCode::BAD_GATEWAY, format!("transcode failed: {e}")).into_response(),
+        };
+    }
+
+    serve_seekable_wav(ffmpeg, input, method, headers, spec).await
+}
+
+async fn serve_seekable_wav(
+    ffmpeg: &std::path::Path,
+    input: &str,
+    method: Method,
+    headers: &HeaderMap,
+    spec: &TranscodeSpec,
+) -> Response {
+    let total = spec.exact_length.unwrap_or(0);
+    let wav_hdr = spec.wav_header.as_deref().unwrap_or(&[]);
+    let (start, end, is_partial) =
+        if let Some(range_val) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) {
+            match parse_byte_range(range_val, total) {
+                Some((s, e)) => (s, e, true),
+                None => {
+                    return Response::builder()
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_RANGE, format!("bytes */{total}"))
+                        .body(Body::empty())
+                        .unwrap_or_else(|_| StatusCode::RANGE_NOT_SATISFIABLE.into_response());
+                }
+            }
+        } else {
+            (0, total.saturating_sub(1), false)
+        };
+
+    let len = end - start + 1;
+    let status = if is_partial {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+    let build_resp = |body: Body| {
+        let mut b = Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, spec.mime)
+            .header(header::CACHE_CONTROL, "no-store")
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_LENGTH, len.to_string())
+            .header("transferMode.dlna.org", "Streaming")
+            .header("contentFeatures.dlna.org", DLNA_FEATURES_TRANSCODED);
+        if is_partial {
+            b = b.header(
+                header::CONTENT_RANGE,
+                format!("bytes {start}-{end}/{total}"),
+            );
+        }
+        b.body(body)
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    };
+
+    if method == Method::HEAD {
+        return build_resp(Body::empty());
+    }
+    if end < wav_hdr.len() as u64 {
+        return build_resp(Body::from(wav_hdr[start as usize..=end as usize].to_vec()));
+    }
+
+    let hdr_len = wav_hdr.len() as u64;
+    let block_align = u64::from(spec.channels) * u64::from(spec.bits_per_sample / 8);
+    let (header_slice, pcm_want, skip_bytes, seek_sec) = if start < hdr_len {
+        (
+            wav_hdr[start as usize..].to_vec(),
+            end - hdr_len + 1,
+            0,
+            None,
+        )
+    } else {
+        let pcm_start = start - hdr_len;
+        let start_frame = pcm_start / block_align;
+        let seek = (start_frame > 0).then(|| start_frame as f64 / f64::from(spec.sample_rate));
+        (Vec::new(), end - start + 1, pcm_start % block_align, seek)
+    };
+    // Allow up to 100ms of silence padding if ffmpeg stops slightly short of exact_length.
+    let max_pad_bytes = (u64::from(spec.sample_rate) / 10) * block_align;
+    let range = StreamRange {
+        header_slice,
+        pcm_want: Some(pcm_want),
+        skip_bytes,
+        seek_sec,
+        max_pad_bytes,
+    };
+    match spawn_ffmpeg_stream(ffmpeg, input, spec, range).await {
+        Ok(body) => build_resp(body),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("transcode failed: {e}")).into_response(),
+    }
 }
 
 pub fn parse_byte_range(hdr: &str, total: u64) -> Option<(u64, u64)> {

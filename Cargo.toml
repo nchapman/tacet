@@ -1,6 +1,6 @@
 [package]
 name = "tacet"
-version = "0.8.5"
+version = "0.8.6"
 edition = "2024"
 license = "Apache-2.0"
 description = "Headless multi-zone bit-perfect hi-res audio server and UPnP/DLNA/Cast control point"
@@ -68,6 +68,7 @@ regex = "1"
 roxmltree = "0.20"
 
 # Discovery & Cast
+socket2 = "0.6"
 ssdp-client = "2"
 oxicast = { version = "0.0.5", default-features = false, features = ["discovery"] }
 mdns-sd = "0.20"

@@ -209,4 +209,38 @@ mod tests {
         gena.close();
         srv.abort();
     }
+
+    #[test]
+    fn ssdp_notify_parser_handles_alive_byebye_and_filters() {
+        let alive = "NOTIFY * HTTP/1.1\r\n\
+HOST: 239.255.255.250:1900\r\n\
+NT: urn:schemas-upnp-org:service:AVTransport:1\r\n\
+NTS: ssdp:alive\r\n\
+LOCATION: http://192.168.1.50:49152/description.xml\r\n\
+USN: uuid:speaker-1::urn:schemas-upnp-org:service:AVTransport:1\r\n\r\n";
+        assert_eq!(
+            monitor::parse_ssdp_notify(alive),
+            Some(monitor::SsdpNotify::Alive {
+                location: "http://192.168.1.50:49152/description.xml".into(),
+            })
+        );
+
+        let byebye = "NOTIFY * HTTP/1.1\r\n\
+NT: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\
+NTS: ssdp:byebye\r\n\
+USN: uuid:speaker-1::urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n";
+        assert_eq!(
+            monitor::parse_ssdp_notify(byebye),
+            Some(monitor::SsdpNotify::Byebye {
+                usn: "uuid:speaker-1::urn:schemas-upnp-org:device:MediaRenderer:1".into(),
+                location: String::new(),
+            })
+        );
+
+        let non_renderer = "NOTIFY * HTTP/1.1\r\n\
+NT: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\
+NTS: ssdp:alive\r\n\
+LOCATION: http://192.168.1.1/rootDesc.xml\r\n\r\n";
+        assert_eq!(monitor::parse_ssdp_notify(non_renderer), None);
+    }
 }

@@ -173,5 +173,82 @@ mod tests {
         )]);
         let r_scheme = mh.serve_remote_art(&q_scheme, &empty_hdrs).await;
         assert_eq!(r_scheme.status(), StatusCode::FORBIDDEN);
+
+        assert_seekable_wav_ranges(&mh, &t1.id).await;
+    }
+
+    async fn assert_seekable_wav_ranges(mh: &MediaHandler, track_id: &str) {
+        use axum::body::to_bytes;
+        use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+
+        // Verify exact_length calculation unconditionally (does not require ffmpeg).
+        let spec = parse_transcode_spec(
+            "wav",
+            "",
+            &crate::library::Track {
+                sample_rate: 44_100,
+                bit_depth: 16,
+                channels: 2,
+                ..Default::default()
+            },
+            441,
+            &TranscoderInfo::default(),
+        )
+        .expect("wav spec");
+        assert_eq!(spec.exact_length, Some(44 + 441 * 4));
+
+        if detect_transcoder().ffmpeg_path.is_none() {
+            return;
+        }
+        let empty_hdrs = HeaderMap::new();
+        let wav_q = std::collections::HashMap::from([("q".to_string(), "wav".to_string())]);
+        let r_head = mh
+            .serve_local(Method::HEAD, track_id, &wav_q, &empty_hdrs)
+            .await;
+        assert_eq!(r_head.status(), StatusCode::OK);
+        assert_eq!(
+            r_head.headers().get(header::ACCEPT_RANGES).unwrap(),
+            "bytes"
+        );
+        let exact_len: u64 = r_head
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(exact_len, 44 + 441 * 4);
+
+        let mut hdr_range = HeaderMap::new();
+        hdr_range.insert(header::RANGE, HeaderValue::from_static("bytes=0-43"));
+        let r_hdr = mh
+            .serve_local(Method::GET, track_id, &wav_q, &hdr_range)
+            .await;
+        assert_eq!(r_hdr.status(), StatusCode::PARTIAL_CONTENT);
+        let hdr_bytes = to_bytes(r_hdr.into_body(), 1024).await.unwrap();
+        assert_eq!(hdr_bytes.len(), 44);
+        assert_eq!(&hdr_bytes[0..4], b"RIFF");
+        assert_eq!(&hdr_bytes[8..12], b"WAVE");
+
+        let mut mid_range = HeaderMap::new();
+        mid_range.insert(header::RANGE, HeaderValue::from_static("bytes=444-643"));
+        let r_mid = mh
+            .serve_local(Method::GET, track_id, &wav_q, &mid_range)
+            .await;
+        assert_eq!(r_mid.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            r_mid.headers().get(header::CONTENT_RANGE).unwrap(),
+            &format!("bytes 444-643/{exact_len}")
+        );
+        let mid_bytes = to_bytes(r_mid.into_body(), 4096).await.unwrap();
+        assert_eq!(mid_bytes.len(), 200);
+
+        let mut bad_range = HeaderMap::new();
+        bad_range.insert(header::RANGE, HeaderValue::from_static("bytes=99999999-"));
+        let r_oob = mh
+            .serve_local(Method::GET, track_id, &wav_q, &bad_range)
+            .await;
+        assert_eq!(r_oob.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     }
 }

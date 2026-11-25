@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -109,6 +110,7 @@ pub fn parse_transcode_spec(
     quality: &str,
     container: &str,
     track: &Track,
+    total_samples: u64,
     info: &TranscoderInfo,
 ) -> Option<TranscodeSpec> {
     let q = quality.trim().to_ascii_lowercase();
@@ -117,7 +119,7 @@ pub fn parse_transcode_spec(
     }
 
     if q == "wav" {
-        return Some(build_wav_spec(track, info.has_libsoxr));
+        return Some(build_wav_spec(track, total_samples, info.has_libsoxr));
     }
 
     let bitrate = match q.as_str() {
@@ -220,8 +222,10 @@ fn build_aac_spec(quality: &str, bitrate: &str, has_soxr: bool, has_fdk: bool) -
     }
 }
 
-fn build_wav_spec(track: &Track, has_soxr: bool) -> TranscodeSpec {
-    let is_dsd = track.ext.eq_ignore_ascii_case(".dsf") || track.mime.contains("dsf");
+fn build_wav_spec(track: &Track, total_samples: u64, has_soxr: bool) -> TranscodeSpec {
+    let is_dsd = track.bit_depth == 1
+        || track.ext.eq_ignore_ascii_case(".dsf")
+        || track.mime.contains("dsf");
     let sr: u32 = if is_dsd {
         88_200
     } else if track.sample_rate > 0 {
@@ -234,10 +238,12 @@ fn build_wav_spec(track: &Track, has_soxr: bool) -> TranscodeSpec {
     } else {
         2
     };
-    let bps: u16 = if is_dsd || track.bit_depth > 16 {
-        24
-    } else {
+    // Only use 16-bit PCM when source is confirmed <=16-bit (and not 1-bit DSD).
+    // Unknown bit depth (e.g. 24-bit ALAC .m4a or lossy) defaults to 24-bit PCM.
+    let bps: u16 = if !is_dsd && track.bit_depth > 1 && track.bit_depth <= 16 {
         16
+    } else {
+        24
     };
     let (pcm_codec, pcm_fmt) = if bps == 24 {
         ("pcm_s24le", "s24le")
@@ -248,14 +254,31 @@ fn build_wav_spec(track: &Track, has_soxr: bool) -> TranscodeSpec {
     let mut filter_args = Vec::new();
     if is_dsd {
         let af = if has_soxr {
-            format!("aresample={sr}:resampler=soxr:precision=28:dither_method=triangular")
+            format!(
+                "aresample={sr}:resampler=soxr:precision=28:dither_method=triangular,lowpass=f=28000:poles=2"
+            )
         } else {
-            format!("aresample={sr}")
+            format!(
+                "aresample={sr}:resampler=swr:filter_size=128:phase_shift=10:kaiser_beta=12:cutoff=0.68:tsf=fltp:dither_method=triangular"
+            )
         };
         filter_args = vec!["-af".into(), af];
+    } else if track.bit_depth > 24 {
+        filter_args = vec!["-af".into(), "aresample=dither_method=triangular".into()];
     }
 
-    let wav_header = build_wav_header(sr, ch, bps, 0xFFFF_FFFF);
+    let mut data_size: u32 = 0xFFFF_FFFF;
+    let mut exact_length: Option<u64> = None;
+    if !is_dsd && total_samples > 0 && sr > 0 {
+        let bytes_per_frame = u64::from(ch) * u64::from(bps / 8);
+        let total_bytes = total_samples.saturating_mul(bytes_per_frame);
+        if total_bytes > 0 && total_bytes <= 0xFFFF_FF00 {
+            data_size = total_bytes as u32;
+            exact_length = Some(44 + total_bytes);
+        }
+    }
+
+    let wav_header = build_wav_header(sr, ch, bps, data_size);
 
     TranscodeSpec {
         quality: "wav".into(),
@@ -271,7 +294,7 @@ fn build_wav_spec(track: &Track, has_soxr: bool) -> TranscodeSpec {
         ],
         fmt_args: vec!["-f".into(), pcm_fmt.into()],
         wav_header: Some(wav_header),
-        exact_length: None,
+        exact_length,
         sample_rate: sr,
         channels: ch,
         bits_per_sample: bps,
@@ -305,16 +328,28 @@ pub fn build_wav_header(
     hdr
 }
 
+/// Byte-range and seek parameters for a transcoded stream.
+#[derive(Debug, Default)]
+pub struct StreamRange {
+    pub header_slice: Vec<u8>,
+    pub pcm_want: Option<u64>,
+    pub skip_bytes: u64,
+    pub seek_sec: Option<f64>,
+    /// Maximum tail silence padding (bytes) when ffmpeg ends slightly short of `pcm_want`.
+    pub max_pad_bytes: u64,
+}
+
 /// Spawns `ffmpeg` to transcode `input` (file path or HTTPS URL) according to `spec`
 /// and streams stdout chunks into an `axum::body::Body`.
 ///
-/// Acquires a concurrency permit before spawning and kills/reaps `ffmpeg` immediately
-/// if the HTTP client disconnects (`tx.closed()`).
+/// Pre-reads the first chunk before returning `Ok(Body)` so immediate ffmpeg errors
+/// surface as HTTP 502 instead of an empty 200/206 response. Kills/reaps `ffmpeg`
+/// immediately if the HTTP client disconnects (`tx.closed()`).
 pub async fn spawn_ffmpeg_stream(
     ffmpeg_path: &Path,
     input: &str,
     spec: &TranscodeSpec,
-    seek_sec: Option<f64>,
+    range: StreamRange,
 ) -> std::io::Result<axum::body::Body> {
     let permit = transcode_semaphore()
         .acquire_owned()
@@ -331,12 +366,12 @@ pub async fn spawn_ffmpeg_stream(
             "15000000",
         ]);
     }
-    if let Some(ss) = seek_sec
+    if let Some(ss) = range.seek_sec
         && ss.is_finite()
         && ss > 0.0
         && ss < 86_400.0
     {
-        cmd.args(["-ss", &format!("{ss:.3}")]);
+        cmd.args(["-ss", &format!("{ss:.9}")]);
     }
     cmd.args([
         "-i",
@@ -367,55 +402,149 @@ pub async fn spawn_ffmpeg_stream(
         .stdout
         .take()
         .ok_or_else(|| std::io::Error::other("ffmpeg stdout unavailable"))?;
-    let header_prefix = spec.wav_header.clone();
-    let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<bytes::Bytes>>(16);
 
-    tokio::spawn(async move {
-        let _permit = permit;
-        if let Some(hdr) = header_prefix
-            && tx.send(Ok(bytes::Bytes::from(hdr))).await.is_err()
-        {
+    // Discard sub-frame bytes and pre-read the first chunk under a 15s timeout so a
+    // wedged ffmpeg or slow upstream never hangs the HTTP request indefinitely.
+    let first_cap = range.pcm_want.map_or(4096, |w| (w as usize).min(4096));
+    let first = match tokio::time::timeout(
+        Duration::from_secs(15),
+        read_initial_chunk(&mut stdout, range.skip_bytes, first_cap),
+    )
+    .await
+    {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(e)) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
-            return;
+            return Err(e);
         }
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let read_res = tokio::select! {
-                biased;
-                _ = tx.closed() => {
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                    return;
-                }
-                res = stdout.read(&mut buf) => res,
-            };
-            match read_res {
-                Ok(0) => break,
-                Ok(n) => {
-                    if tx
-                        .send(Ok(bytes::Bytes::copy_from_slice(&buf[..n])))
-                        .await
-                        .is_err()
-                    {
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
-                        return;
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(e)).await;
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                    return;
-                }
-            }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "ffmpeg timed out before producing audio output",
+            ));
         }
-        let _ = child.wait().await;
+    };
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<bytes::Bytes>>(16);
+    tokio::spawn(async move {
+        let _permit = permit;
+        pump_ffmpeg_stdout(child, stdout, first, range, tx).await;
     });
 
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|item| (item, rx))
     });
     Ok(axum::body::Body::from_stream(stream))
+}
+
+async fn read_initial_chunk(
+    stdout: &mut tokio::process::ChildStdout,
+    mut to_skip: u64,
+    first_cap: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut discard = [0u8; 4096];
+    while to_skip > 0 {
+        let want = (to_skip as usize).min(discard.len());
+        match stdout.read(&mut discard[..want]).await? {
+            0 => break,
+            n => to_skip -= n as u64,
+        }
+    }
+
+    let mut first = vec![0u8; first_cap.max(1)];
+    let first_n = stdout.read(&mut first[..first_cap]).await?;
+    if first_n == 0 && first_cap > 0 {
+        return Err(std::io::Error::other("ffmpeg produced no audio output"));
+    }
+    first.truncate(first_n);
+    Ok(first)
+}
+
+async fn pump_ffmpeg_stdout(
+    mut child: tokio::process::Child,
+    mut stdout: tokio::process::ChildStdout,
+    first: Vec<u8>,
+    range: StreamRange,
+    tx: tokio::sync::mpsc::Sender<std::io::Result<bytes::Bytes>>,
+) {
+    let mut ok = true;
+    if !range.header_slice.is_empty() {
+        ok = tx
+            .send(Ok(bytes::Bytes::from(range.header_slice)))
+            .await
+            .is_ok();
+    }
+    let mut pcm_written = first.len() as u64;
+    if ok && !first.is_empty() {
+        ok = tx.send(Ok(bytes::Bytes::from(first))).await.is_ok();
+    }
+
+    if ok {
+        pcm_written = stream_pcm_loop(&mut stdout, &tx, pcm_written, range.pcm_want).await;
+        if let Some(want) = range.pcm_want
+            && pcm_written < want
+            && want - pcm_written <= range.max_pad_bytes
+        {
+            pad_silence(&tx, want - pcm_written).await;
+        }
+    }
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+async fn stream_pcm_loop(
+    stdout: &mut tokio::process::ChildStdout,
+    tx: &tokio::sync::mpsc::Sender<std::io::Result<bytes::Bytes>>,
+    mut pcm_written: u64,
+    pcm_want: Option<u64>,
+) -> u64 {
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let cap = match pcm_want {
+            Some(want) if pcm_written >= want => break,
+            Some(want) => ((want - pcm_written) as usize).min(buf.len()),
+            None => buf.len(),
+        };
+        let read_res = tokio::select! {
+            biased;
+            _ = tx.closed() => return pcm_written,
+            res = stdout.read(&mut buf[..cap]) => res,
+        };
+        match read_res {
+            Ok(0) => break,
+            Ok(n) => {
+                pcm_written += n as u64;
+                if tx
+                    .send(Ok(bytes::Bytes::copy_from_slice(&buf[..n])))
+                    .await
+                    .is_err()
+                {
+                    return pcm_written;
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(Err(e)).await;
+                return pcm_written;
+            }
+        }
+    }
+    pcm_written
+}
+
+async fn pad_silence(tx: &tokio::sync::mpsc::Sender<std::io::Result<bytes::Bytes>>, mut rem: u64) {
+    while rem > 0 {
+        let chunk = (rem as usize).min(16 * 1024);
+        if tx
+            .send(Ok(bytes::Bytes::from(vec![0u8; chunk])))
+            .await
+            .is_err()
+        {
+            break;
+        }
+        rem -= chunk as u64;
+    }
 }
