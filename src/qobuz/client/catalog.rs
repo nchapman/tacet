@@ -12,7 +12,7 @@ use super::{
 };
 use crate::qobuz::types::{
     Artist, ArtistDetail, QAlbum, QArtist, QTrack, QobuzError, Result, SearchResult, StreamInfo,
-    is_primary_artist_album_or_ep, norm_match_key, normalize_sample_rate_hz,
+    decode_qobuz_json, is_primary_artist_album_or_ep, norm_match_key, normalize_sample_rate_hz,
 };
 
 #[derive(Default)]
@@ -355,7 +355,7 @@ impl Client {
         let Ok(Some(raw)) = kv.get(&key) else {
             return String::new();
         };
-        if let Ok(qa) = serde_json::from_slice::<QArtist>(&raw) {
+        if let Ok(qa) = decode_qobuz_json::<QArtist>(&raw) {
             return qa.to_artist().artwork_url;
         }
         String::new()

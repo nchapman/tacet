@@ -83,6 +83,7 @@ mod tests {
                     async move {
                         match q.get("album_id").map(String::as_str) {
                             Some("unauth") => (StatusCode::UNAUTHORIZED, "bad token").into_response(),
+                            Some("missing") => (StatusCode::NOT_FOUND, "not found").into_response(),
                             Some("rate") => (
                                 StatusCode::TOO_MANY_REQUESTS,
                                 [("retry-after", "1")],
@@ -152,6 +153,12 @@ mod tests {
             Err(QobuzError::Unauthenticated)
         ));
 
+        // 404 maps to NotFound
+        assert!(matches!(
+            c.get_album("missing").await,
+            Err(QobuzError::NotFound)
+        ));
+
         // 429 maps to RateLimited
         assert!(matches!(
             c.get_album("rate").await,
@@ -159,5 +166,49 @@ mod tests {
         ));
 
         srv.abort();
+    }
+
+    #[test]
+    fn decode_qobuz_json_tolerates_null_fields_and_preserves_option_bool() {
+        let raw = br#"{
+            "id": "0884977129762",
+            "title": "Tidal",
+            "artist": {"id": 42, "name": "Fiona Apple", "picture": null, "image": null, "biography": null},
+            "genre": {"name": null},
+            "label": null,
+            "release_date_original": null,
+            "description": null,
+            "release_type": null,
+            "streamable": null,
+            "tracks": {
+                "items": [
+                    null,
+                    {
+                        "id": 21984192,
+                        "title": "Sleep to Dream",
+                        "version": null,
+                        "performers": null,
+                        "performer": null,
+                        "album": null
+                    }
+                ]
+            }
+        }"#;
+        let album: types::QAlbum = types::decode_qobuz_json(raw).unwrap();
+        assert_eq!(album.id, "0884977129762");
+        assert_eq!(album.title, "Tidal");
+        assert_eq!(album.streamable, None);
+        assert_eq!(album.tracks.items.len(), 1);
+        assert_eq!(album.tracks.items[0].title, "Sleep to Dream");
+
+        let discover_raw = br#"{
+            "id": "d1",
+            "title": "Unstreamable",
+            "rights": {"streamable": false},
+            "ai_generated": null
+        }"#;
+        let disc: types::QDiscoverAlbum = types::decode_qobuz_json(discover_raw).unwrap();
+        assert_eq!(disc.rights.streamable, Some(false));
+        assert!(!disc.ai_generated);
     }
 }

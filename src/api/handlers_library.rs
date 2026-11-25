@@ -724,19 +724,61 @@ pub async fn similar_albums(
     Path(id): Path<String>,
     Query(qv): Query<HashMap<String, String>>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let qb = st.qobuz.as_ref().ok_or_else(|| {
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "QOBUZ_UNAVAILABLE",
-            "qobuz not configured",
-            false,
-        )
-    })?;
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return Err(ApiError::bad_request("album id is required"));
+    }
     let (limit, _) = parse_page(&qv, 12, 50);
-    let items = st
-        .catalog
-        .prefer_local_albums(qb.similar_albums(&id, limit).await?);
+    let Some(qb) = st.qobuz.as_ref().filter(|q| q.is_connected()) else {
+        return Ok(Json(serde_json::json!({ "items": [] })));
+    };
+
+    let qobuz_id = resolve_similar_qobuz_album_id(&st, qb, &id).await;
+    if qobuz_id.is_empty() {
+        return Ok(Json(serde_json::json!({ "items": [] })));
+    }
+
+    let items = match qb.similar_albums(&qobuz_id, limit).await {
+        Ok(items) => st.catalog.prefer_local_albums(items),
+        Err(crate::qobuz::QobuzError::NotFound) => Vec::new(),
+        Err(e) => return Err(e.into()),
+    };
     Ok(Json(serde_json::json!({ "items": items })))
+}
+
+async fn resolve_similar_qobuz_album_id(
+    st: &AppState,
+    qb: &crate::qobuz::Client,
+    id: &str,
+) -> String {
+    if let Some(raw) = id.strip_prefix("qobuz:") {
+        return raw.trim().to_string();
+    }
+    let Some(alb) = st.catalog.album(id) else {
+        return String::new();
+    };
+    for v in &alb.versions {
+        if let Some(raw) = v.id.strip_prefix("qobuz:") {
+            return raw.trim().to_string();
+        }
+    }
+    if qb.is_rate_limited() {
+        return String::new();
+    }
+    let matched = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        qb.match_album(&alb.artist, &alb.title),
+    )
+    .await;
+    match matched {
+        Ok(Ok(m)) => {
+            m.id.trim()
+                .strip_prefix("qobuz:")
+                .unwrap_or(m.id.trim())
+                .to_string()
+        }
+        _ => String::new(),
+    }
 }
 
 pub async fn similar_artists(
@@ -744,20 +786,21 @@ pub async fn similar_artists(
     Path(id): Path<String>,
     Query(qv): Query<HashMap<String, String>>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let qb = st.qobuz.as_ref().ok_or_else(|| {
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "QOBUZ_UNAVAILABLE",
-            "qobuz not configured",
-            false,
-        )
-    })?;
     let raw_id = id.trim();
     let numeric = raw_id.strip_prefix("qobuz:").unwrap_or(raw_id);
     let artist_id: i64 = numeric
         .parse()
-        .map_err(|_| ApiError::bad_request("invalid artist id"))?;
+        .ok()
+        .filter(|&n| n > 0)
+        .ok_or_else(|| ApiError::bad_request("invalid artist id"))?;
     let (limit, _) = parse_page(&qv, 12, 50);
-    let items = qb.similar_artists(artist_id, limit).await?;
+    let Some(qb) = st.qobuz.as_ref().filter(|q| q.is_connected()) else {
+        return Ok(Json(serde_json::json!({ "items": [] })));
+    };
+    let items = match qb.similar_artists(artist_id, limit).await {
+        Ok(items) => items,
+        Err(crate::qobuz::QobuzError::NotFound) => Vec::new(),
+        Err(e) => return Err(e.into()),
+    };
     Ok(Json(serde_json::json!({ "items": items })))
 }

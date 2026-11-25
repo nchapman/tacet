@@ -482,3 +482,21 @@ async fn zone_queue_by_id_transport_and_sse_shutdown() {
     assert!(sse_text.contains(&zone_id));
     ack_handle.abort();
 }
+
+#[tokio::test]
+async fn similar_endpoints_degrade_gracefully_without_qobuz() {
+    let cat = Catalog::new_in_memory(vec![]);
+    let mgr = QueueManager::new(Arc::clone(&cat), None, 4320, StreamMode::Relay);
+    let app = build_router(AppState::new(cat, None, mgr, None, String::new()));
+
+    let alb = send(&app, Method::GET, "/api/v1/albums/local:1/similar", "").await;
+    assert_eq!(alb.status(), StatusCode::OK);
+    assert_eq!(json_body(alb).await["items"], serde_json::json!([]));
+
+    let art = send(&app, Method::GET, "/api/v1/artists/123/similar", "").await;
+    assert_eq!(art.status(), StatusCode::OK);
+    assert_eq!(json_body(art).await["items"], serde_json::json!([]));
+
+    let bad = send(&app, Method::GET, "/api/v1/artists/notanumber/similar", "").await;
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+}

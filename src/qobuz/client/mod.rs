@@ -16,7 +16,7 @@ use crate::singleflight::SingleFlight;
 
 use super::types::{
     DEFAULT_BASE_URL, FORMAT_FLAC_192, PersistedCredentials, QobuzError, Result, Status,
-    StreamInfo, md5_hex, norm_match_key, parse_quality, quality_label,
+    StreamInfo, decode_qobuz_json, md5_hex, norm_match_key, parse_quality, quality_label,
 };
 
 pub(super) const MAX_URL_CACHE_ENTRIES: usize = 512;
@@ -401,7 +401,7 @@ impl Client {
         let key = cache_key_for_req(path, params);
         if let Some(kv) = &self.kv
             && let Ok(Some(raw)) = kv.get(&key)
-            && let Ok(val) = serde_json::from_slice::<T>(&raw)
+            && let Ok(val) = decode_qobuz_json::<T>(&raw)
         {
             return Ok(val);
         }
@@ -432,17 +432,14 @@ impl Client {
                 QobuzError::RateLimited
             } else if msg.contains("returned 401") || msg.contains("not authenticated") {
                 QobuzError::Unauthenticated
-            } else if msg.contains("returned 404") {
-                QobuzError::Api {
-                    status: 404,
-                    body: msg,
-                }
+            } else if msg.contains("not found") || msg.contains("returned 404") {
+                QobuzError::NotFound
             } else {
                 QobuzError::Other(msg)
             }
         })?;
 
-        let parsed: T = serde_json::from_slice(&raw)?;
+        let parsed: T = decode_qobuz_json(&raw)?;
         if self.auth_gen.load(Ordering::Relaxed) == auth_gen
             && let Some(kv) = &self.kv
         {
@@ -458,7 +455,7 @@ impl Client {
         with_auth: bool,
     ) -> Result<T> {
         let raw = self.get_raw_json(path, params, with_auth).await?;
-        Ok(serde_json::from_slice(&raw)?)
+        decode_qobuz_json(&raw)
     }
 
     async fn get_raw_json(
@@ -516,6 +513,13 @@ impl Client {
                     continue;
                 }
                 return Err(QobuzError::RateLimited);
+            }
+
+            if status == 401 {
+                return Err(QobuzError::Unauthenticated);
+            }
+            if status == 404 {
+                return Err(QobuzError::NotFound);
             }
 
             let body = resp.bytes().await.map_err(QobuzError::Http)?.to_vec();
@@ -593,6 +597,9 @@ impl Client {
         if status == 401 {
             return Err(QobuzError::Unauthenticated);
         }
+        if status == 404 {
+            return Err(QobuzError::NotFound);
+        }
         let body = resp.bytes().await?;
         if !(200..300).contains(&status) {
             return Err(QobuzError::Api {
@@ -600,7 +607,7 @@ impl Client {
                 body: String::from_utf8_lossy(&body).chars().take(200).collect(),
             });
         }
-        Ok(serde_json::from_slice(&body)?)
+        decode_qobuz_json(&body)
     }
 
     pub(crate) async fn fetch_text(&self, target_url: &str) -> Result<String> {

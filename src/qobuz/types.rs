@@ -188,6 +188,34 @@ pub(crate) fn md5_hex(s: &str) -> String {
     hex::encode(md5::Md5::digest(s.as_bytes()))
 }
 
+/// Decodes a Qobuz API JSON payload with Go `encoding/json` null-tolerance:
+/// any object field or array element that is JSON `null` is stripped before
+/// deserializing so `#[serde(default)]` fields receive their default value and
+/// `Option<T>` fields receive `None`.
+pub(crate) fn decode_qobuz_json<T: serde::de::DeserializeOwned>(raw: &[u8]) -> Result<T> {
+    let mut val: serde_json::Value = serde_json::from_slice(raw)?;
+    strip_json_nulls(&mut val);
+    Ok(serde_json::from_value(val)?)
+}
+
+fn strip_json_nulls(val: &mut serde_json::Value) {
+    match val {
+        serde_json::Value::Object(map) => {
+            map.retain(|_, v| !v.is_null());
+            for v in map.values_mut() {
+                strip_json_nulls(v);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            items.retain(|v| !v.is_null());
+            for item in items {
+                strip_json_nulls(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn normalize_sample_rate_hz(v: f64) -> i32 {
     if v <= 0.0 {
         return 0;
