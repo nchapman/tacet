@@ -155,8 +155,43 @@ pub async fn library_album(
             if alb.description.is_empty() {
                 alb.description = qa.description;
             }
+            if alb.copyright.is_empty() {
+                alb.copyright = qa.copyright;
+            }
+            if alb.release_date.is_empty() {
+                alb.release_date = qa.release_date;
+            }
+            if alb.awards.is_empty() {
+                alb.awards = qa.awards;
+            }
+            if alb.booklet_url.is_empty() {
+                alb.booklet_url = qa.booklet_url;
+            }
             if alb.credits.is_empty() {
                 alb.credits = qa.credits;
+            }
+            if !qa.tracks.is_empty() {
+                let explicit_by_qobuz: HashMap<i64, bool> = qa
+                    .tracks
+                    .iter()
+                    .filter(|t| t.qobuz_track_id > 0 && t.explicit)
+                    .map(|t| (t.qobuz_track_id, true))
+                    .collect();
+                let explicit_by_pos: HashMap<(i32, i32), bool> = qa
+                    .tracks
+                    .iter()
+                    .filter(|t| t.explicit)
+                    .map(|t| ((t.disc_number.max(1), t.track_number), true))
+                    .collect();
+                for tr in &mut alb.tracks {
+                    if !tr.explicit
+                        && (explicit_by_qobuz.contains_key(&tr.qobuz_track_id)
+                            || explicit_by_pos
+                                .contains_key(&(tr.disc_number.max(1), tr.track_number)))
+                    {
+                        tr.explicit = true;
+                    }
+                }
             }
         }
     }
@@ -281,11 +316,13 @@ pub async fn heavy_rotation(
     let days = qv
         .get("days")
         .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(30);
+        .unwrap_or(30)
+        .clamp(1, 365);
     let limit = qv
         .get("limit")
         .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(20);
+        .unwrap_or(20)
+        .clamp(1, 100);
     let items = st.catalog.heavy_rotation(days, limit)?;
     Ok(Json(serde_json::json!({ "days": days, "items": items })))
 }
@@ -294,12 +331,21 @@ pub async fn library_search(
     State(st): State<Arc<AppState>>,
     Query(qv): Query<HashMap<String, String>>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let q = qv.get("q").cloned().unwrap_or_default();
+    let q = qv.get("q").map(|s| s.trim()).unwrap_or("");
+    if q.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "query": "",
+            "artists": [],
+            "albums": [],
+            "tracks": [],
+        })));
+    }
     let limit = qv
         .get("limit")
         .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(8);
-    let res = st.catalog.unified_search(&q, limit)?;
+        .unwrap_or(8)
+        .clamp(1, 50);
+    let res = st.catalog.unified_search(q, limit)?;
     Ok(Json(serde_json::to_value(res).unwrap_or_default()))
 }
 
@@ -355,14 +401,13 @@ pub async fn library_sync(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(&req.provider);
     let prov = if prov_raw.trim().is_empty() {
-        SOURCE_QOBUZ.to_string()
+        "all".to_string()
     } else {
         prov_raw.trim().to_ascii_lowercase()
     };
     let wait = qv.get("wait").is_some_and(|v| v == "true" || v == "1");
     if wait {
-        st.catalog.sync_remote(&prov).await?;
-        st.prewarm_artists();
+        run_sync_for_provider(&st, &prov).await?;
         return Ok((
             StatusCode::OK,
             Json(serde_json::to_value(st.catalog.status()).unwrap_or_default()),
@@ -370,16 +415,49 @@ pub async fn library_sync(
             .into_response());
     }
     let st_bg = Arc::clone(&st);
+    let prov_bg = prov.clone();
     tokio::spawn(async move {
-        if st_bg.catalog.sync_remote(&prov).await.is_ok() {
-            st_bg.prewarm_artists();
-        }
+        let _ = run_sync_for_provider(&st_bg, &prov_bg).await;
     });
+    let mut status = st.catalog.status();
+    status.scanning = true;
     Ok((
         StatusCode::ACCEPTED,
-        Json(serde_json::to_value(st.catalog.status()).unwrap_or_default()),
+        Json(serde_json::to_value(status).unwrap_or_default()),
     )
         .into_response())
+}
+
+async fn run_sync_for_provider(st: &AppState, prov: &str) -> ApiResult<()> {
+    match prov {
+        "all" => {
+            if !st.catalog.roots().is_empty() {
+                st.catalog.scan().await?;
+                st.media.prewarm_art();
+            }
+            if st.qobuz.as_ref().is_some_and(|q| q.is_connected()) {
+                match st.catalog.sync_remote(SOURCE_QOBUZ).await {
+                    Ok(_) => st.prewarm_artists(),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "qobuz sync failed during library sync");
+                        if st.catalog.roots().is_empty() {
+                            return Err(e.into());
+                        }
+                    }
+                }
+            }
+        }
+        "local" => {
+            st.catalog.scan().await?;
+            st.media.prewarm_art();
+            st.prewarm_artists();
+        }
+        other => {
+            st.catalog.sync_remote(other).await?;
+            st.prewarm_artists();
+        }
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -524,17 +602,25 @@ pub async fn qobuz_oauth_callback(
         return Err(ApiError::bad_request("invalid or expired OAuth state"));
     }
     let code = qv
-        .get("code")
+        .get("code_autorisation")
+        .or_else(|| qv.get("code"))
         .or_else(|| qv.get("code_ext"))
         .cloned()
         .unwrap_or_default();
+    if code.trim().is_empty() {
+        return Err(ApiError::bad_request("missing authorization code"));
+    }
     let status = qb.exchange_oauth_code(&code).await?;
     let _ = st
         .catalog
         .set_provider_credentials(SOURCE_QOBUZ, &qb.export_credentials());
     let _ = st.catalog.set_provider_available(SOURCE_QOBUZ, true);
     st.manager.broadcast("qobuz.status", &status);
-    st.prewarm_artists();
+    let st_bg = Arc::clone(&st);
+    tokio::spawn(async move {
+        let _ = st_bg.catalog.sync_remote(SOURCE_QOBUZ).await;
+        st_bg.prewarm_artists();
+    });
 
     Ok(Html(
         r#"<!doctype html><html><body><script>
@@ -669,7 +755,26 @@ pub async fn qobuz_album(
         )
     })?;
     let mut alb = qb.get_album(&id).await?;
-    alb.in_library = st.catalog.has_album(&alb.id);
+    if let Some(lib_alb) = st.catalog.album(&alb.id) {
+        if !lib_alb.is_partial {
+            alb.in_library = lib_alb.available;
+            alb.version_group_id = lib_alb.version_group_id;
+            alb.version_count = lib_alb.version_count;
+            alb.is_primary = lib_alb.is_primary;
+            alb.versions = lib_alb.versions;
+            alb.added_at = lib_alb.added_at;
+        }
+        alb.play_count = lib_alb.play_count;
+        let lib_tracks: HashMap<&str, &crate::library::Track> =
+            lib_alb.tracks.iter().map(|t| (t.id.as_str(), t)).collect();
+        for tr in &mut alb.tracks {
+            if let Some(lt) = lib_tracks.get(tr.id.as_str()) {
+                tr.in_library = lt.available;
+                tr.play_count = lt.play_count;
+                tr.last_played_at = lt.last_played_at;
+            }
+        }
+    }
     Ok(Json(serde_json::to_value(alb).unwrap_or_default()))
 }
 
@@ -679,14 +784,13 @@ pub async fn discover_feed(
     State(st): State<Arc<AppState>>,
     Query(qv): Query<HashMap<String, String>>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let qb = st.qobuz.as_ref().ok_or_else(|| {
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "QOBUZ_UNAVAILABLE",
-            "qobuz not configured",
-            false,
-        )
-    })?;
+    let Some(qb) = st.qobuz.as_ref().filter(|q| q.is_connected()) else {
+        return Ok(Json(serde_json::json!({
+            "connected": false,
+            "genres": [],
+            "shelves": [],
+        })));
+    };
     let genre_ids = parse_genre_ids(
         qv.get("genreIds")
             .or_else(|| qv.get("genre_ids"))
@@ -706,20 +810,20 @@ pub async fn discover_shelf(
     Path(slug): Path<String>,
     Query(qv): Query<HashMap<String, String>>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let qb = st.qobuz.as_ref().ok_or_else(|| {
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "QOBUZ_UNAVAILABLE",
-            "qobuz not configured",
-            false,
-        )
-    })?;
+    let (limit, offset) = parse_page(&qv, 24, 100);
+    let Some(qb) = st.qobuz.as_ref().filter(|q| q.is_connected()) else {
+        return Ok(Json(serde_json::json!({
+            "slug": slug,
+            "items": [],
+            "limit": limit,
+            "offset": offset,
+        })));
+    };
     let genre_ids = parse_genre_ids(
         qv.get("genreIds")
             .or_else(|| qv.get("genre_ids"))
             .map(String::as_str),
     );
-    let (limit, offset) = parse_page(&qv, 24, 100);
     let mut page = qb.discover_shelf(&slug, &genre_ids, limit, offset).await?;
     page.items = st.catalog.prefer_local_albums(page.items);
     Ok(Json(serde_json::to_value(page).unwrap_or_default()))

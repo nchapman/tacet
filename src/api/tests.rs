@@ -448,10 +448,17 @@ async fn zone_queue_by_id_transport_and_sse_shutdown() {
         "",
     )
     .await;
-    assert_eq!(rm_missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(rm_missing.status(), StatusCode::NOT_FOUND);
     assert_eq!(
         json_body(rm_missing).await["error"]["code"],
         "QUEUE_ITEM_NOT_FOUND"
+    );
+    // Remote player zones cannot be deleted via DELETE /api/v1/zones/{id}.
+    let del_player = send(&app, Method::DELETE, &z_url, "").await;
+    assert_eq!(del_player.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        json_body(del_player).await["error"]["code"],
+        "PLAYER_MANAGED_ZONE"
     );
     assert_eq!(
         send(&app, Method::GET, "/api/v1/zones/zone:nonexistent", "")
@@ -510,4 +517,20 @@ async fn similar_endpoints_degrade_gracefully_without_qobuz() {
 
     let bad = send(&app, Method::GET, "/api/v1/artists/notanumber/similar", "").await;
     assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+    let disc = send(&app, Method::GET, "/api/v1/discover", "").await;
+    assert_eq!(disc.status(), StatusCode::OK);
+    let disc_j = json_body(disc).await;
+    assert_eq!(disc_j["connected"], false);
+    assert_eq!(disc_j["shelves"], serde_json::json!([]));
+
+    let shelf = send(
+        &app,
+        Method::GET,
+        "/api/v1/discover/shelves/new-releases",
+        "",
+    )
+    .await;
+    assert_eq!(shelf.status(), StatusCode::OK);
+    assert_eq!(json_body(shelf).await["items"], serde_json::json!([]));
 }

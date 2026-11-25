@@ -56,7 +56,7 @@ pub fn parse_quality(q: &str) -> Result<i32> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub configured: bool,

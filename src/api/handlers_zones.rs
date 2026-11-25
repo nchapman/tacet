@@ -87,6 +87,14 @@ pub async fn delete_zone(
     Path(zone_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let snap = st.manager.zone_snapshot(&zone_id)?;
+    if snap.renderer.kind == "player" {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "PLAYER_MANAGED_ZONE",
+            "remote player zones must be unregistered via DELETE /api/v1/players/{zoneId}",
+            false,
+        ));
+    }
     if !snap.renderer.location.is_empty() {
         forget_manual_renderer(&st, &snap.renderer.location);
     }
@@ -298,7 +306,7 @@ pub async fn jump_queue(
             .await
             .map_err(|e| match e {
                 crate::queue::QueueError::InvalidIndex => ApiError::new(
-                    StatusCode::UNPROCESSABLE_ENTITY,
+                    StatusCode::NOT_FOUND,
                     "QUEUE_ITEM_NOT_FOUND",
                     "queue item not found",
                     false,
@@ -321,7 +329,7 @@ pub async fn remove_queue_item(
         .await
         .map_err(|e| match e {
             crate::queue::QueueError::InvalidIndex => ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
+                StatusCode::NOT_FOUND,
                 "QUEUE_ITEM_NOT_FOUND",
                 "queue item not found",
                 false,
@@ -349,7 +357,7 @@ pub async fn move_queue_item(
         .await
         .map_err(|e| match e {
             crate::queue::QueueError::InvalidIndex => ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
+                StatusCode::NOT_FOUND,
                 "QUEUE_ITEM_NOT_FOUND",
                 "queue item not found",
                 false,
@@ -553,7 +561,15 @@ pub async fn events_sse(
             .filter(|z| zone_filters.iter().any(|f| f == &z.zone_id))
             .collect()
     };
-    let qobuz_status = st.qobuz.as_ref().map(|q| q.status());
+    let qobuz_status =
+        st.qobuz
+            .as_ref()
+            .map(|q| q.status())
+            .unwrap_or_else(|| crate::qobuz::Status {
+                max_format_id: crate::qobuz::FORMAT_FLAC_192,
+                max_quality: crate::qobuz::quality_label(crate::qobuz::FORMAT_FLAC_192).into(),
+                ..Default::default()
+            });
     let init_payload = serde_json::json!({
         "serverTime": chrono::Utc::now(),
         "zones": zones,
@@ -582,10 +598,26 @@ pub async fn events_sse(
                                 {
                                     continue;
                                 }
+                                let data_str = if !filters.is_empty()
+                                    && ev.event_type == "zones.updated"
+                                    && let Some(arr) = ev.data.get("zones").and_then(|v| v.as_array())
+                                {
+                                    let kept: Vec<&serde_json::Value> = arr
+                                        .iter()
+                                        .filter(|z| {
+                                            z.get("zoneId")
+                                                .and_then(|id| id.as_str())
+                                                .is_some_and(|id| filters.iter().any(|f| f == id))
+                                        })
+                                        .collect();
+                                    serde_json::json!({ "zones": kept }).to_string()
+                                } else {
+                                    ev.data.to_string()
+                                };
                                 let sse_ev = SseEvent::default()
                                     .id(ev.id.to_string())
                                     .event(ev.event_type)
-                                    .data(ev.data.to_string());
+                                    .data(data_str);
                                 return Some((Ok(sse_ev), (rx, filters, shutdown)));
                             }
                             Err(RecvError::Lagged(_)) => continue,
@@ -750,14 +782,18 @@ pub async fn player_commands_sse(
         stream_id,
     };
 
-    let connected = SseEvent::default().event("connected").data(
-        serde_json::json!({
-            "zoneId": zone_id,
-            "streamId": stream_id,
-            "serverTime": chrono::Utc::now(),
-        })
-        .to_string(),
-    );
+    let zone_snap = st.manager.zone_snapshot(&zone_id).ok();
+    let mut connected_payload = serde_json::json!({
+        "zoneId": zone_id,
+        "streamId": stream_id,
+        "serverTime": chrono::Utc::now(),
+    });
+    if let Some(z) = zone_snap {
+        connected_payload["zone"] = serde_json::to_value(z).unwrap_or_default();
+    }
+    let connected = SseEvent::default()
+        .event("connected")
+        .data(connected_payload.to_string());
 
     let shutdown = st.shutdown.clone();
     let cmd_stream = futures_util::stream::unfold(

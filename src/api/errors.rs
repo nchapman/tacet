@@ -86,7 +86,9 @@ impl From<QueueError> for ApiError {
             }
             QueueError::InvalidIndex => ApiError::bad_request("invalid queue index"),
             QueueError::InvalidArgument(m) => ApiError::bad_request(m),
-            QueueError::EmptyQueue => ApiError::bad_request("queue is empty"),
+            QueueError::EmptyQueue => {
+                ApiError::new(StatusCode::CONFLICT, "QUEUE_EMPTY", "queue is empty", false)
+            }
             QueueError::Renderer(m) => {
                 ApiError::new(StatusCode::BAD_GATEWAY, "RENDERER_ERROR", m, true)
             }
@@ -102,8 +104,8 @@ impl From<PlayerError> for ApiError {
             }
             PlayerError::Unauthorized => ApiError::unauthorized("invalid player token"),
             PlayerError::Disconnected => ApiError::new(
-                StatusCode::CONFLICT,
-                "PLAYER_DISCONNECTED",
+                StatusCode::BAD_GATEWAY,
+                "RENDERER_UNREACHABLE",
                 e.to_string(),
                 true,
             ),
@@ -132,10 +134,10 @@ impl From<LibraryError> for ApiError {
                 ApiError::not_found("PROVIDER_NOT_FOUND", format!("provider {p:?} not found"))
             }
             LibraryError::ProviderOffline(p) => ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
+                StatusCode::UNAUTHORIZED,
                 "PROVIDER_OFFLINE",
                 format!("provider {p:?} is not connected"),
-                true,
+                false,
             ),
             LibraryError::InvalidArgument(m) => ApiError::bad_request(m),
             other => {
@@ -149,10 +151,15 @@ impl From<LibraryError> for ApiError {
 impl From<QobuzError> for ApiError {
     fn from(e: QobuzError) -> Self {
         match e {
-            QobuzError::Unauthenticated => ApiError::unauthorized("qobuz is not authenticated"),
+            QobuzError::Unauthenticated => ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "QOBUZ_UNAUTHENTICATED",
+                "qobuz is not authenticated",
+                false,
+            ),
             QobuzError::RateLimited => ApiError::new(
                 StatusCode::TOO_MANY_REQUESTS,
-                "QOBUZ_RATE_LIMITED",
+                "RATE_LIMITED",
                 "qobuz rate limit reached; try again shortly",
                 true,
             ),

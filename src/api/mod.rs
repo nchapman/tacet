@@ -206,7 +206,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(zone_and_player_routes())
         .merge(library_routes())
         .merge(qobuz_and_discover_routes())
-        .layer(DefaultBodyLimit::max(128 * 1024))
+        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             cors_and_csrf_middleware,
@@ -431,7 +431,7 @@ async fn info(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "apiVersion": 1,
         "capabilities": {
             "localLibrary": !st.catalog.roots().is_empty(),
-            "qobuz": st.qobuz.as_ref().is_some_and(|q| q.is_connected()),
+            "qobuz": st.qobuz.is_some(),
             "gena": st.gena.is_some(),
         },
     }))
@@ -468,10 +468,17 @@ async fn patch_settings(State(st): State<Arc<AppState>>, body: Bytes) -> ApiResu
         let _ = st.catalog.set_pref(PREF_STREAM_MODE, mode.as_str());
     }
     if let Some(q) = req.qobuz_max_quality {
-        if let Some(ref qb) = st.qobuz {
-            qb.set_max_quality(&q)?;
-        }
+        let qb = st.qobuz.as_ref().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "QOBUZ_UNAVAILABLE",
+                "qobuz not configured",
+                false,
+            )
+        })?;
+        qb.set_max_quality(&q)?;
         let _ = st.catalog.set_pref(PREF_QOBUZ_MAX_QUALITY, &q);
+        st.manager.broadcast("qobuz.status", &qb.status());
     }
     if req.library_watch_enabled.is_some() || req.library_scan_interval_min.is_some() {
         let cur = st.current_settings();
@@ -621,7 +628,15 @@ async fn cors_and_csrf_middleware(
             );
             h.insert(
                 header::ACCESS_CONTROL_ALLOW_HEADERS,
-                HeaderValue::from_static("Content-Type, Authorization, X-Player-Token"),
+                HeaderValue::from_static(
+                    "Content-Type, Authorization, X-Player-Token, If-None-Match, Last-Event-ID, Range",
+                ),
+            );
+            h.insert(
+                header::ACCESS_CONTROL_EXPOSE_HEADERS,
+                HeaderValue::from_static(
+                    "ETag, Allow, Content-Length, Content-Range, Accept-Ranges",
+                ),
             );
             h.insert(header::VARY, HeaderValue::from_static("Origin"));
         }
@@ -648,6 +663,10 @@ async fn cors_and_csrf_middleware(
     if allowed && let Ok(hv) = HeaderValue::from_str(&origin) {
         let h = resp.headers_mut();
         h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, hv);
+        h.insert(
+            header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            HeaderValue::from_static("ETag, Allow, Content-Length, Content-Range, Accept-Ranges"),
+        );
         h.insert(header::VARY, HeaderValue::from_static("Origin"));
     }
     resp
