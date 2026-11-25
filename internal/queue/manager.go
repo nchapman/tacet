@@ -192,6 +192,7 @@ type zone struct {
 	audioQuality       AudioQuality
 	activeQuality      AudioQuality
 	nextQuality        AudioQuality
+	deviceQueueDirty   bool
 	nextPreloaded      bool
 	nextPreloading     bool
 	nextFailed         bool
@@ -642,7 +643,10 @@ func (m *Manager) SetZoneQuality(zoneID string, quality AudioQuality) (ZoneSnaps
 		m.mu.Unlock()
 		return ZoneSnapshot{}, fmt.Errorf("%w: %s does not advertise Opus or AAC support", ErrCapabilityUnsupported, z.ctrl.Info().Name)
 	}
-	z.audioQuality = q
+	if z.audioQuality != q {
+		z.audioQuality = q
+		z.deviceQueueDirty = true
+	}
 	if q == AudioQualityOriginal {
 		delete(m.savedQualities, zoneID)
 	} else {

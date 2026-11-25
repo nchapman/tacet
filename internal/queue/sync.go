@@ -46,6 +46,9 @@ func (m *Manager) replaceDeviceQueueAndPlay(
 		z.currentIndex = startIndex
 		z.currentURI = curMedia.URL
 		z.activeQuality = effQuality
+		if effQuality == z.audioQuality {
+			z.deviceQueueDirty = false
+		}
 		z.status.State = "TRANSITIONING"
 		z.status.Position = 0
 		z.status.Duration = curMedia.Duration

@@ -1050,7 +1050,7 @@ func (m *Manager) SetRepeat(ctx context.Context, zoneID string, mode RepeatMode)
 
 func (m *Manager) playDeviceQueueIndex(ctx context.Context, zoneID string, z *zone, qc upnp.QueueController, idx int, gen uint64) error {
 	m.mu.RLock()
-	needsReload := z.currentURI == "" || z.status.State == "STOPPED" || z.status.State == "NO_MEDIA_PRESENT"
+	needsReload := z.currentURI == "" || z.status.State == "STOPPED" || z.status.State == "NO_MEDIA_PRESENT" || z.deviceQueueDirty
 	queueCopy := append([]Item(nil), z.queue...)
 	quality := z.audioQuality
 	repeat := z.repeat

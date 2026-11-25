@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"tacet/internal/library"
+	"tacet/internal/upnp"
 )
 
 func TestZoneAudioQuality_AppliesOnNextTrackAndPersists(t *testing.T) {
@@ -177,5 +178,59 @@ func TestZoneAudioQuality_AutoDecodesDSDForNonDSDEndpoints(t *testing.T) {
 	a15.mu.Unlock()
 	if !strings.Contains(a15URI, "/media/local/local:dsd1.wav?q=wav") {
 		t.Fatalf("a15 should get WAV transcoded URI for DSD, got %q", a15URI)
+	}
+}
+
+func TestZoneAudioQuality_ReloadsNativeDeviceQueueOnNextTrack(t *testing.T) {
+	mgr := NewManager(4320, "http://192.168.1.10:4320", nil)
+	mgr.SetTranscodeAvailable(true)
+	defer mgr.Close()
+
+	ctrl := &fakeQueueController{
+		info: upnp.RendererInfo{
+			ID:            "zone-dmr",
+			Name:          "Tacet Desktop",
+			SupportsQueue: true,
+			SinkProtocols: []string{
+				"http-get:*:audio/flac:*",
+				"http-get:*:audio/aac:*",
+			},
+		},
+	}
+	mgr.RegisterRenderer(ctrl)
+
+	tracks := []library.Track{
+		{ID: "local:t1", Source: library.SourceLocal, Title: "One", MIME: "audio/flac", Ext: ".flac", BitDepth: 16, SampleRate: 44100, DurationSec: 180},
+		{ID: "local:t2", Source: library.SourceLocal, Title: "Two", MIME: "audio/flac", Ext: ".flac", BitDepth: 16, SampleRate: 44100, DurationSec: 200},
+	}
+	if _, err := mgr.ReplaceQueue(context.Background(), "zone-dmr", tracks, 0); err != nil {
+		t.Fatalf("ReplaceQueue: %v", err)
+	}
+	if ctrl.replaceCalls != 1 {
+		t.Fatalf("initial replaceCalls = %d, want 1", ctrl.replaceCalls)
+	}
+
+	// Switch quality mid-track: current track stays original, device queue is marked dirty.
+	snap, err := mgr.SetZoneQuality("zone-dmr", AudioQualityOpus128)
+	if err != nil {
+		t.Fatalf("SetZoneQuality: %v", err)
+	}
+	if snap.AudioQuality != AudioQualityOpus128 || snap.ActiveQuality != AudioQualityOriginal {
+		t.Fatalf("after SetZoneQuality: quality=%q active=%q", snap.AudioQuality, snap.ActiveQuality)
+	}
+
+	// Advancing to the next track reloads the native device queue with AAC transcode URLs.
+	snap, err = mgr.Next(context.Background(), "zone-dmr")
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if snap.ActiveQuality != AudioQualityOpus128 {
+		t.Fatalf("ActiveQuality after Next = %q, want opus_128", snap.ActiveQuality)
+	}
+	if ctrl.replaceCalls != 2 {
+		t.Fatalf("replaceCalls after quality change + Next = %d, want 2", ctrl.replaceCalls)
+	}
+	if len(ctrl.lastItems) != 2 || !strings.Contains(ctrl.lastItems[1].URL, "/media/local/local:t2.aac?q=opus_128&container=adts") {
+		t.Fatalf("expected transcoded AAC URL in reloaded queue, got %+v", ctrl.lastItems)
 	}
 }
