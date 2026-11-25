@@ -45,8 +45,9 @@ impl Client {
         }
 
         let mut fav_albums: Vec<QAlbum> = Vec::new();
+        const MAX_FAVORITE_PAGES: usize = 100;
         let mut offset = 0;
-        loop {
+        for _ in 0..MAX_FAVORITE_PAGES {
             let lim_s = PAGE_SIZE.to_string();
             let off_s = offset.to_string();
             let resp: FavResp = self
@@ -70,7 +71,7 @@ impl Client {
 
         let mut fav_tracks: Vec<Track> = Vec::new();
         let mut offset = 0;
-        loop {
+        for _ in 0..MAX_FAVORITE_PAGES {
             let lim_s = PAGE_SIZE.to_string();
             let off_s = offset.to_string();
             let resp: FavResp = self

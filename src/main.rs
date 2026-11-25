@@ -100,7 +100,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Unified SQLite library catalog
     let db_path = data_dir.join("library.db");
     let catalog = Catalog::open(&db_path.to_string_lossy(), roots)?;
-    catalog.set_missing_retention(Duration::from_secs(cli.missing_retention_days * 86_400));
+    catalog.set_missing_retention(Duration::from_secs(
+        cli.missing_retention_days.saturating_mul(86_400),
+    ));
     let init_status = catalog.status();
     tracing::info!(
         db = %db_path.display(),
@@ -254,6 +256,12 @@ fn configure_event_log(manager: &QueueManager, raw_path: &str) -> std::io::Resul
 fn validate_cli(cli: &Cli) -> Result<(), String> {
     if cli.port == 0 {
         return Err("--port must be between 1 and 65535 (got 0)".into());
+    }
+    if cli.missing_retention_days > 36_500 {
+        return Err(format!(
+            "--missing-retention-days must be <= 36500 (got {})",
+            cli.missing_retention_days
+        ));
     }
     if let Some(explicit) = cli.stream_mode.as_deref().filter(|s| !s.trim().is_empty())
         && StreamMode::parse(explicit).is_none()

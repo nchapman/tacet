@@ -74,12 +74,38 @@ impl Catalog {
             return Ok(self.status().local_tracks as usize);
         }
 
+        struct ScanGuard<'a> {
+            state: &'a std::sync::Mutex<super::ScanState>,
+            armed: bool,
+        }
+        impl Drop for ScanGuard<'_> {
+            fn drop(&mut self) {
+                if !self.armed {
+                    return;
+                }
+                let notify = {
+                    let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    st.scanning = false;
+                    st.last_err = Some("scan cancelled".into());
+                    st.notify.take()
+                };
+                if let Some(n) = notify {
+                    n.notify_waiters();
+                }
+            }
+        }
+        let mut guard = ScanGuard {
+            state: &self.scan_state,
+            armed: true,
+        };
+
         let roots = self.roots();
         let store = Arc::clone(&self.store);
         let res = tokio::task::spawn_blocking(move || scan_roots_blocking(&store, &roots))
             .await
             .map_err(|e| LibraryError::Remote(format!("scan task join: {e}")))?;
 
+        guard.armed = false;
         let notify = {
             let mut st = self.scan_state.lock().unwrap_or_else(|e| e.into_inner());
             st.scanning = false;

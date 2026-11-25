@@ -284,7 +284,7 @@ async fn connect_by_url_with_local_ip(
     let loc = validate_renderer_url(raw_url).await?;
     let http = new_upnp_get_client(Duration::from_secs(4));
 
-    let resp = http.get(loc.as_str()).send().await?;
+    let mut resp = http.get(loc.as_str()).send().await?;
     let status = resp.status();
     if !status.is_success() {
         return Err(UpnpError::Other(format!(
@@ -292,10 +292,7 @@ async fn connect_by_url_with_local_ip(
             loc.as_str()
         )));
     }
-    let bytes = resp.bytes().await?;
-    if bytes.len() > MAX_UPNP_XML_BYTES {
-        return Err(UpnpError::Other("device description exceeds 2 MiB".into()));
-    }
+    let bytes = read_bounded_bytes(&mut resp, MAX_UPNP_XML_BYTES).await?;
     let xml = decode_xml_bytes(&bytes);
     let mut parsed = parse_description_xml(&xml, &loc)?;
     if let Some(ref ub) = parsed.raw_url_base
@@ -630,20 +627,30 @@ async fn resolve_optional_url(base: &Url, rel: &str) -> String {
     resolve_validated_url(base, r).await.unwrap_or_default()
 }
 
+async fn read_bounded_bytes(resp: &mut reqwest::Response, max_bytes: usize) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if out.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(UpnpError::Other(format!(
+                "UPnP XML response exceeds {max_bytes} bytes"
+            )));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
 async fn probe_scpd_capabilities(scpd_url: &str) -> (bool, bool, bool) {
     let http = new_upnp_get_client(Duration::from_secs(2));
-    let Ok(resp) = http.get(scpd_url).send().await else {
+    let Ok(mut resp) = http.get(scpd_url).send().await else {
         return (true, true, true);
     };
     if !resp.status().is_success() {
         return (true, true, true);
     }
-    let Ok(bytes) = resp.bytes().await else {
+    let Ok(bytes) = read_bounded_bytes(&mut resp, MAX_UPNP_XML_BYTES).await else {
         return (true, true, true);
     };
-    if bytes.len() > MAX_UPNP_XML_BYTES {
-        return (true, true, true);
-    }
     let scpd_xml = sanitize_xml(&decode_xml_bytes(&bytes));
     let mut reader = lenient_reader(&scpd_xml);
     let mut in_action = false;

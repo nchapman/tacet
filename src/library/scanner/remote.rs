@@ -17,15 +17,27 @@ impl Catalog {
             return Err(LibraryError::ProviderOffline(prov));
         }
 
+        struct SyncingGuard<'a> {
+            map: &'a std::sync::Mutex<std::collections::HashMap<String, bool>>,
+            prov: String,
+        }
+        impl Drop for SyncingGuard<'_> {
+            fn drop(&mut self) {
+                let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
+                map.insert(self.prov.clone(), false);
+            }
+        }
+
         {
             let mut map = self.syncing_provs.lock().unwrap_or_else(|e| e.into_inner());
             map.insert(prov.clone(), true);
         }
+        let _sync_guard = SyncingGuard {
+            map: &self.syncing_provs,
+            prov: prov.clone(),
+        };
         let res = src.sync_collection().await;
-        {
-            let mut map = self.syncing_provs.lock().unwrap_or_else(|e| e.into_inner());
-            map.insert(prov.clone(), false);
-        }
+        drop(_sync_guard);
 
         let coll = match res {
             Ok(c) => c,
