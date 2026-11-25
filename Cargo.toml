@@ -1,6 +1,6 @@
 [package]
 name = "tacet"
-version = "0.8.6"
+version = "0.8.7"
 edition = "2024"
 license = "Apache-2.0"
 description = "Headless multi-zone bit-perfect hi-res audio server and UPnP/DLNA/Cast control point"
