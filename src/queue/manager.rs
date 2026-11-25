@@ -1031,6 +1031,8 @@ impl Manager {
                         .unwrap_or(if zi.queue.is_empty() { -1 } else { 0 });
                 }
                 zi.next_preloaded = false;
+                zi.next_uri.clear();
+                zi.next_index = -1;
                 zi.revision += 1;
             }
             (
@@ -1052,6 +1054,8 @@ impl Manager {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             zi.repeat = mode;
             zi.next_preloaded = false;
+            zi.next_uri.clear();
+            zi.next_index = -1;
             zi.revision += 1;
             (
                 Arc::clone(&zi.ctrl),
@@ -1075,13 +1079,25 @@ impl Manager {
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
-        let pb_ev = {
+        let (ctrl, need_reload, pb_ev) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             zi.audio_quality = quality;
             zi.next_preloaded = false;
+            zi.next_uri.clear();
+            zi.next_index = -1;
             zi.revision += 1;
-            self.make_playback_event(zone_id, &zi)
+            let has_native_q = zi.ctrl.as_queue_controller().is_some()
+                && !zi.queue.is_empty()
+                && zi.current_index >= 0;
+            (
+                Arc::clone(&zi.ctrl),
+                has_native_q,
+                self.make_playback_event(zone_id, &zi),
+            )
         };
+        if need_reload && ctrl.as_queue_controller().is_some() {
+            let _ = self.start_current_locked(zone_id, &z, &ctrl, true).await;
+        }
         self.emit("zone.playback", zone_id, &pb_ev);
         Ok(self.snapshot_zone(zone_id, &z))
     }
@@ -1314,6 +1330,8 @@ impl Manager {
                     zi.next_uri.clear();
                     zi.next_index = -1;
                     pb_changed = true;
+                    let tr = zi.queue[zi.current_index as usize].track.clone();
+                    self.catalog.record_play(&tr);
                 }
 
                 // Detect track completion (PLAYING -> STOPPED) for virtual queue advance

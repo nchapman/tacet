@@ -544,12 +544,27 @@ async fn send_raw_http(host: &str, port: u16, req: &[u8]) -> std::result::Result
         .map_err(|_| "write timeout".to_string())?
         .map_err(|e| e.to_string())?;
 
-    let mut buf = vec![0u8; 4096];
-    let n = tokio::time::timeout(Duration::from_secs(4), stream.read(&mut buf))
-        .await
-        .map_err(|_| "read timeout".to_string())?
-        .map_err(|e| e.to_string())?;
-    Ok(String::from_utf8_lossy(&buf[..n]).into_owned())
+    let mut out = Vec::with_capacity(4096);
+    let mut chunk = [0u8; 2048];
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+    while out.len() < 16 * 1024 {
+        let rem = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if rem.is_zero() {
+            break;
+        }
+        let n = tokio::time::timeout(rem, stream.read(&mut chunk))
+            .await
+            .map_err(|_| "read timeout".to_string())?
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&chunk[..n]);
+        if out.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 pub fn parse_gena_timeout(hdr: &str) -> Duration {

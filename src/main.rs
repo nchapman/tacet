@@ -49,9 +49,9 @@ struct Cli {
     #[arg(long, env = "TACET_RENDERER_URL", default_value = "")]
     renderer_url: String,
 
-    /// Default Qobuz delivery mode: relay or direct
-    #[arg(long, env = "TACET_STREAM_MODE", default_value = "relay")]
-    stream_mode: String,
+    /// Default Qobuz delivery mode: relay or direct (overrides saved SQLite pref when set)
+    #[arg(long, env = "TACET_STREAM_MODE")]
+    stream_mode: Option<String>,
 
     /// Override packaged desktop CORS origins with one external origin (e.g. http://localhost:5173)
     #[arg(long, env = "TACET_CORS_ORIGIN", default_value = "")]
@@ -63,18 +63,8 @@ struct Cli {
 }
 
 fn default_data_dir() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME")
-        && !xdg.trim().is_empty()
-    {
-        return PathBuf::from(xdg).join("tacet");
-    }
-    if let Ok(home) = std::env::var("HOME")
-        && !home.trim().is_empty()
-    {
-        return PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("tacet");
+    if let Some(cfg) = dirs::config_dir() {
+        return cfg.join("tacet");
     }
     PathBuf::from("./data")
 }
@@ -137,6 +127,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tracing::info!(user = %qobuz.status().user_name, "restored Qobuz session from SQLite");
         }
     }
+    if !qobuz.is_connected()
+        && let (Ok(email), Ok(password)) = (
+            std::env::var("QOBUZ_EMAIL"),
+            std::env::var("QOBUZ_PASSWORD"),
+        )
+        && !email.trim().is_empty()
+        && !password.is_empty()
+    {
+        match qobuz.login(&email, &password).await {
+            Ok(st) => {
+                let _ = catalog.set_provider_credentials(SOURCE_QOBUZ, &qobuz.export_credentials());
+                tracing::info!(user = %st.user_name, "logged in to Qobuz via env credentials");
+            }
+            Err(e) => tracing::warn!(error = %e, "Qobuz env login failed"),
+        }
+    }
     if let Ok(Some(max_q)) = catalog.get_pref(PREF_QOBUZ_MAX_QUALITY)
         && !max_q.is_empty()
     {
@@ -145,12 +151,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     catalog.register_remote_source(qobuz.as_remote_source());
 
     // 3. Queue / playback manager + GENA client
-    let mut stream_mode = StreamMode::parse(&cli.stream_mode).unwrap_or(StreamMode::Relay);
-    if let Ok(Some(saved_sm)) = catalog.get_pref(PREF_STREAM_MODE)
-        && let Some(m) = StreamMode::parse(&saved_sm)
-    {
-        stream_mode = m;
-    }
+    // Explicit CLI flag / TACET_STREAM_MODE takes precedence over saved SQLite pref.
+    let stream_mode =
+        if let Some(explicit) = cli.stream_mode.as_deref().filter(|s| !s.trim().is_empty()) {
+            StreamMode::parse(explicit).unwrap_or(StreamMode::Relay)
+        } else if let Ok(Some(saved_sm)) = catalog.get_pref(PREF_STREAM_MODE)
+            && let Some(m) = StreamMode::parse(&saved_sm)
+        {
+            m
+        } else {
+            StreamMode::Relay
+        };
 
     let manager = QueueManager::new(
         Arc::clone(&catalog),

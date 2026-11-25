@@ -112,7 +112,7 @@ impl AppState {
         }
     }
 
-    fn current_settings(&self) -> Settings {
+    pub(crate) fn current_settings(&self) -> Settings {
         let max_q = self
             .qobuz
             .as_ref()
@@ -364,10 +364,12 @@ async fn info(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "name": "tacet",
         "version": SERVER_VERSION,
-        "apiVersion": "v1",
-        "settings": st.current_settings(),
-        "library": st.catalog.status(),
-        "qobuz": st.qobuz.as_ref().map(|q| q.status()),
+        "apiVersion": 1,
+        "capabilities": {
+            "localLibrary": !st.catalog.roots().is_empty(),
+            "qobuz": st.qobuz.as_ref().is_some_and(|q| q.is_connected()),
+            "gena": st.gena.is_some(),
+        },
     }))
 }
 
@@ -415,7 +417,7 @@ async fn patch_settings(State(st): State<Arc<AppState>>, body: Bytes) -> ApiResu
         let interval_min = req
             .library_scan_interval_min
             .unwrap_or(cur.library_scan_interval_min)
-            .clamp(0, 1440);
+            .clamp(0, 10_080);
         let _ = st.catalog.set_pref(
             PREF_LIBRARY_WATCH_ENABLED,
             if watch { "true" } else { "false" },
@@ -437,7 +439,9 @@ async fn patch_settings(State(st): State<Arc<AppState>>, body: Bytes) -> ApiResu
         }
     }
 
-    Ok(Json(st.current_settings()))
+    let updated = st.current_settings();
+    st.manager.broadcast("settings.updated", &updated);
+    Ok(Json(updated))
 }
 
 // --- Media & GENA route adapters ---
@@ -679,5 +683,115 @@ mod tests {
                 .unwrap(),
             "tauri://localhost"
         );
+    }
+
+    #[tokio::test]
+    async fn api_wire_contract_regression() {
+        use crate::queue::AudioQuality;
+        use axum::body::to_bytes;
+
+        // AudioQuality must serialize as snake_case with underscore ("opus_96")
+        assert_eq!(
+            serde_json::to_string(&AudioQuality::Opus96).unwrap(),
+            "\"opus_96\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AudioQuality::Opus256).unwrap(),
+            "\"opus_256\""
+        );
+
+        let cat = Catalog::new_in_memory(vec![]);
+        let mgr = QueueManager::new(Arc::clone(&cat), None, 4320, StreamMode::Relay);
+        let state = AppState::new(cat, None, mgr, None, String::new());
+        let app = build_router(state);
+
+        // GET /api/v1/info must return numeric apiVersion and capabilities
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/info")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let info_json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(resp.into_body(), 65536).await.unwrap()).unwrap();
+        assert_eq!(info_json["apiVersion"], 1);
+        assert!(info_json["capabilities"].is_object());
+
+        // POST /api/v1/players sets tacet_player_session cookie, then shuffle/repeat/delete work
+        let reg_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/players")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"name":"Test Browser","playerId":"test_1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reg_resp.status(), StatusCode::OK);
+        let set_cookie = reg_resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(set_cookie.starts_with("tacet_player_session="));
+        let reg_json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(reg_resp.into_body(), 65536).await.unwrap()).unwrap();
+        let zone_id = reg_json["zoneId"].as_str().unwrap().to_string();
+        let token = reg_json["token"].as_str().unwrap().to_string();
+
+        // PUT /shuffle expects {"enabled": true} and PUT /repeat expects {"mode": "all"}
+        let shuf = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri(format!("/api/v1/zones/{zone_id}/shuffle"))
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(shuf.status(), StatusCode::OK);
+
+        let rep = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri(format!("/api/v1/zones/{zone_id}/repeat"))
+                    .body(Body::from(r#"{"mode":"all"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rep.status(), StatusCode::OK);
+
+        // DELETE /players/{zoneId} returns 200 {unregistered: true, zoneId}
+        let del = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri(format!("/api/v1/players/{zone_id}"))
+                    .header(header::COOKIE, format!("tacet_player_session={token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(del.status(), StatusCode::OK);
+        let del_json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(del.into_body(), 65536).await.unwrap()).unwrap();
+        assert_eq!(del_json["unregistered"], true);
+        assert_eq!(del_json["zoneId"], zone_id);
     }
 }

@@ -29,10 +29,10 @@ fmt-check:
 	$(CARGO) fmt --all -- --check
 
 lint: web-build
-	$(CARGO) clippy --all-targets -- -D warnings
+	$(CARGO) clippy --all-targets --locked -- -D warnings
 
 test: web-build
-	$(CARGO) test
+	$(CARGO) test --locked
 
 check: web-check fmt-check lint test
 

@@ -13,7 +13,7 @@ RUN npm run build
 # Stage 2: Build the Rust binary for the target architecture.
 FROM rust:1-alpine AS rust-builder
 
-RUN apk add --no-cache musl-dev pkgconfig
+RUN apk add --no-cache build-base musl-dev pkgconfig
 
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./

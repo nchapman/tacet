@@ -127,7 +127,7 @@ pub struct Command {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct StateReport {
     #[serde(default)]
     pub cmd_id: String,
@@ -931,7 +931,7 @@ fn normalize_zone_id(raw: &str) -> Result<String> {
         || clean.len() > MAX_PLAYER_ID_LEN
         || !clean
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
     {
         return Err(PlayerError::Invalid(format!("invalid playerId {raw:?}")));
     }

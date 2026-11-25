@@ -66,6 +66,15 @@ impl LinkplayRenderer {
                     if (200..300).contains(&status) {
                         return Ok(body);
                     }
+                    if let Some(code_str) = crate::upnp::extract_xml_text(&body, "errorCode") {
+                        let code = code_str.trim().parse::<i32>().unwrap_or(0);
+                        let desc = crate::upnp::extract_xml_text(&body, "errorDescription")
+                            .unwrap_or_default();
+                        if code == 401 || code == 602 {
+                            return Err(UpnpError::ActionUnsupported);
+                        }
+                        return Err(UpnpError::SoapFault { code, desc });
+                    }
                     Err(UpnpError::HttpStatus { status, body })
                 }
             })

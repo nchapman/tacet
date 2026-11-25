@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Path, Query, RawQuery, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -74,7 +75,7 @@ pub async fn connect_zone(
     };
     st.manager.register_renderer(linkplay::wrap(dev));
     remember_manual_renderer(&st, &loc);
-    let zone = st.manager.zone_snapshot(&info.id).ok();
+    let zone = st.manager.zone_snapshot(&info.id)?;
     Ok(Json(serde_json::json!({
         "zone": zone,
         "zones": st.manager.list_zones(),
@@ -84,13 +85,16 @@ pub async fn connect_zone(
 pub async fn delete_zone(
     State(st): State<Arc<AppState>>,
     Path(zone_id): Path<String>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<serde_json::Value>> {
     let snap = st.manager.zone_snapshot(&zone_id)?;
     if !snap.renderer.location.is_empty() {
         forget_manual_renderer(&st, &snap.renderer.location);
     }
     st.manager.remove_renderer(&zone_id);
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(serde_json::json!({
+        "removed": true,
+        "zoneId": zone_id,
+    })))
 }
 
 fn remember_manual_renderer(st: &AppState, raw_url: &str) {
@@ -293,7 +297,14 @@ pub async fn jump_queue(
         snap.queue
             .iter()
             .position(|it| it.item_id == item_id)
-            .ok_or_else(|| ApiError::not_found("ITEM_NOT_FOUND", "queue item not found"))?
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "QUEUE_ITEM_NOT_FOUND",
+                    "queue item not found",
+                    false,
+                )
+            })?
     } else {
         return Err(ApiError::bad_request("index or itemId is required"));
     };
@@ -310,7 +321,14 @@ pub async fn remove_queue_item(
         .queue
         .iter()
         .position(|it| it.item_id == item_id)
-        .ok_or_else(|| ApiError::not_found("ITEM_NOT_FOUND", "queue item not found"))?;
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "QUEUE_ITEM_NOT_FOUND",
+                "queue item not found",
+                false,
+            )
+        })?;
     let next = st.manager.remove_item(&zone_id, idx).await?;
     Ok(Json(serde_json::to_value(next).unwrap_or_default()))
 }
@@ -332,7 +350,14 @@ pub async fn move_queue_item(
         .queue
         .iter()
         .position(|it| it.item_id == item_id)
-        .ok_or_else(|| ApiError::not_found("ITEM_NOT_FOUND", "queue item not found"))?;
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "QUEUE_ITEM_NOT_FOUND",
+                "queue item not found",
+                false,
+            )
+        })?;
     let next = st.manager.move_item(&zone_id, from, req.to_index).await?;
     Ok(Json(serde_json::to_value(next).unwrap_or_default()))
 }
@@ -470,7 +495,7 @@ pub async fn set_zone_quality(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ShuffleReq {
-    shuffle: bool,
+    enabled: bool,
 }
 
 pub async fn set_zone_shuffle(
@@ -480,7 +505,7 @@ pub async fn set_zone_shuffle(
 ) -> ApiResult<Json<serde_json::Value>> {
     let req: ShuffleReq = parse_strict_json(&body)?;
     Ok(Json(
-        serde_json::to_value(st.manager.set_shuffle(&zone_id, req.shuffle).await?)
+        serde_json::to_value(st.manager.set_shuffle(&zone_id, req.enabled).await?)
             .unwrap_or_default(),
     ))
 }
@@ -488,7 +513,7 @@ pub async fn set_zone_shuffle(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RepeatReq {
-    repeat: String,
+    mode: String,
 }
 
 pub async fn set_zone_repeat(
@@ -497,8 +522,8 @@ pub async fn set_zone_repeat(
     body: Bytes,
 ) -> ApiResult<Json<serde_json::Value>> {
     let req: RepeatReq = parse_strict_json(&body)?;
-    let mode = RepeatMode::parse(&req.repeat)
-        .ok_or_else(|| ApiError::bad_request(format!("invalid repeat mode {:?}", req.repeat)))?;
+    let mode = RepeatMode::parse(&req.mode)
+        .ok_or_else(|| ApiError::bad_request(format!("invalid repeat mode {:?}", req.mode)))?;
     Ok(Json(
         serde_json::to_value(st.manager.set_repeat(&zone_id, mode).await?).unwrap_or_default(),
     ))
@@ -508,43 +533,57 @@ pub async fn set_zone_repeat(
 
 pub async fn events_sse(
     State(st): State<Arc<AppState>>,
-    Query(q): Query<HashMap<String, String>>,
+    RawQuery(raw_q): RawQuery,
 ) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>> {
-    let zone_filter = q.get("zone").cloned().unwrap_or_default();
+    let zone_filters: Vec<String> = raw_q
+        .as_deref()
+        .map(|qs| {
+            url::form_urlencoded::parse(qs.as_bytes())
+                .filter(|(k, v)| k == "zone" && !v.trim().is_empty())
+                .map(|(_, v)| v.trim().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
     let rx = st.manager.subscribe();
 
-    // Build initial snapshot event
-    let zones = if zone_filter.is_empty() {
+    // Build initial snapshot event matching OpenAPI SnapshotEvent
+    let zones = if zone_filters.is_empty() {
         st.manager.list_zones()
     } else {
         st.manager
             .list_zones()
             .into_iter()
-            .filter(|z| z.zone_id == zone_filter)
+            .filter(|z| zone_filters.iter().any(|f| f == &z.zone_id))
             .collect()
     };
+    let qobuz_status = st.qobuz.as_ref().map(|q| q.status());
     let init_payload = serde_json::json!({
-        "zones": zones,
-        "library": st.catalog.status(),
         "serverTime": chrono::Utc::now(),
+        "zones": zones,
+        "settings": st.current_settings(),
+        "qobuz": qobuz_status,
+        "library": st.catalog.status(),
     });
     let init_event = SseEvent::default()
         .event("snapshot")
         .data(init_payload.to_string());
 
     let stream = futures_util::stream::once(async move { Ok(init_event) }).chain(
-        futures_util::stream::unfold((rx, zone_filter), |(mut rx, filter)| async move {
+        futures_util::stream::unfold((rx, zone_filters), |(mut rx, filters)| async move {
             loop {
                 match rx.recv().await {
                     Ok(ev) => {
-                        if !filter.is_empty() && !ev.zone_id.is_empty() && ev.zone_id != filter {
+                        if !filters.is_empty()
+                            && !ev.zone_id.is_empty()
+                            && !filters.iter().any(|f| f == &ev.zone_id)
+                        {
                             continue;
                         }
                         let sse_ev = SseEvent::default()
                             .id(ev.id.to_string())
                             .event(ev.event_type)
                             .data(ev.data.to_string());
-                        return Some((Ok(sse_ev), (rx, filter)));
+                        return Some((Ok(sse_ev), (rx, filters)));
                     }
                     Err(RecvError::Lagged(_)) => continue,
                     Err(RecvError::Closed) => return None,
@@ -564,6 +603,8 @@ use futures_util::StreamExt;
 
 // --- Remote HTTP/SSE Players ---
 
+const PLAYER_COOKIE_NAME: &str = "tacet_player_session";
+
 fn extract_player_token(headers: &HeaderMap, query: &HashMap<String, String>) -> String {
     if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok())
         && let Some(tok) = auth
@@ -575,6 +616,16 @@ fn extract_player_token(headers: &HeaderMap, query: &HashMap<String, String>) ->
     if let Some(tok) = headers.get("x-player-token").and_then(|v| v.to_str().ok()) {
         return tok.trim().to_string();
     }
+    if let Some(cookie_hdr) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
+        for part in cookie_hdr.split(';') {
+            if let Some((k, v)) = part.trim().split_once('=')
+                && k.trim() == PLAYER_COOKIE_NAME
+                && !v.trim().is_empty()
+            {
+                return v.trim().to_string();
+            }
+        }
+    }
     query.get("token").cloned().unwrap_or_default()
 }
 
@@ -583,11 +634,19 @@ pub async fn register_player(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
     body: Bytes,
-) -> ApiResult<Json<serde_json::Value>> {
+) -> ApiResult<Response> {
     let req: RegisterRequest = parse_strict_json(&body)?;
     let existing_token = extract_player_token(&headers, &q);
     let reg = st.players.register(req, &existing_token)?;
-    Ok(Json(serde_json::to_value(reg).unwrap_or_default()))
+    let mut resp = Json(serde_json::to_value(&reg).unwrap_or_default()).into_response();
+    let cookie = format!(
+        "{PLAYER_COOKIE_NAME}={}; Path=/api/v1/players; HttpOnly; SameSite=Lax",
+        reg.token
+    );
+    if let Ok(hv) = HeaderValue::from_str(&cookie) {
+        resp.headers_mut().insert(header::SET_COOKIE, hv);
+    }
+    Ok(resp)
 }
 
 pub async fn update_player(
@@ -600,7 +659,10 @@ pub async fn update_player(
     let req: UpdateRequest = parse_strict_json(&body)?;
     let tok = extract_player_token(&headers, &q);
     let info = st.players.update(&zone_id, &tok, req)?;
-    Ok(Json(serde_json::json!({ "renderer": info })))
+    Ok(Json(serde_json::json!({
+        "zoneId": zone_id,
+        "renderer": info,
+    })))
 }
 
 pub async fn player_commands_sse(
@@ -632,26 +694,39 @@ pub async fn player_commands_sse(
         stream_id,
     };
 
-    let ready = SseEvent::default()
-        .event("ready")
-        .data(serde_json::json!({ "zoneId": zone_id }).to_string());
+    let connected = SseEvent::default().event("connected").data(
+        serde_json::json!({
+            "zoneId": zone_id,
+            "streamId": stream_id,
+            "serverTime": chrono::Utc::now(),
+        })
+        .to_string(),
+    );
 
     let cmd_stream = futures_util::stream::unfold(
-        (stream_handle.commands, stream_handle.replaced, guard),
-        |(mut cmds, mut replaced, guard)| async move {
+        (stream_handle.commands, stream_handle.replaced, guard, false),
+        |(mut cmds, mut replaced, guard, done)| async move {
+            if done {
+                return None;
+            }
             tokio::select! {
-                _ = &mut replaced => None,
+                _ = &mut replaced => {
+                    let ev = SseEvent::default()
+                        .event("replaced")
+                        .data(serde_json::json!({ "reason": "replaced" }).to_string());
+                    Some((Ok(ev), (cmds, replaced, guard, true)))
+                }
                 cmd = cmds.recv() => {
                     let cmd = cmd?;
                     let data = serde_json::to_string(&cmd).unwrap_or_default();
                     let ev = SseEvent::default().id(cmd.id).event("command").data(data);
-                    Some((Ok(ev), (cmds, replaced, guard)))
+                    Some((Ok(ev), (cmds, replaced, guard, false)))
                 }
             }
         },
     );
 
-    let full = futures_util::stream::once(async move { Ok(ready) }).chain(cmd_stream);
+    let full = futures_util::stream::once(async move { Ok(connected) }).chain(cmd_stream);
     Ok(Sse::new(full).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
@@ -678,8 +753,11 @@ pub async fn unregister_player(
     Path(zone_id): Path<String>,
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<serde_json::Value>> {
     let tok = extract_player_token(&headers, &q);
     st.players.unregister(&zone_id, &tok)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(serde_json::json!({
+        "unregistered": true,
+        "zoneId": zone_id,
+    })))
 }

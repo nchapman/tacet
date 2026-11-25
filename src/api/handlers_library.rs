@@ -199,7 +199,7 @@ pub async fn library_tracks(
     State(st): State<Arc<AppState>>,
     Query(qv): Query<HashMap<String, String>>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (limit, offset) = parse_page(&qv, 200, 500);
+    let (limit, offset) = parse_page(&qv, 200, 1000);
     let (items, total) = st.catalog.query_tracks(&TrackFilter {
         query: qv.get("q").cloned().unwrap_or_default(),
         source_type: qv.get("source").cloned().unwrap_or_default(),
@@ -226,7 +226,7 @@ pub async fn library_artists(
     State(st): State<Arc<AppState>>,
     Query(qv): Query<HashMap<String, String>>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (limit, offset) = parse_page(&qv, 200, 500);
+    let (limit, offset) = parse_page(&qv, 500, 1000);
     let (mut items, total) = st.catalog.list_artists(&FacetFilter {
         query: qv.get("q").cloned().unwrap_or_default(),
         source_type: qv.get("source").cloned().unwrap_or_default(),
@@ -285,9 +285,9 @@ pub async fn heavy_rotation(
     let limit = qv
         .get("limit")
         .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(12);
+        .unwrap_or(20);
     let items = st.catalog.heavy_rotation(days, limit)?;
-    Ok(Json(serde_json::json!({ "items": items })))
+    Ok(Json(serde_json::json!({ "days": days, "items": items })))
 }
 
 pub async fn library_search(
@@ -298,18 +298,37 @@ pub async fn library_search(
     let limit = qv
         .get("limit")
         .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(20);
+        .unwrap_or(8);
     let res = st.catalog.unified_search(&q, limit)?;
     Ok(Json(serde_json::to_value(res).unwrap_or_default()))
 }
 
-pub async fn library_rescan(State(st): State<Arc<AppState>>) -> ApiResult<Json<serde_json::Value>> {
-    let count = st.catalog.scan().await?;
-    st.media.prewarm_art();
-    Ok(Json(serde_json::json!({
-        "tracks": count,
-        "status": st.catalog.status(),
-    })))
+pub async fn library_rescan(
+    State(st): State<Arc<AppState>>,
+    Query(qv): Query<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    let wait = qv.get("wait").is_some_and(|v| v == "true" || v == "1");
+    if wait {
+        st.catalog.scan().await?;
+        st.media.prewarm_art();
+        return Ok((
+            StatusCode::OK,
+            Json(serde_json::to_value(st.catalog.status()).unwrap_or_default()),
+        )
+            .into_response());
+    }
+    let cat = Arc::clone(&st.catalog);
+    let media = Arc::clone(&st.media);
+    tokio::spawn(async move {
+        if cat.scan().await.is_ok() {
+            media.prewarm_art();
+        }
+    });
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::to_value(st.catalog.status()).unwrap_or_default()),
+    )
+        .into_response())
 }
 
 #[derive(Deserialize, Default)]
@@ -321,24 +340,42 @@ struct SyncReq {
 
 pub async fn library_sync(
     State(st): State<Arc<AppState>>,
+    Query(qv): Query<HashMap<String, String>>,
     body: Bytes,
-) -> ApiResult<Json<serde_json::Value>> {
+) -> ApiResult<Response> {
     let req: SyncReq = if body.is_empty() {
         SyncReq::default()
     } else {
         parse_strict_json(&body)?
     };
-    let prov = if req.provider.trim().is_empty() {
+    let prov_raw = qv
+        .get("provider")
+        .map(String::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(&req.provider);
+    let prov = if prov_raw.trim().is_empty() {
         SOURCE_QOBUZ.to_string()
     } else {
-        req.provider.trim().to_ascii_lowercase()
+        prov_raw.trim().to_ascii_lowercase()
     };
-    let tracks = st.catalog.sync_remote(&prov).await?;
-    Ok(Json(serde_json::json!({
-        "provider": prov,
-        "tracks": tracks,
-        "status": st.catalog.status(),
-    })))
+    let wait = qv.get("wait").is_some_and(|v| v == "true" || v == "1");
+    if wait {
+        st.catalog.sync_remote(&prov).await?;
+        return Ok((
+            StatusCode::OK,
+            Json(serde_json::to_value(st.catalog.status()).unwrap_or_default()),
+        )
+            .into_response());
+    }
+    let cat = Arc::clone(&st.catalog);
+    tokio::spawn(async move {
+        let _ = cat.sync_remote(&prov).await;
+    });
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::to_value(st.catalog.status()).unwrap_or_default()),
+    )
+        .into_response())
 }
 
 #[derive(Deserialize)]
@@ -346,7 +383,8 @@ pub async fn library_sync(
 struct RemoteIdReq {
     #[serde(default)]
     provider: String,
-    id: String,
+    #[serde(alias = "id")]
+    external_id: String,
 }
 
 pub async fn add_remote_album(
@@ -359,16 +397,16 @@ pub async fn add_remote_album(
     } else {
         &req.provider
     };
-    let alb = st.catalog.add_remote_album(prov, &req.id).await?;
+    let alb = st.catalog.add_remote_album(prov, &req.external_id).await?;
     Ok(Json(serde_json::to_value(alb).unwrap_or_default()))
 }
 
 pub async fn remove_remote_album(
     State(st): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<serde_json::Value>> {
     st.catalog.remove_remote_album(SOURCE_QOBUZ, &id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(serde_json::json!({ "removed": true, "id": id })))
 }
 
 pub async fn add_remote_track(
@@ -381,16 +419,16 @@ pub async fn add_remote_track(
     } else {
         &req.provider
     };
-    let tr = st.catalog.add_remote_track(prov, &req.id).await?;
+    let tr = st.catalog.add_remote_track(prov, &req.external_id).await?;
     Ok(Json(serde_json::to_value(tr).unwrap_or_default()))
 }
 
 pub async fn remove_remote_track(
     State(st): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<serde_json::Value>> {
     st.catalog.remove_remote_track(SOURCE_QOBUZ, &id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(serde_json::json!({ "removed": true, "id": id })))
 }
 
 // --- Qobuz ---
@@ -462,11 +500,12 @@ pub async fn qobuz_oauth_callback(
         .or_else(|| qv.get("code_ext"))
         .cloned()
         .unwrap_or_default();
-    let _status = qb.exchange_oauth_code(&code).await?;
+    let status = qb.exchange_oauth_code(&code).await?;
     let _ = st
         .catalog
         .set_provider_credentials(SOURCE_QOBUZ, &qb.export_credentials());
     let _ = st.catalog.set_provider_available(SOURCE_QOBUZ, true);
+    st.manager.broadcast("qobuz.status", &status);
 
     Ok(Html(
         r#"<!doctype html><html><body><script>
@@ -484,8 +523,12 @@ struct QobuzLoginReq {
     email: String,
     #[serde(default)]
     password: String,
+    #[serde(default, alias = "token")]
+    auth_token: String,
     #[serde(default)]
-    token: String,
+    app_id: String,
+    #[serde(default)]
+    app_secret: String,
 }
 
 pub async fn qobuz_login(
@@ -501,8 +544,18 @@ pub async fn qobuz_login(
         )
     })?;
     let req: QobuzLoginReq = parse_strict_json(&body)?;
-    let status = if !req.token.trim().is_empty() {
-        qb.login_with_token(&req.token).await?
+    if !req.app_id.trim().is_empty() || !req.app_secret.trim().is_empty() {
+        let mut creds = qb.export_credentials();
+        if !req.app_id.trim().is_empty() {
+            creds.app_id = req.app_id.trim().to_string();
+        }
+        if !req.app_secret.trim().is_empty() {
+            creds.app_secret = req.app_secret.trim().to_string();
+        }
+        qb.restore_credentials(creds);
+    }
+    let status = if !req.auth_token.trim().is_empty() {
+        qb.login_with_token(&req.auth_token).await?
     } else {
         qb.login(&req.email, &req.password).await?
     };
@@ -510,6 +563,7 @@ pub async fn qobuz_login(
         .catalog
         .set_provider_credentials(SOURCE_QOBUZ, &qb.export_credentials());
     let _ = st.catalog.set_provider_available(SOURCE_QOBUZ, true);
+    st.manager.broadcast("qobuz.status", &status);
     Ok(Json(serde_json::to_value(status).unwrap_or_default()))
 }
 
@@ -525,6 +579,7 @@ pub async fn qobuz_logout(State(st): State<Arc<AppState>>) -> ApiResult<Json<ser
     let status = qb.logout();
     let _ = st.catalog.delete_provider_credentials(SOURCE_QOBUZ);
     let _ = st.catalog.set_provider_available(SOURCE_QOBUZ, false);
+    st.manager.broadcast("qobuz.status", &status);
     Ok(Json(serde_json::to_value(status).unwrap_or_default()))
 }
 
@@ -541,7 +596,7 @@ pub async fn qobuz_search(
         )
     })?;
     let q = qv.get("q").cloned().unwrap_or_default();
-    let (limit, offset) = parse_page(&qv, 25, 100);
+    let (limit, offset) = parse_page(&qv, 30, 100);
     let mut res = qb.search(&q, limit, offset).await?;
     res.albums = st.catalog.prefer_local_albums(res.albums);
     res.tracks = st.catalog.prefer_local_tracks(res.tracks);
@@ -609,7 +664,11 @@ pub async fn discover_feed(
             false,
         )
     })?;
-    let genre_ids = parse_genre_ids(qv.get("genreIds").map(String::as_str));
+    let genre_ids = parse_genre_ids(
+        qv.get("genreIds")
+            .or_else(|| qv.get("genre_ids"))
+            .map(String::as_str),
+    );
     let mut feed = qb.discover(&genre_ids).await?;
     for shelf in &mut feed.shelves {
         shelf.items = st
@@ -632,7 +691,11 @@ pub async fn discover_shelf(
             false,
         )
     })?;
-    let genre_ids = parse_genre_ids(qv.get("genreIds").map(String::as_str));
+    let genre_ids = parse_genre_ids(
+        qv.get("genreIds")
+            .or_else(|| qv.get("genre_ids"))
+            .map(String::as_str),
+    );
     let (limit, offset) = parse_page(&qv, 24, 100);
     let mut page = qb.discover_shelf(&slug, &genre_ids, limit, offset).await?;
     page.items = st.catalog.prefer_local_albums(page.items);
@@ -672,8 +735,9 @@ pub async fn similar_artists(
             false,
         )
     })?;
-    let artist_id: i64 = id
-        .trim()
+    let raw_id = id.trim();
+    let numeric = raw_id.strip_prefix("qobuz:").unwrap_or(raw_id);
+    let artist_id: i64 = numeric
         .parse()
         .map_err(|_| ApiError::bad_request("invalid artist id"))?;
     let (limit, _) = parse_page(&qv, 12, 50);

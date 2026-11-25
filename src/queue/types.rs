@@ -98,14 +98,19 @@ impl RepeatMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
 pub enum AudioQuality {
     #[default]
+    #[serde(rename = "original")]
     Original,
+    #[serde(rename = "opus_96")]
     Opus96,
+    #[serde(rename = "opus_128")]
     Opus128,
+    #[serde(rename = "opus_160")]
     Opus160,
+    #[serde(rename = "opus_256")]
     Opus256,
+    #[serde(rename = "wav")]
     Wav,
 }
 
