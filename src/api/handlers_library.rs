@@ -919,9 +919,11 @@ pub async fn discover_shelf(
     let Some(qb) = st.qobuz.as_ref().filter(|q| q.is_connected()) else {
         return Ok(Json(serde_json::json!({
             "slug": slug,
+            "title": "",
             "items": [],
             "limit": limit,
             "offset": offset,
+            "hasMore": false,
         })));
     };
     let genre_ids = parse_genre_ids(

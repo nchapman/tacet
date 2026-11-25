@@ -185,7 +185,7 @@ impl RemotePlayer {
     pub fn attach_stream(&self) -> CommandStream {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>(32);
         let (rep_tx, rep_rx) = oneshot::channel::<()>();
-        let (stream_id, prev_rep, _old_tx) = {
+        let (stream_id, prev_rep, _old_tx, stale_pending) = {
             let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(t) = st.grace_task.take() {
                 t.abort();
@@ -194,8 +194,18 @@ impl RemotePlayer {
             let id = st.stream_id;
             let prev = st.replaced_tx.replace(rep_tx);
             let old_tx = st.cmd_tx.replace(cmd_tx);
-            (id, prev, old_tx)
+            let pending = std::mem::take(&mut st.pending);
+            (id, prev, old_tx, pending)
         };
+        // Fail-fast any in-flight commands from the replaced stream instead of waiting
+        // for the full command timeout.
+        for (_, tx) in stale_pending {
+            let _ = tx.send(CmdResult {
+                ok: false,
+                error_code: "DISCONNECTED".into(),
+                error_message: "player stream replaced".into(),
+            });
+        }
         // Notify replaced stream BEFORE dropping `_old_tx` so it emits `event: replaced`
         // rather than observing channel EOF.
         if let Some(prev) = prev_rep {

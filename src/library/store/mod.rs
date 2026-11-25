@@ -44,6 +44,7 @@ pub struct StoreCounts {
 pub(super) struct StoreInner {
     pub(super) conn: Option<Connection>,
     pub(super) generation: u64,
+    pub(super) catalog_generation: u64,
     pub(super) missing_retention: Duration,
 }
 
@@ -107,6 +108,7 @@ impl LibraryStore {
             inner: Mutex::new(StoreInner {
                 conn: Some(conn),
                 generation: 0,
+                catalog_generation: 0,
                 missing_retention: DEFAULT_MISSING_RETENTION,
             }),
             boot_id: hex::encode(nonce),
@@ -128,6 +130,13 @@ impl LibraryStore {
         let conn = inner.conn.as_ref().ok_or(LibraryError::NotFound)?;
         let v: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         Ok(v)
+    }
+
+    pub fn catalog_generation(&self) -> u64 {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .catalog_generation
     }
 
     pub fn counts_and_providers(&self) -> StoreCounts {

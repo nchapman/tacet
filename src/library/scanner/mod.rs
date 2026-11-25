@@ -268,7 +268,7 @@ impl Catalog {
     }
 
     fn local_lookup_maps(&self) -> (LocalAlbumMap, LocalTrackMap) {
-        let cur_etag = self.etag();
+        let cur_etag = format!("cat-{}", self.store.catalog_generation());
         {
             let g = self.local_lookup.read().unwrap_or_else(|e| e.into_inner());
             if g.etag == cur_etag && !cur_etag.is_empty() {
