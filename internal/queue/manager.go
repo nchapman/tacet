@@ -280,7 +280,7 @@ func NewManager(httpPort int, publicBaseURL string, qb *qobuz.Client) *Manager {
 		zones:          make(map[string]*zone),
 		savedQualities: make(map[string]AudioQuality),
 		savedQueues:    make(map[string]SavedZoneQueue),
-		streamMode:     StreamModeDirect,
+		streamMode:     StreamModeRelay,
 		httpPort:       httpPort,
 		publicBaseURL:  strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
 		qobuz:          qb,

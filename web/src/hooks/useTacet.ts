@@ -77,7 +77,7 @@ export function useTacet(options?: UseTacetOptions | string | null) {
   const [zones, setZones] = useState<ZoneSnapshot[]>([]);
   const [selectedZoneId, setSelectedZoneId] = useState<string>(readSavedZoneId);
   const [settings, setSettings] = useState<Settings>({
-    streamMode: "direct",
+    streamMode: "relay",
     qobuzMaxQuality: "flac_24_192",
     libraryWatchEnabled: true,
     libraryScanIntervalMin: 60,

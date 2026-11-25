@@ -286,30 +286,6 @@ export function SettingsView({
             <div className="grid sm:grid-cols-2 gap-2.5">
               <button
                 type="button"
-                onClick={() => onStreamModeChange("direct")}
-                className={cn(
-                  "rounded-xl border p-3.5 text-left transition-colors cursor-pointer",
-                  streamMode === "direct"
-                    ? "border-white/30 bg-white/[0.08]"
-                    : "border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05]",
-                )}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-white">Handoff</span>
-                  {streamMode === "direct" && (
-                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-white/90">
-                      <Check className="h-3.5 w-3.5" />
-                      Active
-                    </span>
-                  )}
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                  Renderer streams HTTPS FLAC directly from Qobuz CDN. Zero audio traffic through the NAS.
-                </p>
-              </button>
-
-              <button
-                type="button"
                 onClick={() => onStreamModeChange("relay")}
                 className={cn(
                   "rounded-xl border p-3.5 text-left transition-colors cursor-pointer",
@@ -329,6 +305,30 @@ export function SettingsView({
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
                   Server terminates HTTPS and streams raw bit-perfect bytes over plain LAN HTTP.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => onStreamModeChange("direct")}
+                className={cn(
+                  "rounded-xl border p-3.5 text-left transition-colors cursor-pointer",
+                  streamMode === "direct"
+                    ? "border-white/30 bg-white/[0.08]"
+                    : "border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05]",
+                )}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-white">Handoff</span>
+                  {streamMode === "direct" && (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-white/90">
+                      <Check className="h-3.5 w-3.5" />
+                      Active
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                  Renderer streams HTTPS FLAC directly from Qobuz CDN. Zero audio traffic through the NAS.
                 </p>
               </button>
             </div>

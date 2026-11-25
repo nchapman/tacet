@@ -144,14 +144,17 @@ func TestAPIv1_SystemSettingsZonesQueueAndErrors(t *testing.T) {
 	assertErrorCode(t, doReq(t, http.MethodGet, ts.URL+"/api/v1/nope", ""), http.StatusNotFound, "NOT_FOUND")
 	assertErrorCode(t, doReq(t, http.MethodDelete, ts.URL+"/api/v1/info", ""), http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED")
 
-	// Settings PATCH + strict unknown-field rejection.
+	// Settings default + PATCH + strict unknown-field rejection.
+	if mgr.StreamMode() != queue.StreamModeRelay {
+		t.Fatalf("default streamMode = %q, want %q", mgr.StreamMode(), queue.StreamModeRelay)
+	}
 	assertErrorCode(t, doReq(t, http.MethodPatch, ts.URL+"/api/v1/settings", `{"unknownField":true}`), http.StatusBadRequest, "INVALID_REQUEST")
-	resp = doReq(t, http.MethodPatch, ts.URL+"/api/v1/settings", `{"streamMode":"relay","qobuzMaxQuality":"flac_24_96"}`)
+	resp = doReq(t, http.MethodPatch, ts.URL+"/api/v1/settings", `{"streamMode":"direct","qobuzMaxQuality":"flac_24_96"}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PATCH /api/v1/settings status=%d", resp.StatusCode)
 	}
 	resp.Body.Close()
-	if mgr.StreamMode() != queue.StreamModeRelay || qb.MaxQuality() != "flac_24_96" {
+	if mgr.StreamMode() != queue.StreamModeDirect || qb.MaxQuality() != "flac_24_96" {
 		t.Fatalf("settings did not apply: mode=%q maxQ=%q", mgr.StreamMode(), qb.MaxQuality())
 	}
 

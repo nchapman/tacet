@@ -122,7 +122,7 @@ Every CLI flag can also be set via an environment variable. Explicit CLI flags a
 | `--missing-retention-days` | `TACET_MISSING_RETENTION_DAYS` | `30` | Days to keep soft-deleted missing tracks before purging on scan (`0` = never purge) |
 | `--public-url` | `TACET_PUBLIC_URL` | *(auto)* | Base URL sent to renderers (e.g. `http://192.168.1.10:4320`) |
 | `--renderer-url` | `TACET_RENDERER_URL` | *(empty)* | UPnP description XML URL to connect directly (e.g. `http://192.168.1.50:49152/description.xml`) |
-| `--stream-mode` | `TACET_STREAM_MODE` | `direct` | Default Qobuz delivery mode: `direct` or `relay` |
+| `--stream-mode` | `TACET_STREAM_MODE` | `relay` | Default Qobuz delivery mode: `relay` or `direct` |
 | `--cors-origin` | `TACET_CORS_ORIGIN` | *(desktop origins)* | Override the default packaged desktop origins (`tauri://localhost` and `http://tauri.localhost`) with one external client origin |
 | `--event-log` | `TACET_EVENT_LOG` | *(empty)* | Path (or `-` for stderr) to write raw JSONL playback/GENA/poll/SSE events |
 | *(Docker only)* | `PUID` / `PGID` | `1000` | UID/GID used by the container entrypoint when dropping root privileges |
