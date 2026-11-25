@@ -391,6 +391,9 @@ fn apply_poll_status(zi: &mut ZoneInner, st: &crate::upnp::TransportStatus) -> (
         && zi.last_command_at.elapsed() > Duration::from_secs(3)
     {
         zi.current_index = st.queue_index;
+        zi.next_preloaded = false;
+        zi.next_uri.clear();
+        zi.next_index = -1;
         pb_changed = true;
     }
     (vol_changed, pb_changed)

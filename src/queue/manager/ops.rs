@@ -205,7 +205,30 @@ impl Manager {
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
+        self.remove_item_locked(zone_id, &z, index).await
+    }
 
+    pub async fn remove_item_by_id(&self, zone_id: &str, item_id: &str) -> Result<ZoneSnapshot> {
+        let z = self
+            .get_zone(zone_id)
+            .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
+        let _op = z.op_mu.lock().await;
+        let idx = {
+            let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            zi.queue
+                .iter()
+                .position(|it| it.item_id == item_id)
+                .ok_or(QueueError::InvalidIndex)?
+        };
+        self.remove_item_locked(zone_id, &z, idx).await
+    }
+
+    async fn remove_item_locked(
+        &self,
+        zone_id: &str,
+        z: &Zone,
+        index: usize,
+    ) -> Result<ZoneSnapshot> {
         let (ctrl, removed_current, q_ev) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             if index >= zi.queue.len() {
@@ -245,27 +268,13 @@ impl Manager {
                 .queue
                 .is_empty();
             if has_items {
-                let _ = self.start_current_locked(zone_id, &z, &ctrl, true).await;
+                let _ = self.start_current_locked(zone_id, z, &ctrl, true).await;
             } else {
                 let _ = ctrl.stop().await;
             }
         }
 
-        Ok(self.snapshot_zone(zone_id, &z))
-    }
-
-    pub async fn remove_item_by_id(&self, zone_id: &str, item_id: &str) -> Result<ZoneSnapshot> {
-        let z = self
-            .get_zone(zone_id)
-            .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
-        let idx = {
-            let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-            zi.queue
-                .iter()
-                .position(|it| it.item_id == item_id)
-                .ok_or(QueueError::InvalidIndex)?
-        };
-        self.remove_item(zone_id, idx).await
+        Ok(self.snapshot_zone(zone_id, z))
     }
 
     pub async fn move_item(&self, zone_id: &str, from: usize, to: usize) -> Result<ZoneSnapshot> {
@@ -273,7 +282,36 @@ impl Manager {
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
+        self.move_item_locked(zone_id, &z, from, to).await
+    }
 
+    pub async fn move_item_by_id(
+        &self,
+        zone_id: &str,
+        item_id: &str,
+        to: usize,
+    ) -> Result<ZoneSnapshot> {
+        let z = self
+            .get_zone(zone_id)
+            .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
+        let _op = z.op_mu.lock().await;
+        let from = {
+            let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            zi.queue
+                .iter()
+                .position(|it| it.item_id == item_id)
+                .ok_or(QueueError::InvalidIndex)?
+        };
+        self.move_item_locked(zone_id, &z, from, to).await
+    }
+
+    async fn move_item_locked(
+        &self,
+        zone_id: &str,
+        z: &Zone,
+        from: usize,
+        to: usize,
+    ) -> Result<ZoneSnapshot> {
         let (ctrl, q_ev, pb_ev) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             if from >= zi.queue.len() || to >= zi.queue.len() {
@@ -312,26 +350,7 @@ impl Manager {
             tracing::warn!(zone = %zone_id, from, to, error = %e, "native move_queue_item failed");
         }
 
-        Ok(self.snapshot_zone(zone_id, &z))
-    }
-
-    pub async fn move_item_by_id(
-        &self,
-        zone_id: &str,
-        item_id: &str,
-        to: usize,
-    ) -> Result<ZoneSnapshot> {
-        let z = self
-            .get_zone(zone_id)
-            .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
-        let from = {
-            let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-            zi.queue
-                .iter()
-                .position(|it| it.item_id == item_id)
-                .ok_or(QueueError::InvalidIndex)?
-        };
-        self.move_item(zone_id, from, to).await
+        Ok(self.snapshot_zone(zone_id, z))
     }
 
     pub async fn clear(&self, zone_id: &str) -> Result<ZoneSnapshot> {
@@ -353,6 +372,7 @@ impl Manager {
         let z = self
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
+        let _op = z.op_mu.lock().await;
         let idx = {
             let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             zi.queue
@@ -360,7 +380,7 @@ impl Manager {
                 .position(|it| it.item_id == item_id)
                 .ok_or(QueueError::InvalidIndex)?
         };
-        self.play_index(zone_id, idx).await
+        self.play_index_locked(zone_id, &z, idx).await
     }
 
     pub async fn play_index(&self, zone_id: &str, index: usize) -> Result<ZoneSnapshot> {
@@ -368,7 +388,15 @@ impl Manager {
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
+        self.play_index_locked(zone_id, &z, index).await
+    }
 
+    async fn play_index_locked(
+        &self,
+        zone_id: &str,
+        z: &Zone,
+        index: usize,
+    ) -> Result<ZoneSnapshot> {
         let ctrl = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             if index >= zi.queue.len() {
@@ -382,8 +410,8 @@ impl Manager {
             Arc::clone(&zi.ctrl)
         };
 
-        self.jump_or_start_locked(zone_id, &z, &ctrl, index).await?;
-        Ok(self.snapshot_zone(zone_id, &z))
+        self.jump_or_start_locked(zone_id, z, &ctrl, index).await?;
+        Ok(self.snapshot_zone(zone_id, z))
     }
 
     async fn jump_or_start_locked(
@@ -397,12 +425,23 @@ impl Manager {
             if qc.play_index(index).await.is_ok() {
                 let (tr, pb_ev) = {
                     let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+                    let tr = zi.queue.get(index).map(|it| it.track.clone());
+                    let now = Instant::now();
                     zi.status.state = "PLAYING".into();
                     zi.status.position = Duration::ZERO;
+                    zi.status.duration = tr
+                        .as_ref()
+                        .map(|t| Duration::from_secs(t.duration_sec.max(0) as u64))
+                        .unwrap_or(Duration::ZERO);
+                    zi.current_uri.clear();
+                    zi.next_preloaded = false;
+                    zi.next_uri.clear();
+                    zi.next_index = -1;
+                    zi.active_quality = Some(zi.audio_quality);
+                    zi.loaded_at = now;
                     zi.position_updated_at = Utc::now();
-                    zi.last_command_at = Instant::now();
+                    zi.last_command_at = now;
                     zi.revision += 1;
-                    let tr = zi.queue.get(index).map(|it| it.track.clone());
                     (tr, self.make_playback_event(zone_id, &zi))
                 };
                 if let Some(tr) = tr {
@@ -529,12 +568,14 @@ impl Manager {
                 return Err(QueueError::EmptyQueue);
             }
             let len = zi.queue.len() as i32;
-            let next_idx = if zi.current_index + 1 < len {
+            let next_idx = if zi.repeat == RepeatMode::One {
+                zi.current_index.max(0)
+            } else if zi.current_index + 1 < len {
                 zi.current_index + 1
-            } else if matches!(zi.repeat, RepeatMode::All | RepeatMode::One) {
+            } else if zi.repeat == RepeatMode::All {
                 0
             } else {
-                return Err(QueueError::InvalidIndex);
+                return Err(QueueError::EndOfQueue);
             };
             zi.current_index = next_idx;
             zi.next_preloaded = false;
@@ -561,8 +602,7 @@ impl Manager {
             if zi.queue.is_empty() {
                 return Err(QueueError::EmptyQueue);
             }
-            let can_seek = zi.ctrl.info().supports_seek
-                && !zi.active_quality.is_some_and(|q| q.needs_transcode());
+            let can_seek = is_stream_seekable(&zi);
             if zi.status.position > Duration::from_secs(5) && can_seek {
                 (Arc::clone(&zi.ctrl), true, zi.current_index)
             } else {
@@ -613,16 +653,7 @@ impl Manager {
         let _op = z.op_mu.lock().await;
         let (ctrl, non_seekable_transcode) = {
             let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-            let info = zi.ctrl.info();
-            let cur_track = current_item_pair(&zi).1;
-            let live_transcode = info.kind != "player"
-                && zi.active_quality.is_some_and(|q| {
-                    q.is_opus()
-                        || (q == AudioQuality::Wav
-                            && cur_track
-                                .as_ref()
-                                .is_none_or(|t| t.source != SOURCE_LOCAL || is_dsd_track(t)))
-                });
+            let live_transcode = zi.ctrl.info().supports_seek && !is_stream_seekable(&zi);
             (Arc::clone(&zi.ctrl), live_transcode)
         };
         if !ctrl.info().supports_seek {
@@ -721,9 +752,11 @@ impl Manager {
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
-        let (q_ev, pb_ev) = {
+        let (ctrl, changed, prev_len, tail_tracks, quality, q_ev, pb_ev) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if zi.shuffle != enabled {
+            let prev_len = zi.queue.len();
+            let changed = zi.shuffle != enabled;
+            if changed {
                 zi.shuffle = enabled;
                 let cur_id = current_item_pair(&zi).0;
                 if enabled {
@@ -765,7 +798,17 @@ impl Manager {
                 zi.next_index = -1;
                 zi.revision += 1;
             }
+            let tail_tracks: Vec<Track> = if changed && enabled && zi.current_index == 0 {
+                zi.queue.iter().skip(1).map(|it| it.track.clone()).collect()
+            } else {
+                Vec::new()
+            };
             (
+                Arc::clone(&zi.ctrl),
+                changed,
+                prev_len,
+                tail_tracks,
+                zi.audio_quality,
                 Self::make_items_event(zone_id, &zi),
                 self.make_playback_event(zone_id, &zi),
             )
@@ -773,7 +816,38 @@ impl Manager {
         self.emit("zone.queue", zone_id, &q_ev);
         self.emit("zone.playback", zone_id, &pb_ev);
         self.persist_zone_queues();
+        if changed && enabled && prev_len > 1 && !tail_tracks.is_empty() {
+            self.sync_native_shuffle_tail(zone_id, &ctrl, prev_len, &tail_tracks, quality)
+                .await;
+        }
         Ok(self.snapshot_zone(zone_id, &z))
+    }
+
+    async fn sync_native_shuffle_tail(
+        &self,
+        zone_id: &str,
+        ctrl: &Arc<dyn Controller>,
+        prev_len: usize,
+        tail_tracks: &[Track],
+        quality: AudioQuality,
+    ) {
+        let Some(qc) = ctrl.as_queue_controller() else {
+            return;
+        };
+        let mut items = Vec::with_capacity(tail_tracks.len());
+        for t in tail_tracks {
+            if let Ok((mi, _)) = self.build_media_item(t, ctrl, quality).await {
+                items.push(mi);
+            }
+        }
+        if items.len() != tail_tracks.len() {
+            return;
+        }
+        if let Err(e) = qc.remove_queue_range(1, prev_len - 1).await {
+            tracing::warn!(zone = %zone_id, error = %e, "native shuffle tail clear failed");
+        } else if let Err(e) = qc.append_queue(&items).await {
+            tracing::warn!(zone = %zone_id, error = %e, "native shuffle tail append failed");
+        }
     }
 
     pub async fn set_repeat(&self, zone_id: &str, mode: RepeatMode) -> Result<ZoneSnapshot> {
@@ -912,4 +986,22 @@ impl Manager {
         };
         self.emit("zone.playback", zone_id, &pb);
     }
+}
+
+fn is_stream_seekable(zi: &super::ZoneInner) -> bool {
+    let info = zi.ctrl.info();
+    if !info.supports_seek {
+        return false;
+    }
+    if info.kind == "player" {
+        return true;
+    }
+    let cur_track = current_item_pair(zi).1;
+    !zi.active_quality.is_some_and(|q| {
+        q.is_opus()
+            || (q == AudioQuality::Wav
+                && cur_track
+                    .as_ref()
+                    .is_none_or(|t| t.source != SOURCE_LOCAL || is_dsd_track(t)))
+    })
 }
