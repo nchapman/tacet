@@ -392,6 +392,44 @@ async fn library_settings_and_qobuz_oauth_handlers() {
 }
 
 #[tokio::test]
+async fn qobuz_oauth_host_and_state_guards() {
+    let dir = tempfile::tempdir().unwrap();
+    let cat = Catalog::new_in_memory(vec![dir.path().to_path_buf()]);
+    let qb = crate::qobuz::Client::new(crate::qobuz::Config::default());
+    let mgr = QueueManager::new(
+        Arc::clone(&cat),
+        Some(Arc::clone(&qb)),
+        4320,
+        StreamMode::Relay,
+    );
+    let state = AppState::new(cat, Some(qb), mgr, None, String::new());
+    let app = build_router(state);
+    let remote_host = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/qobuz/oauth/start")
+                .header(header::HOST, "evil.example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(remote_host.status(), StatusCode::BAD_REQUEST);
+
+    let bad_cb = send(
+        &app,
+        Method::GET,
+        "/api/v1/qobuz/oauth/callback?state=invalid&code=abc",
+        "",
+    )
+    .await;
+    assert_eq!(bad_cb.status(), StatusCode::FORBIDDEN);
+    let bad_cb_json = json_body(bad_cb).await;
+    assert_eq!(bad_cb_json["error"]["code"], "OAUTH_STATE_INVALID");
+}
+
+#[tokio::test]
 async fn zone_queue_by_id_transport_and_sse_shutdown() {
     let cat = Catalog::new_in_memory(vec![]);
     seed_two_track_album(&cat);

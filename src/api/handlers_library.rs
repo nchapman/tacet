@@ -6,7 +6,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use rand::RngCore;
 use serde::Deserialize;
 
@@ -527,6 +527,48 @@ pub async fn qobuz_status(State(st): State<Arc<AppState>>) -> Json<serde_json::V
     }
 }
 
+const OAUTH_STATE_COOKIE: &str = "tacet_oauth_state";
+
+fn is_local_oauth_host(raw_host: &str) -> bool {
+    let host_only = raw_host
+        .strip_prefix('[')
+        .and_then(|s| s.split(']').next())
+        .unwrap_or_else(|| raw_host.split(':').next().unwrap_or(""));
+    let low = host_only.trim().to_ascii_lowercase();
+    if low.is_empty() {
+        return false;
+    }
+    if low == "localhost"
+        || low.ends_with(".localhost")
+        || low.ends_with(".local")
+        || low.ends_with(".lan")
+        || low.ends_with(".home")
+        || low.ends_with(".home.arpa")
+        || low.ends_with(".ts.net")
+    {
+        return true;
+    }
+    if let Ok(ip) = low.parse::<std::net::IpAddr>() {
+        return ip.is_loopback() || crate::upnp::is_allowed_renderer_ip(ip);
+    }
+    false
+}
+
+fn extract_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    for val in headers.get_all(header::COOKIE) {
+        let Ok(s) = val.to_str() else { continue };
+        for part in s.split(';') {
+            let Some((k, v)) = part.trim().split_once('=') else {
+                continue;
+            };
+            if k.trim() == name {
+                return Some(v.trim());
+            }
+        }
+    }
+    None
+}
+
 pub async fn qobuz_oauth_start(
     State(st): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -545,21 +587,31 @@ pub async fn qobuz_oauth_start(
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     let callback_base = if !pub_url.is_empty() {
-        pub_url
+        pub_url.trim_end_matches('/').to_string()
     } else {
         let host = headers
             .get(header::HOST)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("localhost:4320")
             .trim();
-        // Reject Host header injection (whitespace, slashes, userinfo, query/fragment).
         if host.is_empty()
             || host
                 .contains(|c: char| c.is_whitespace() || matches!(c, '/' | '\\' | '@' | '?' | '#'))
+            || !is_local_oauth_host(host)
         {
-            return Err(ApiError::bad_request("invalid Host header"));
+            return Err(ApiError::bad_request(
+                "invalid or non-local Host header (set --public-url for external hosts)",
+            ));
         }
-        format!("http://{host}")
+        let scheme = match headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+        {
+            Some(p) if p.eq_ignore_ascii_case("https") => "https",
+            _ => "http",
+        };
+        format!("{scheme}://{host}")
     };
     let mut state_bytes = [0u8; 16];
     rand::rng().fill_bytes(&mut state_bytes);
@@ -567,21 +619,50 @@ pub async fn qobuz_oauth_start(
     {
         let mut g = st.oauth_state.lock().unwrap_or_else(|e| e.into_inner());
         g.retain(|_, t| t.elapsed() < Duration::from_secs(600));
-        if g.len() >= 64 {
-            // Evict oldest pending OAuth state to bound memory
-            if let Some(oldest) = g.iter().min_by_key(|(_, t)| *t).map(|(k, _)| k.clone()) {
-                g.remove(&oldest);
-            }
+        if g.len() >= 64
+            && let Some(oldest) = g.iter().min_by_key(|(_, t)| *t).map(|(k, _)| k.clone())
+        {
+            g.remove(&oldest);
         }
         g.insert(state_tok.clone(), Instant::now());
     }
     let callback = format!("{callback_base}/api/v1/qobuz/oauth/callback?state={state_tok}");
     let url = qb.oauth_url(&callback).await?;
-    Ok(Redirect::temporary(&url).into_response())
+    let parsed = url::Url::parse(&url).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "QOBUZ_ERROR",
+            "invalid Qobuz OAuth redirect URL",
+            true,
+        )
+    })?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("www.qobuz.com") {
+        return Err(ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "QOBUZ_ERROR",
+            "unexpected Qobuz OAuth redirect host",
+            true,
+        ));
+    }
+
+    let secure_attr = if callback_base.starts_with("https://") {
+        "; Secure"
+    } else {
+        ""
+    };
+    let cookie = format!(
+        "{OAUTH_STATE_COOKIE}={state_tok}; HttpOnly; SameSite=Lax; Path=/api/v1/qobuz/oauth/callback; Max-Age=600{secure_attr}"
+    );
+    let mut resp = Redirect::to(&url).into_response();
+    if let Ok(hv) = HeaderValue::from_str(&cookie) {
+        resp.headers_mut().append(header::SET_COOKIE, hv);
+    }
+    Ok(resp)
 }
 
 pub async fn qobuz_oauth_callback(
     State(st): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(qv): Query<HashMap<String, String>>,
 ) -> ApiResult<Response> {
     let qb = st.qobuz.as_ref().ok_or_else(|| {
@@ -592,25 +673,48 @@ pub async fn qobuz_oauth_callback(
             false,
         )
     })?;
-    let state_tok = qv.get("state").cloned().unwrap_or_default();
-    let valid = {
+    let cookie_state = extract_cookie(&headers, OAUTH_STATE_COOKIE).map(str::to_string);
+    let query_state = qv
+        .get("state")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // Require the HttpOnly cookie set by /oauth/start (works in web browsers,
+    // iOS ASWebAuthenticationSession, and Android Custom Tabs) to prevent login CSRF.
+    let effective_state = match (cookie_state, query_state) {
+        (Some(c), Some(q)) if c == q => c,
+        (Some(c), None) => c,
+        _ => String::new(),
+    };
+    let valid = !effective_state.is_empty() && {
         let mut g = st.oauth_state.lock().unwrap_or_else(|e| e.into_inner());
-        g.remove(&state_tok)
+        g.remove(&effective_state)
             .is_some_and(|t| t.elapsed() < Duration::from_secs(600))
     };
     if !valid {
-        return Err(ApiError::bad_request("invalid or expired OAuth state"));
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "OAUTH_STATE_INVALID",
+            "invalid or expired OAuth state",
+            false,
+        ));
     }
     let code = qv
         .get("code_autorisation")
         .or_else(|| qv.get("code"))
-        .or_else(|| qv.get("code_ext"))
         .cloned()
         .unwrap_or_default();
     if code.trim().is_empty() {
         return Err(ApiError::bad_request("missing authorization code"));
     }
-    let status = qb.exchange_oauth_code(&code).await?;
+    let status = qb.exchange_oauth_code(&code).await.map_err(|e| {
+        ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "QOBUZ_AUTH_FAILED",
+            e.to_string(),
+            false,
+        )
+    })?;
     let _ = st
         .catalog
         .set_provider_credentials(SOURCE_QOBUZ, &qb.export_credentials());
@@ -622,13 +726,14 @@ pub async fn qobuz_oauth_callback(
         st_bg.prewarm_artists();
     });
 
-    Ok(Html(
-        r#"<!doctype html><html><body><script>
-        if (window.opener) { window.opener.postMessage({type:'tacet:qobuz-auth',ok:true}, '*'); window.close(); }
-        else { window.location.replace('/'); }
-        </script><p>Qobuz connected. You can close this window.</p></body></html>"#,
-    )
-    .into_response())
+    let clear_cookie = format!(
+        "{OAUTH_STATE_COOKIE}=; HttpOnly; SameSite=Lax; Path=/api/v1/qobuz/oauth/callback; Max-Age=0"
+    );
+    let mut resp = Redirect::to("/qobuz").into_response();
+    if let Ok(hv) = HeaderValue::from_str(&clear_cookie) {
+        resp.headers_mut().append(header::SET_COOKIE, hv);
+    }
+    Ok(resp)
 }
 
 #[derive(Deserialize)]
