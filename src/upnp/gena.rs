@@ -4,14 +4,15 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, Method, StatusCode};
+use quick_xml::events::Event;
 use rand::RngCore;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use super::didl::parse_upnp_duration;
+use super::http::{send_raw_http_bytes, url_path_and_query};
+use super::xml::{decode_xml_bytes, lenient_reader, local_name, sanitize_xml, unescape_lenient};
 
 pub const SERVICE_AV_TRANSPORT: &str = "AVTransport";
 pub const SERVICE_RENDERING_CONTROL: &str = "RenderingControl";
@@ -55,42 +56,62 @@ pub fn parse_notify_body(service: &str, body: &[u8]) -> DeviceEvent {
         service: service.into(),
         ..Default::default()
     };
-    let text = String::from_utf8_lossy(body);
-    let Ok(doc) = roxmltree::Document::parse(&text) else {
-        return ev;
-    };
+    let text = sanitize_xml(&decode_xml_bytes(body));
+    let mut reader = lenient_reader(&text);
 
+    let mut cur_tag: Option<String> = None;
+    let mut cur_text = String::new();
     let mut last_change = String::new();
-    for node in doc.descendants() {
-        if !node.is_element() {
-            continue;
-        }
-        match node.tag_name().name() {
-            "LastChange" => {
-                if let Some(t) = node.text() {
-                    last_change = t.trim().to_string();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => {
+                let tag = local_name(e.name().as_ref());
+                if matches!(
+                    tag.as_str(),
+                    "LastChange" | "TransportState" | "CurrentTrackURI" | "AVTransportURI"
+                ) {
+                    cur_tag = Some(tag);
+                    cur_text.clear();
                 }
             }
-            "TransportState" => {
-                if let Some(t) = node.text().map(str::trim).filter(|s| !s.is_empty()) {
-                    ev.has_state = true;
-                    ev.state = t.to_string();
+            Ok(Event::Text(t)) if cur_tag.is_some() => {
+                if let Ok(raw) = std::str::from_utf8(t.as_ref()) {
+                    cur_text.push_str(&unescape_lenient(raw));
                 }
             }
-            "CurrentTrackURI" => {
-                if let Some(t) = node.text().map(str::trim).filter(|s| !s.is_empty()) {
-                    ev.has_track_uri = true;
-                    ev.track_uri = t.to_string();
+            Ok(Event::CData(c)) if cur_tag.is_some() => {
+                if let Ok(raw) = std::str::from_utf8(c.as_ref()) {
+                    cur_text.push_str(raw);
                 }
             }
-            "AVTransportURI" => {
-                if !ev.has_track_uri
-                    && let Some(t) = node.text().map(str::trim).filter(|s| !s.is_empty())
-                {
-                    ev.has_track_uri = true;
-                    ev.track_uri = t.to_string();
+            Ok(Event::End(e)) => {
+                let end_tag = local_name(e.name().as_ref());
+                if cur_tag.as_deref() == Some(end_tag.as_str()) {
+                    let val = cur_text.trim().to_string();
+                    if !val.is_empty() {
+                        match end_tag.as_str() {
+                            "LastChange" => last_change = val,
+                            "TransportState" => {
+                                ev.has_state = true;
+                                ev.state = val;
+                            }
+                            "CurrentTrackURI" => {
+                                ev.has_track_uri = true;
+                                ev.track_uri = val;
+                            }
+                            "AVTransportURI" if !ev.has_track_uri => {
+                                ev.has_track_uri = true;
+                                ev.track_uri = val;
+                            }
+                            _ => {}
+                        }
+                    }
+                    cur_tag = None;
+                    cur_text.clear();
                 }
             }
+            Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
     }
@@ -102,47 +123,59 @@ pub fn parse_notify_body(service: &str, body: &[u8]) -> DeviceEvent {
 }
 
 fn parse_last_change_xml(raw: &str, ev: &mut DeviceEvent) {
-    let Ok(doc) = roxmltree::Document::parse(raw) else {
-        return;
-    };
+    let clean = sanitize_xml(raw);
+    let mut reader = lenient_reader(&clean);
     let mut in_instance_zero = true;
-    for node in doc.descendants() {
-        if !node.is_element() {
-            continue;
-        }
-        let attr = |name: &str| -> Option<&str> {
-            node.attributes()
-                .find(|a| a.name().eq_ignore_ascii_case(name))
-                .map(|a| a.value().trim())
+
+    loop {
+        let ev_tag = match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => e,
+            Ok(Event::Eof) | Err(_) => break,
+            _ => continue,
         };
-        match node.tag_name().name() {
+        let tag = local_name(ev_tag.name().as_ref());
+        let mut val_attr: Option<String> = None;
+        let mut channel_attr: Option<String> = None;
+        for attr in ev_tag.attributes().flatten() {
+            let key = local_name(attr.key.as_ref());
+            if let Ok(raw_v) = std::str::from_utf8(attr.value.as_ref()) {
+                let decoded = unescape_lenient(raw_v).trim().to_string();
+                if key.eq_ignore_ascii_case("val") {
+                    val_attr = Some(decoded);
+                } else if key.eq_ignore_ascii_case("channel") {
+                    channel_attr = Some(decoded);
+                }
+            }
+        }
+
+        match tag.as_str() {
             "InstanceID" => {
-                let val = attr("val").unwrap_or("");
-                in_instance_zero = val.is_empty() || val == "0";
+                let v = val_attr.as_deref().unwrap_or("");
+                in_instance_zero = v.is_empty() || v == "0";
             }
             "TransportState" if in_instance_zero => {
-                if let Some(v) = attr("val").filter(|s| !s.is_empty()) {
+                if let Some(v) = val_attr.filter(|s| !s.is_empty()) {
                     ev.has_state = true;
-                    ev.state = v.to_string();
+                    ev.state = v;
                 }
             }
             "CurrentTrackURI" if in_instance_zero => {
-                if let Some(v) = attr("val").filter(|s| !s.is_empty()) {
+                if let Some(v) = val_attr.filter(|s| !s.is_empty()) {
                     ev.has_track_uri = true;
-                    ev.track_uri = v.to_string();
+                    ev.track_uri = v;
                 }
             }
             "AVTransportURI" if in_instance_zero => {
                 if !ev.has_track_uri
-                    && let Some(v) = attr("val").filter(|s| !s.is_empty())
+                    && let Some(v) = val_attr.filter(|s| !s.is_empty())
                 {
                     ev.has_track_uri = true;
-                    ev.track_uri = v.to_string();
+                    ev.track_uri = v;
                 }
             }
             "CurrentTrackDuration" if in_instance_zero => {
-                if let Some(v) = attr("val").filter(|s| !s.is_empty()) {
-                    let d = parse_upnp_duration(v);
+                if let Some(v) = val_attr.filter(|s| !s.is_empty()) {
+                    let d = parse_upnp_duration(&v);
                     if !d.is_zero() {
                         ev.has_duration = true;
                         ev.duration = d;
@@ -150,23 +183,24 @@ fn parse_last_change_xml(raw: &str, ev: &mut DeviceEvent) {
                 }
             }
             "Volume" if in_instance_zero => {
-                let ch = attr("channel").unwrap_or("");
+                let ch = channel_attr.as_deref().unwrap_or("");
                 if !ch.is_empty() && !ch.eq_ignore_ascii_case("Master") {
                     continue;
                 }
-                if let Some(v) = attr("val").and_then(|s| s.parse::<i32>().ok()) {
+                if let Some(v) = val_attr.and_then(|s| s.parse::<i32>().ok()) {
                     ev.has_volume = true;
                     ev.volume = v.clamp(0, 100);
                 }
             }
             "Mute" if in_instance_zero => {
-                let ch = attr("channel").unwrap_or("");
+                let ch = channel_attr.as_deref().unwrap_or("");
                 if !ch.is_empty() && !ch.eq_ignore_ascii_case("Master") {
                     continue;
                 }
-                if let Some(v) = attr("val").filter(|s| !s.is_empty()) {
+                if let Some(v) = val_attr.filter(|s| !s.is_empty()) {
                     ev.has_mute = true;
-                    ev.muted = v == "1" || v.eq_ignore_ascii_case("true");
+                    ev.muted =
+                        v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes");
                 }
             }
             _ => {}
@@ -324,6 +358,37 @@ impl GenaClient {
     }
 
     pub fn close(&self) {
+        let all = self.drain_subs_for_close();
+        for s in all {
+            s.cancel.cancel();
+            if tokio::runtime::Handle::try_current().is_ok() {
+                tokio::spawn(async move {
+                    unsubscribe_sub(&s).await;
+                });
+            }
+        }
+    }
+
+    /// Cancels all active GENA subscriptions and awaits their `UNSUBSCRIBE` requests
+    /// concurrently (bounded to 2s) so devices stop sending callbacks cleanly on exit.
+    pub async fn close_async(&self) {
+        let all = self.drain_subs_for_close();
+        let mut tasks = Vec::with_capacity(all.len());
+        for s in all {
+            s.cancel.cancel();
+            tasks.push(tokio::spawn(async move {
+                unsubscribe_sub(&s).await;
+            }));
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            for t in tasks {
+                let _ = t.await;
+            }
+        })
+        .await;
+    }
+
+    fn drain_subs_for_close(&self) -> Vec<Arc<GenaSub>> {
         let all = {
             let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
             g.closed = true;
@@ -333,14 +398,7 @@ impl GenaClient {
             subs
         };
         self.stop.cancel();
-        for s in all {
-            s.cancel.cancel();
-            if tokio::runtime::Handle::try_current().is_ok() {
-                tokio::spawn(async move {
-                    unsubscribe_sub(&s).await;
-                });
-            }
-        }
+        all
     }
 
     /// Handles incoming HTTP NOTIFY requests mounted at `/upnp/event/{token}`.
@@ -412,7 +470,9 @@ fn new_sub(renderer_id: &str, service: &str, event_sub_url: &str, cb_base: &str)
 }
 
 fn same_endpoints(existing: &[Arc<GenaSub>], cb_base: &str, av_url: &str, rc_url: &str) -> bool {
-    let want_count = usize::from(!av_url.is_empty()) + usize::from(!rc_url.is_empty());
+    let av_ok = av_url.starts_with("http://");
+    let rc_ok = rc_url.starts_with("http://");
+    let want_count = usize::from(av_ok) + usize::from(rc_ok);
     if existing.len() != want_count {
         return false;
     }
@@ -421,8 +481,8 @@ fn same_endpoints(existing: &[Arc<GenaSub>], cb_base: &str, av_url: &str, rc_url
             return false;
         }
         match s.service.as_str() {
-            SERVICE_AV_TRANSPORT if s.event_sub_url != av_url => return false,
-            SERVICE_RENDERING_CONTROL if s.event_sub_url != rc_url => return false,
+            SERVICE_AV_TRANSPORT if !av_ok || s.event_sub_url != av_url => return false,
+            SERVICE_RENDERING_CONTROL if !rc_ok || s.event_sub_url != rc_url => return false,
             _ => {}
         }
     }
@@ -452,7 +512,7 @@ async fn sub_lifecycle(sub: Arc<GenaSub>) {
                     let renew_in = (cur_timeout / 2).max(Duration::from_secs(15));
                     tokio::select! {
                         _ = sub.cancel.cancelled() => {
-                            let _ = raw_gena_unsubscribe(&sub.event_sub_url, &sid).await;
+                            unsubscribe_sub(&sub).await;
                             return;
                         }
                         _ = tokio::time::sleep(renew_in) => {}
@@ -490,13 +550,14 @@ async fn sub_lifecycle(sub: Arc<GenaSub>) {
     }
 }
 
+/// Atomically takes and clears the active SID so at most one UNSUBSCRIBE is sent
+/// even when both `sub_lifecycle` cancellation and `unwatch_renderer`/`close` race.
 async fn unsubscribe_sub(sub: &GenaSub) {
-    let sid = sub
-        .state
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .0
-        .clone();
+    let sid = {
+        let mut st = sub.state.write().unwrap_or_else(|e| e.into_inner());
+        st.1 = false;
+        std::mem::take(&mut st.0)
+    };
     if sid.is_empty() {
         return;
     }
@@ -520,11 +581,7 @@ async fn raw_gena_subscribe(
     }
     let host = u.host_str().ok_or("missing host")?;
     let port = u.port_or_known_default().unwrap_or(80);
-    let path = if let Some(q) = u.query() {
-        format!("{}?{q}", u.path())
-    } else {
-        u.path().to_string()
-    };
+    let path = url_path_and_query(&u);
 
     let mut req = format!("SUBSCRIBE {path} HTTP/1.1\r\nHOST: {host}:{port}\r\n");
     if let Some(sid) = renew_sid {
@@ -536,32 +593,28 @@ async fn raw_gena_subscribe(
     req.push_str(&format!("TIMEOUT: Second-{DEFAULT_GENA_TIMEOUT_SEC}\r\n"));
     req.push_str("CONNECTION: close\r\n\r\n");
 
-    let resp_text = send_raw_http(host, port, req.as_bytes()).await?;
-    let mut lines = resp_text.lines();
-    let status_line = lines.next().unwrap_or("");
-    let status_code = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-    if !(200..300).contains(&status_code) {
-        return Err(format!("GENA SUBSCRIBE failed: {status_line}"));
+    let resp = send_raw_http_bytes(
+        host,
+        port,
+        req.as_bytes(),
+        Duration::from_secs(4),
+        4096,
+        false,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    if !(200..300).contains(&resp.status) {
+        return Err(format!("GENA SUBSCRIBE failed: HTTP {}", resp.status));
     }
 
-    let mut sid = renew_sid.unwrap_or("").to_string();
-    let mut timeout = Duration::from_secs(DEFAULT_GENA_TIMEOUT_SEC);
-    for line in lines {
-        if line.is_empty() {
-            break;
-        }
-        if let Some((k, v)) = line.split_once(':') {
-            if k.trim().eq_ignore_ascii_case("sid") {
-                sid = v.trim().to_string();
-            } else if k.trim().eq_ignore_ascii_case("timeout") {
-                timeout = parse_gena_timeout(v);
-            }
-        }
-    }
+    let sid = resp
+        .header("sid")
+        .map(str::to_string)
+        .unwrap_or_else(|| renew_sid.unwrap_or("").to_string());
+    let timeout = resp
+        .header("timeout")
+        .map(parse_gena_timeout)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_GENA_TIMEOUT_SEC));
     if sid.is_empty() {
         return Err("GENA SUBSCRIBE response missing SID".into());
     }
@@ -578,53 +631,21 @@ async fn raw_gena_unsubscribe(event_sub_url: &str, sid: &str) -> std::result::Re
     }
     let host = u.host_str().ok_or("missing host")?;
     let port = u.port_or_known_default().unwrap_or(80);
-    let path = if let Some(q) = u.query() {
-        format!("{}?{q}", u.path())
-    } else {
-        u.path().to_string()
-    };
+    let path = url_path_and_query(&u);
     let req = format!(
         "UNSUBSCRIBE {path} HTTP/1.1\r\nHOST: {host}:{port}\r\nSID: {sid}\r\nCONNECTION: close\r\n\r\n"
     );
-    let _ = send_raw_http(host, port, req.as_bytes()).await?;
-    Ok(())
-}
-
-async fn send_raw_http(host: &str, port: u16, req: &[u8]) -> std::result::Result<String, String> {
-    let connect_host = host.trim_matches(['[', ']']);
-    let mut stream = tokio::time::timeout(
+    let _ = send_raw_http_bytes(
+        host,
+        port,
+        req.as_bytes(),
         Duration::from_secs(4),
-        TcpStream::connect((connect_host, port)),
+        4096,
+        false,
     )
     .await
-    .map_err(|_| "connect timeout".to_string())?
     .map_err(|e| e.to_string())?;
-    tokio::time::timeout(Duration::from_secs(4), stream.write_all(req))
-        .await
-        .map_err(|_| "write timeout".to_string())?
-        .map_err(|e| e.to_string())?;
-
-    let mut out = Vec::with_capacity(4096);
-    let mut chunk = [0u8; 2048];
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
-    while out.len() < 16 * 1024 {
-        let rem = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if rem.is_zero() {
-            break;
-        }
-        let n = tokio::time::timeout(rem, stream.read(&mut chunk))
-            .await
-            .map_err(|_| "read timeout".to_string())?
-            .map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        out.extend_from_slice(&chunk[..n]);
-        if out.windows(4).any(|w| w == b"\r\n\r\n") {
-            break;
-        }
-    }
-    Ok(String::from_utf8_lossy(&out).into_owned())
+    Ok(())
 }
 
 pub fn parse_gena_timeout(hdr: &str) -> Duration {

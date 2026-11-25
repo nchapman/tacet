@@ -45,7 +45,8 @@ pub fn negotiate_mime(preferred: &str, sink_protocols: &[String]) -> String {
         let _ = parts.next();
         let _ = parts.next();
         if let Some(mime) = parts.next() {
-            sink_set.insert(mime.trim().to_ascii_lowercase());
+            let base = mime.split(';').next().unwrap_or(mime);
+            sink_set.insert(base.trim().to_ascii_lowercase());
         }
     }
 
@@ -101,16 +102,16 @@ pub fn build_didl(m: &MediaItem, sink_protocols: &[String]) -> String {
     b.push_str(r#"xmlns:dc="http://purl.org/dc/elements/1.1/" "#);
     b.push_str(r#"xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">"#);
     b.push_str(r#"<item id=""#);
-    b.push_str(&escape_xml(item_id));
+    b.push_str(&escape_xml_attr(item_id));
     b.push_str(r#"" parentID="0" restricted="1">"#);
 
     b.push_str("<dc:title>");
-    b.push_str(&escape_xml(title));
+    b.push_str(&escape_xml_text(title));
     b.push_str("</dc:title>");
     b.push_str("<upnp:class>object.item.audioItem.musicTrack</upnp:class>");
 
     if !m.artist.is_empty() {
-        let esc = escape_xml(&m.artist);
+        let esc = escape_xml_text(&m.artist);
         b.push_str("<dc:creator>");
         b.push_str(&esc);
         b.push_str("</dc:creator>");
@@ -120,7 +121,7 @@ pub fn build_didl(m: &MediaItem, sink_protocols: &[String]) -> String {
     }
     if !m.album.is_empty() {
         b.push_str("<upnp:album>");
-        b.push_str(&escape_xml(&m.album));
+        b.push_str(&escape_xml_text(&m.album));
         b.push_str("</upnp:album>");
     }
     if m.track_number > 0 {
@@ -130,12 +131,12 @@ pub fn build_didl(m: &MediaItem, sink_protocols: &[String]) -> String {
     }
     if !m.album_art_url.is_empty() {
         b.push_str("<upnp:albumArtURI>");
-        b.push_str(&escape_xml(&m.album_art_url));
+        b.push_str(&escape_xml_text(&m.album_art_url));
         b.push_str("</upnp:albumArtURI>");
     }
 
     b.push_str(r#"<res protocolInfo=""#);
-    b.push_str(&escape_xml(&protocol_info));
+    b.push_str(&escape_xml_attr(&protocol_info));
     b.push('"');
     if !m.duration.is_zero() {
         b.push_str(r#" duration=""#);
@@ -155,7 +156,7 @@ pub fn build_didl(m: &MediaItem, sink_protocols: &[String]) -> String {
         b.push_str(&format!(r#" nrAudioChannels="{}""#, m.channels));
     }
     b.push('>');
-    b.push_str(&escape_xml(&m.url));
+    b.push_str(&escape_xml_text(&m.url));
     b.push_str("</res>");
     b.push_str("</item></DIDL-Lite>");
     b
@@ -166,7 +167,7 @@ pub fn format_upnp_duration(d: Duration) -> String {
     let h = total_secs / 3600;
     let m = (total_secs % 3600) / 60;
     let s = total_secs % 60;
-    format!("{h}:{m:02}:{s:02}")
+    format!("{h:02}:{m:02}:{s:02}")
 }
 
 pub fn parse_upnp_duration(raw: &str) -> Duration {
@@ -208,7 +209,24 @@ pub fn parse_upnp_duration(raw: &str) -> Duration {
     Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_millis(ms)
 }
 
-pub fn escape_xml(s: &str) -> String {
+/// Escapes XML text nodes (`&`, `<`, `>` only), matching `huin/goupnp/soap/soap.go`
+/// `escapeXMLText`. Embedded UPnP renderers frequently fail to decode `&quot;` or
+/// `&#39;` inside SOAP `<CurrentURIMetaData>` / `<NextURIMetaData>` text nodes.
+pub fn escape_xml_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Escapes XML attribute values using the 5 standard XML named entities.
+pub fn escape_xml_attr(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
@@ -216,9 +234,13 @@ pub fn escape_xml(s: &str) -> String {
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
+            '\'' => out.push_str("&apos;"),
             _ => out.push(ch),
         }
     }
     out
+}
+
+pub fn escape_xml(s: &str) -> String {
+    escape_xml_attr(s)
 }

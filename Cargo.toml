@@ -65,11 +65,11 @@ base64 = "0.22"
 rand = "0.9"
 subtle = "2"
 regex = "1"
-roxmltree = "0.20"
+quick-xml = "0.37"
 
 # Discovery & Cast
 socket2 = "0.6"
-ssdp-client = "2"
+if-addrs = "0.13"
 oxicast = { version = "0.0.5", default-features = false, features = ["discovery"] }
 mdns-sd = "0.20"
 

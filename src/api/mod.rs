@@ -169,6 +169,19 @@ impl AppState {
         }
     }
 
+    pub async fn close_async(&self) {
+        self.shutdown.cancel();
+        self.players.close();
+        self.media.close();
+        if let Some(ref qb) = self.qobuz {
+            qb.close();
+        }
+        self.manager.close();
+        if let Some(ref g) = self.gena {
+            g.close_async().await;
+        }
+    }
+
     pub(crate) fn current_settings(&self) -> Settings {
         let max_q = self
             .qobuz

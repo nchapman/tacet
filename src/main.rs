@@ -176,7 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     upnp_monitor.stop();
     cast_monitor.stop();
     auto_scanner.stop();
-    state.close();
+    state.close_async().await;
     catalog.close();
     Ok(())
 }

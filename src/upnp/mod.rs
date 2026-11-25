@@ -1,12 +1,15 @@
 pub mod didl;
 pub mod discovery;
 pub mod gena;
+pub(crate) mod http;
 pub mod monitor;
 pub mod renderer;
+pub(crate) mod xml;
 
 pub use didl::{
     DLNA_FEATURES_SEEKABLE, DLNA_FEATURES_STREAMING, DLNA_FEATURES_TRANSCODED, MediaItem,
-    build_didl, escape_xml, format_upnp_duration, negotiate_mime, parse_upnp_duration,
+    build_didl, escape_xml, escape_xml_attr, escape_xml_text, format_upnp_duration, negotiate_mime,
+    parse_upnp_duration,
 };
 pub use discovery::{
     connect_by_url, discover, is_allowed_renderer_ip, local_ip_for_host, probe_location,
@@ -51,8 +54,12 @@ mod tests {
         let xml = build_didl(&item, &sinks);
         assert!(xml.contains("audio/flac"));
         assert!(xml.contains("So What &amp; All Blues"));
-        assert!(xml.contains(r#"duration="0:09:22""#));
+        assert!(xml.contains(r#"duration="00:09:22""#));
         assert!(xml.contains(r#"sampleFrequency="96000""#));
+
+        // Parameterized MIME types in sink protocols are stripped to base MIME.
+        let param_sinks = vec!["http-get:*:audio/flac;rate=44100:*".into()];
+        assert_eq!(negotiate_mime("audio/x-flac", &param_sinks), "audio/flac");
     }
 
     #[test]
@@ -63,7 +70,7 @@ mod tests {
             Duration::from_secs(3723) + Duration::from_millis(250)
         );
         assert_eq!(parse_upnp_duration("NOT_IMPLEMENTED"), Duration::ZERO);
-        assert_eq!(format_upnp_duration(Duration::from_secs(225)), "0:03:45");
+        assert_eq!(format_upnp_duration(Duration::from_secs(225)), "00:03:45");
     }
 
     #[test]
@@ -254,5 +261,171 @@ NT: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\
 NTS: ssdp:alive\r\n\
 LOCATION: http://192.168.1.1/rootDesc.xml\r\n\r\n";
         assert_eq!(monitor::parse_ssdp_notify(non_renderer), None);
+    }
+
+    #[test]
+    fn lenient_xml_tolerates_nul_undeclared_prefixes_latin1_and_qobuz_ampersands() {
+        // Trailing NUL bytes and undeclared namespace prefix in SOAP response.
+        let soap_with_nul = b"<?xml version=\"1.0\"?>\
+<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">\
+<s:Body><u:GetTransportInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\
+<r:VendorFlag>1</r:VendorFlag>\
+<CurrentTransportState>PLAYING</CurrentTransportState>\
+</u:GetTransportInfoResponse></s:Body></s:Envelope>\0\0";
+        let decoded = xml::decode_xml_bytes(soap_with_nul);
+        assert_eq!(
+            extract_xml_text(&decoded, "CurrentTransportState").as_deref(),
+            Some("PLAYING")
+        );
+
+        // Latin-1 friendlyName ("Séjour") is preserved rather than garbled.
+        let latin1_desc = b"<root><device><friendlyName>S\xe9jour</friendlyName></device></root>";
+        let loc = url::Url::parse("http://192.168.1.50:1400/xml/device_description.xml").unwrap();
+        let parsed = discovery::parse_description_xml(&xml::decode_xml_bytes(latin1_desc), &loc)
+            .expect("parse Latin-1 description");
+        assert_eq!(parsed.friendly_name, "Séjour");
+
+        // GENA LastChange with unescaped '&' in Qobuz signed CDN URL and undeclared <r:...> tag.
+        let gena_body = br#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event&gt;&lt;InstanceID val="0"&gt;&lt;r:EnqueuedTransportURI val="x"/&gt;&lt;TransportState val="PLAYING"/&gt;&lt;CurrentTrackURI val="https://streaming.qobuz.com/file?uid=1&amp;sig=abc&expires=999"/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        let ev = parse_notify_body(SERVICE_AV_TRANSPORT, gena_body);
+        assert!(ev.has_state);
+        assert_eq!(ev.state, "PLAYING");
+        assert!(ev.has_track_uri);
+        assert!(ev.track_uri.contains("expires=999"));
+    }
+
+    #[test]
+    fn description_scopes_connection_manager_to_avtransport_subdevice() {
+        // Sonos-style root device with both MediaServer and MediaRenderer sub-devices.
+        let sonos_xml = r#"<root xmlns="urn:schemas-upnp-org:device-1-0">
+          <device>
+            <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
+            <friendlyName>Living Room</friendlyName>
+            <UDN>uuid:RINCON_1234</UDN>
+            <deviceList>
+              <device>
+                <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
+                <serviceList>
+                  <service>
+                    <serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>
+                    <controlURL>/MediaServer/ConnectionManager/Control</controlURL>
+                  </service>
+                </serviceList>
+              </device>
+              <device>
+                <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
+                <serviceList>
+                  <service>
+                    <serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>
+                    <controlURL>/MediaRenderer/AVTransport/Control</controlURL>
+                  </service>
+                  <service>
+                    <serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>
+                    <controlURL>/MediaRenderer/ConnectionManager/Control</controlURL>
+                  </service>
+                  <service>
+                    <serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType>
+                    <controlURL>/MediaRenderer/RenderingControl/Control</controlURL>
+                  </service>
+                </serviceList>
+              </device>
+            </deviceList>
+          </device>
+        </root>"#;
+        let loc = url::Url::parse("http://192.168.1.50:1400/xml/device_description.xml").unwrap();
+        let parsed = discovery::parse_description_xml(sonos_xml, &loc).unwrap();
+        let (av_idx, av) = discovery::find_service_in_devices(&parsed.devices, "AVTransport")
+            .expect("AVTransport");
+        assert_eq!(av.control_url, "/MediaRenderer/AVTransport/Control");
+        let cm =
+            discovery::find_service_preferring_device(&parsed.devices, av_idx, "ConnectionManager")
+                .expect("ConnectionManager");
+        assert_eq!(cm.control_url, "/MediaRenderer/ConnectionManager/Control");
+    }
+
+    #[test]
+    fn msearch_payload_and_lenient_response_parser() {
+        let req = discovery::build_msearch_payload(URN_AV_TRANSPORT_1, 2);
+        assert!(req.starts_with("M-SEARCH * HTTP/1.1\r\n"));
+        assert!(req.contains("HOST: 239.255.255.250:1900\r\n"));
+        assert!(req.contains("MAN: \"ssdp:discover\"\r\n"));
+        assert!(req.contains("MX: 2\r\n"));
+        assert!(req.contains(&format!("ST: {URN_AV_TRANSPORT_1}\r\n")));
+
+        // Tolerates LF endings and HTTP/1.0 responses without SERVER/USN headers.
+        let resp = "HTTP/1.0 200 OK\nlocation: http://192.168.1.88:49152/desc.xml\n\n";
+        assert_eq!(
+            discovery::parse_msearch_location(resp).as_deref(),
+            Some("http://192.168.1.88:49152/desc.xml")
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_soap_sends_uppercase_headers_unescaped_quotes_and_detects_http_200_fault() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let cap_clone = std::sync::Arc::clone(&captured);
+
+        let srv = tokio::spawn(async move {
+            // 1st request: SetAVTransportURI -> capture exact wire bytes, return 200 OK
+            let (mut s1, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = s1.read(&mut buf).await.unwrap();
+            *cap_clone.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let ok_body = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:SetAVTransportURIResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"/></s:Body></s:Envelope>"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ok_body}",
+                ok_body.len()
+            );
+            s1.write_all(resp.as_bytes()).await.unwrap();
+
+            // 2nd request: Play -> return HTTP 200 with embedded SOAP Fault 701
+            let (mut s2, _) = listener.accept().await.unwrap();
+            let _ = s2.read(&mut buf).await.unwrap();
+            let fault_body = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><detail><UPnPError><errorCode>701</errorCode><errorDescription>Transition not available</errorDescription></UPnPError></detail></s:Fault></s:Body></s:Envelope>"#;
+            let resp2 = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{fault_body}",
+                fault_body.len()
+            );
+            s2.write_all(resp2.as_bytes()).await.unwrap();
+        });
+
+        let r = Renderer::new_internal(
+            RendererInfo {
+                id: "upnp:wire".into(),
+                name: "WireTest".into(),
+                ..Default::default()
+            },
+            renderer::RendererEndpoints {
+                local_ip: "127.0.0.1".into(),
+                av_control_url: format!("http://{addr}/AVT"),
+                ..Default::default()
+            },
+        );
+        let item = MediaItem {
+            id: "1".into(),
+            url: "http://192.168.1.10:4320/media/local/1.flac".into(),
+            title: "Don't Stop".into(),
+            mime: "audio/flac".into(),
+            ..Default::default()
+        };
+        r.set_uri(&item).await.expect("SetAVTransportURI");
+        let wire = captured.lock().unwrap().clone();
+        assert!(wire.contains(
+            "SOAPACTION: \"urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI\"\r\n"
+        ));
+        assert!(wire.contains("CONTENT-TYPE: text/xml; charset=\"utf-8\"\r\n"));
+        assert!(!wire.to_ascii_lowercase().contains("accept-encoding: gzip"));
+        // DIDL attributes inside <CurrentURIMetaData> keep literal quotes (not &quot;)
+        assert!(wire.contains(r#"&lt;item id="1""#));
+        assert!(!wire.contains("&#39;"));
+
+        let err = r.play().await.expect_err("HTTP 200 SOAP fault must fail");
+        assert!(matches!(err, UpnpError::SoapFault { code: 701, .. }));
+        srv.await.unwrap();
     }
 }

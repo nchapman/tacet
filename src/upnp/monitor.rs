@@ -167,10 +167,8 @@ impl Monitor {
                     }
                 }
             };
-            let Ok(text) = std::str::from_utf8(&buf[..n]) else {
-                continue;
-            };
-            let Some(msg) = parse_ssdp_notify(text) else {
+            let text = String::from_utf8_lossy(&buf[..n]);
+            let Some(msg) = parse_ssdp_notify(&text) else {
                 continue;
             };
             match msg {
@@ -235,11 +233,12 @@ impl Monitor {
     }
 
     async fn handle_notify_byebye(&self, usn: &str, location: &str) {
+        let usn_udn = usn.split("::").next().unwrap_or(usn).trim();
         let candidates: Vec<RendererInfo> = (self.cb.list_upnp)()
             .into_iter()
             .filter(|info| {
-                (!usn.is_empty() && usn.contains(&info.id))
-                    || (!location.is_empty() && info.location == location)
+                (!usn_udn.is_empty() && usn_udn.eq_ignore_ascii_case(&info.id))
+                    || (!location.is_empty() && info.location.eq_ignore_ascii_case(location))
             })
             .collect();
         for info in candidates {
@@ -331,7 +330,18 @@ fn bind_ssdp_multicast_socket() -> std::io::Result<tokio::net::UdpSocket> {
         SSDP_MULTICAST_PORT,
     ));
     sock.bind(&bind_addr.into())?;
-    sock.join_multicast_v4(&SSDP_MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
+    let mut joined = false;
+    for iface_ip in super::discovery::lan_ipv4_interfaces() {
+        if sock
+            .join_multicast_v4(&SSDP_MULTICAST_ADDR, &iface_ip)
+            .is_ok()
+        {
+            joined = true;
+        }
+    }
+    if !joined {
+        sock.join_multicast_v4(&SSDP_MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
+    }
     sock.set_nonblocking(true)?;
     tokio::net::UdpSocket::from_std(sock.into())
 }

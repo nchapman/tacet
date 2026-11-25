@@ -6,7 +6,15 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::didl::{MediaItem, build_didl, escape_xml, format_upnp_duration, parse_upnp_duration};
+use super::didl::{
+    MediaItem, build_didl, escape_xml_text, format_upnp_duration, parse_upnp_duration,
+};
+use super::http::{RawHttpError, send_raw_soap_post};
+use super::xml::{decode_xml_bytes, extract_element_text, parse_soap_fault_xml};
+
+const MAX_SOAP_BODY_BYTES: usize = 512 * 1024;
+const SOAP_DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+const SOAP_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub const URN_AV_TRANSPORT_1: &str = "urn:schemas-upnp-org:service:AVTransport:1";
 pub const URN_RENDERING_CONTROL_1: &str = "urn:schemas-upnp-org:service:RenderingControl:1";
@@ -40,15 +48,24 @@ impl UpnpError {
         }
     }
 
+    /// True only for early EOF / connection-reset errors (never timeouts or refused connects),
+    /// matching Go's `isTransientConnErr` so non-idempotent actions are never re-fired after
+    /// a slow renderer already executed them.
     pub fn is_transient_conn(&self) -> bool {
         match self {
             UpnpError::Http(e) => {
-                e.is_connect()
-                    || e.is_timeout()
-                    || e.to_string().contains("EOF")
-                    || e.to_string().contains("reset")
+                if e.is_timeout() || e.is_connect() {
+                    return false;
+                }
+                let msg = e.to_string();
+                msg.contains("EOF") || msg.contains("reset") || msg.contains("broken pipe")
             }
-            UpnpError::Other(msg) => msg.contains("EOF") || msg.contains("connection reset"),
+            UpnpError::Other(msg) => {
+                msg.contains("EOF")
+                    || msg.contains("connection reset")
+                    || msg.contains("Connection reset")
+                    || msg.contains("broken pipe")
+            }
             _ => false,
         }
     }
@@ -142,19 +159,31 @@ pub trait QueueController: Send + Sync {
     async fn set_loop_mode(&self, repeat: &str, shuffle: bool) -> Result<()>;
 }
 
-/// Returns a shared reqwest client configured for UPnP SOAP calls:
-/// keep-alives disabled (embedded libupnp drops pooled sockets), redirects disallowed,
-/// and a default 10s request timeout (callers needing a tighter budget pass `.timeout(...)`
-/// on the `RequestBuilder`).
-/// Reuses a single `OnceLock` client to avoid repeatedly loading OS TLS root certificates.
+/// Returns a reqwest client for UPnP XML GETs (device description, SCPD, probes):
+/// keep-alives disabled, gzip disabled (embedded stacks often advertise or return broken gzip),
+/// redirects disallowed, and caller-provided timeout.
+pub fn new_upnp_get_client(timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(timeout.min(Duration::from_secs(3)))
+        .pool_max_idle_per_host(0)
+        .no_gzip()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build UPnP GET reqwest client")
+}
+
+/// Returns a shared reqwest client for HTTPS UPnP SOAP / Linkplay HTTP API calls:
+/// keep-alives disabled, gzip disabled, redirects disallowed, 5s request timeout.
 pub fn new_soap_http_client() -> reqwest::Client {
     static SHARED_SOAP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     SHARED_SOAP_CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
+                .timeout(SOAP_DEFAULT_TIMEOUT)
                 .connect_timeout(Duration::from_secs(3))
                 .pool_max_idle_per_host(0)
+                .no_gzip()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .expect("build SOAP reqwest client")
@@ -172,8 +201,11 @@ pub struct Renderer {
     caps: RwLock<RendererCaps>,
     local_ip: String,
     av_control_url: String,
+    av_service_urn: String,
     rc_control_url: String,
+    rc_service_urn: String,
     cm_control_url: String,
+    cm_service_urn: String,
     av_event_url: String,
     rc_event_url: String,
     play_queue_control_url: String,
@@ -181,18 +213,22 @@ pub struct Renderer {
     http: reqwest::Client,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RendererEndpoints {
+    pub local_ip: String,
+    pub av_control_url: String,
+    pub av_service_urn: String,
+    pub rc_control_url: String,
+    pub rc_service_urn: String,
+    pub cm_control_url: String,
+    pub cm_service_urn: String,
+    pub av_event_url: String,
+    pub rc_event_url: String,
+    pub play_queue_control_url: String,
+}
+
 impl Renderer {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_internal(
-        info: RendererInfo,
-        local_ip: String,
-        av_control_url: String,
-        rc_control_url: String,
-        cm_control_url: String,
-        av_event_url: String,
-        rc_event_url: String,
-        play_queue_control_url: String,
-    ) -> Self {
+    pub(crate) fn new_internal(info: RendererInfo, ep: RendererEndpoints) -> Self {
         let supports_set_next = info.supports_set_next;
         let supports_seek = info.supports_seek;
         Self {
@@ -201,13 +237,28 @@ impl Renderer {
                 supports_set_next,
                 supports_seek,
             }),
-            local_ip,
-            av_control_url,
-            rc_control_url,
-            cm_control_url,
-            av_event_url,
-            rc_event_url,
-            play_queue_control_url,
+            local_ip: ep.local_ip,
+            av_control_url: ep.av_control_url,
+            av_service_urn: if ep.av_service_urn.is_empty() {
+                URN_AV_TRANSPORT_1.to_string()
+            } else {
+                ep.av_service_urn
+            },
+            rc_control_url: ep.rc_control_url,
+            rc_service_urn: if ep.rc_service_urn.is_empty() {
+                URN_RENDERING_CONTROL_1.to_string()
+            } else {
+                ep.rc_service_urn
+            },
+            cm_control_url: ep.cm_control_url,
+            cm_service_urn: if ep.cm_service_urn.is_empty() {
+                URN_CONNECTION_MANAGER_1.to_string()
+            } else {
+                ep.cm_service_urn
+            },
+            av_event_url: ep.av_event_url,
+            rc_event_url: ep.rc_event_url,
+            play_queue_control_url: ep.play_queue_control_url,
             soap_mu: AsyncMutex::new(()),
             http: new_soap_http_client(),
         }
@@ -225,23 +276,100 @@ impl Renderer {
         &self.http
     }
 
-    /// Serializes a SOAP action under the per-renderer mutex with one retry
-    /// on transient EOF / connection-reset errors.
+    /// Serializes a SOAP action under the per-renderer mutex, holding the mutex across
+    /// the 120ms retry sleep so queued actions (e.g. `Play`) cannot overtake a retrying
+    /// `SetAVTransportURI` (matches Go `renderer.doSOAP`).
     pub async fn do_soap<F, Fut, T>(&self, mut f: F) -> Result<T>
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
     {
-        let first = {
-            let _guard = self.soap_mu.lock().await;
-            f().await
-        };
-        match first {
+        let _guard = self.soap_mu.lock().await;
+        match f().await {
             Ok(v) => Ok(v),
             Err(e) if e.is_transient_conn() => {
                 tokio::time::sleep(Duration::from_millis(120)).await;
-                let _guard = self.soap_mu.lock().await;
                 f().await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn send_soap_once(
+        &self,
+        control_url: &str,
+        soap_action_hdr: &str,
+        env: &str,
+        timeout: Duration,
+    ) -> Result<String> {
+        let (status, body) = if control_url.starts_with("http://") {
+            let resp = send_raw_soap_post(
+                control_url,
+                soap_action_hdr,
+                env,
+                timeout,
+                MAX_SOAP_BODY_BYTES,
+            )
+            .await
+            .map_err(|e| match e {
+                RawHttpError::EofOrReset(m) => UpnpError::Other(format!("EOF: {m}")),
+                RawHttpError::Timeout(m) | RawHttpError::Other(m) => UpnpError::Other(m),
+            })?;
+            (resp.status, decode_xml_bytes(&resp.body))
+        } else {
+            let mut resp = self
+                .http
+                .post(control_url)
+                .timeout(timeout)
+                .header("CONTENT-TYPE", r#"text/xml; charset="utf-8""#)
+                .header("SOAPACTION", soap_action_hdr)
+                .header("CONNECTION", "close")
+                .body(env.to_string())
+                .send()
+                .await?;
+            let status = resp.status().as_u16();
+            let mut bytes = Vec::new();
+            while let Some(chunk) = resp.chunk().await? {
+                let space = MAX_SOAP_BODY_BYTES.saturating_sub(bytes.len());
+                if space == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk[..chunk.len().min(space)]);
+            }
+            (status, decode_xml_bytes(&bytes))
+        };
+
+        // Some embedded stacks (Linkplay/upmpdcli) return SOAP faults with HTTP 200.
+        if let Some((code, desc)) = parse_soap_fault_xml(&body) {
+            return Err(UpnpError::SoapFault { code, desc });
+        }
+        if (200..300).contains(&status) {
+            return Ok(body);
+        }
+        Err(UpnpError::HttpStatus { status, body })
+    }
+
+    async fn soap_action_unlocked(
+        &self,
+        control_url: &str,
+        service_urn: &str,
+        action: &str,
+        inner_body: &str,
+        timeout: Duration,
+    ) -> Result<String> {
+        let env = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:{action} xmlns:u="{service_urn}">{inner_body}</u:{action}></s:Body></s:Envelope>"#
+        );
+        let soap_action_hdr = format!(r#""{service_urn}#{action}""#);
+        match self
+            .send_soap_once(control_url, &soap_action_hdr, &env, timeout)
+            .await
+        {
+            Ok(v) => Ok(v),
+            Err(e) if e.is_transient_conn() => {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                self.send_soap_once(control_url, &soap_action_hdr, &env, timeout)
+                    .await
             }
             Err(e) => Err(e),
         }
@@ -254,42 +382,21 @@ impl Renderer {
         action: &str,
         inner_body: &str,
     ) -> Result<String> {
-        let env = format!(
-            r#"<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:{action} xmlns:u="{service_urn}">{inner_body}</u:{action}></s:Body></s:Envelope>"#
-        );
-        let soap_action_hdr = format!(r#""{service_urn}#{action}""#);
-        self.do_soap(|| {
-            let env = env.clone();
-            let soap_action_hdr = soap_action_hdr.clone();
-            let url = control_url.to_string();
-            async move {
-                let resp = self
-                    .http
-                    .post(&url)
-                    .header("Content-Type", r#"text/xml; charset="utf-8""#)
-                    .header("SOAPACTION", soap_action_hdr)
-                    .header("Connection", "close")
-                    .body(env)
-                    .send()
-                    .await?;
-                let status = resp.status().as_u16();
-                let body = resp.text().await?;
-                if (200..300).contains(&status) {
-                    return Ok(body);
-                }
-                if let Some((code, desc)) = parse_soap_fault(&body) {
-                    return Err(UpnpError::SoapFault { code, desc });
-                }
-                Err(UpnpError::HttpStatus { status, body })
-            }
-        })
+        let _guard = self.soap_mu.lock().await;
+        self.soap_action_unlocked(
+            control_url,
+            service_urn,
+            action,
+            inner_body,
+            SOAP_DEFAULT_TIMEOUT,
+        )
         .await
     }
 
     pub async fn next(&self) -> Result<()> {
         self.soap_action(
             &self.av_control_url,
-            URN_AV_TRANSPORT_1,
+            &self.av_service_urn,
             "Next",
             "<InstanceID>0</InstanceID>",
         )
@@ -300,7 +407,7 @@ impl Renderer {
     pub async fn previous(&self) -> Result<()> {
         self.soap_action(
             &self.av_control_url,
-            URN_AV_TRANSPORT_1,
+            &self.av_service_urn,
             "Previous",
             "<InstanceID>0</InstanceID>",
         )
@@ -312,12 +419,14 @@ impl Renderer {
         if self.cm_control_url.is_empty() {
             return Vec::new();
         }
+        let _guard = self.soap_mu.lock().await;
         let Ok(xml) = self
-            .soap_action(
+            .soap_action_unlocked(
                 &self.cm_control_url,
-                URN_CONNECTION_MANAGER_1,
+                &self.cm_service_urn,
                 "GetProtocolInfo",
                 "",
+                SOAP_PROBE_TIMEOUT,
             )
             .await
         else {
@@ -351,12 +460,12 @@ impl Controller for Renderer {
         let didl = build_didl(item, &self.info.sink_protocols);
         let body = format!(
             "<InstanceID>0</InstanceID><CurrentURI>{}</CurrentURI><CurrentURIMetaData>{}</CurrentURIMetaData>",
-            escape_xml(&item.url),
-            escape_xml(&didl)
+            escape_xml_text(&item.url),
+            escape_xml_text(&didl)
         );
         self.soap_action(
             &self.av_control_url,
-            URN_AV_TRANSPORT_1,
+            &self.av_service_urn,
             "SetAVTransportURI",
             &body,
         )
@@ -376,13 +485,13 @@ impl Controller for Renderer {
         let didl = build_didl(item, &self.info.sink_protocols);
         let body = format!(
             "<InstanceID>0</InstanceID><NextURI>{}</NextURI><NextURIMetaData>{}</NextURIMetaData>",
-            escape_xml(&item.url),
-            escape_xml(&didl)
+            escape_xml_text(&item.url),
+            escape_xml_text(&didl)
         );
         match self
             .soap_action(
                 &self.av_control_url,
-                URN_AV_TRANSPORT_1,
+                &self.av_service_urn,
                 "SetNextAVTransportURI",
                 &body,
             )
@@ -403,7 +512,7 @@ impl Controller for Renderer {
     async fn play(&self) -> Result<()> {
         self.soap_action(
             &self.av_control_url,
-            URN_AV_TRANSPORT_1,
+            &self.av_service_urn,
             "Play",
             "<InstanceID>0</InstanceID><Speed>1</Speed>",
         )
@@ -414,7 +523,7 @@ impl Controller for Renderer {
     async fn pause(&self) -> Result<()> {
         self.soap_action(
             &self.av_control_url,
-            URN_AV_TRANSPORT_1,
+            &self.av_service_urn,
             "Pause",
             "<InstanceID>0</InstanceID>",
         )
@@ -425,7 +534,7 @@ impl Controller for Renderer {
     async fn stop(&self) -> Result<()> {
         self.soap_action(
             &self.av_control_url,
-            URN_AV_TRANSPORT_1,
+            &self.av_service_urn,
             "Stop",
             "<InstanceID>0</InstanceID>",
         )
@@ -446,7 +555,7 @@ impl Controller for Renderer {
         let body =
             format!("<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>{target}</Target>");
         match self
-            .soap_action(&self.av_control_url, URN_AV_TRANSPORT_1, "Seek", &body)
+            .soap_action(&self.av_control_url, &self.av_service_urn, "Seek", &body)
             .await
         {
             Ok(_) => Ok(()),
@@ -467,25 +576,33 @@ impl Controller for Renderer {
             ..Default::default()
         };
 
-        let ti_xml = self
-            .soap_action(
-                &self.av_control_url,
-                URN_AV_TRANSPORT_1,
-                "GetTransportInfo",
-                "<InstanceID>0</InstanceID>",
-            )
-            .await?;
+        // Hold soap_mu across GetTransportInfo + GetPositionInfo so state and position
+        // are read as a consistent pair without interleaved transport mutations.
+        let (ti_xml, pi_res) = {
+            let _guard = self.soap_mu.lock().await;
+            let ti = self
+                .soap_action_unlocked(
+                    &self.av_control_url,
+                    &self.av_service_urn,
+                    "GetTransportInfo",
+                    "<InstanceID>0</InstanceID>",
+                    SOAP_DEFAULT_TIMEOUT,
+                )
+                .await?;
+            let pi = self
+                .soap_action_unlocked(
+                    &self.av_control_url,
+                    &self.av_service_urn,
+                    "GetPositionInfo",
+                    "<InstanceID>0</InstanceID>",
+                    SOAP_DEFAULT_TIMEOUT,
+                )
+                .await;
+            (ti, pi)
+        };
         st.state = extract_xml_text(&ti_xml, "CurrentTransportState").unwrap_or_default();
 
-        if let Ok(pi_xml) = self
-            .soap_action(
-                &self.av_control_url,
-                URN_AV_TRANSPORT_1,
-                "GetPositionInfo",
-                "<InstanceID>0</InstanceID>",
-            )
-            .await
-        {
+        if let Ok(pi_xml) = pi_res {
             if let Some(rel) = extract_xml_text(&pi_xml, "RelTime") {
                 st.position = parse_upnp_duration(&rel);
                 st.has_position = true;
@@ -502,7 +619,7 @@ impl Controller for Renderer {
             if let Ok(v_xml) = self
                 .soap_action(
                     &self.rc_control_url,
-                    URN_RENDERING_CONTROL_1,
+                    &self.rc_service_urn,
                     "GetVolume",
                     "<InstanceID>0</InstanceID><Channel>Master</Channel>",
                 )
@@ -516,14 +633,16 @@ impl Controller for Renderer {
             if let Ok(m_xml) = self
                 .soap_action(
                     &self.rc_control_url,
-                    URN_RENDERING_CONTROL_1,
+                    &self.rc_service_urn,
                     "GetMute",
                     "<InstanceID>0</InstanceID><Channel>Master</Channel>",
                 )
                 .await
                 && let Some(m_str) = extract_xml_text(&m_xml, "CurrentMute")
             {
-                st.muted = m_str.trim() == "1" || m_str.trim().eq_ignore_ascii_case("true");
+                let m = m_str.trim();
+                st.muted =
+                    m == "1" || m.eq_ignore_ascii_case("true") || m.eq_ignore_ascii_case("yes");
                 st.has_mute_val = true;
             }
         }
@@ -541,7 +660,7 @@ impl Controller for Renderer {
         );
         self.soap_action(
             &self.rc_control_url,
-            URN_RENDERING_CONTROL_1,
+            &self.rc_service_urn,
             "SetVolume",
             &body,
         )
@@ -557,13 +676,8 @@ impl Controller for Renderer {
         let body = format!(
             "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredMute>{val}</DesiredMute>"
         );
-        self.soap_action(
-            &self.rc_control_url,
-            URN_RENDERING_CONTROL_1,
-            "SetMute",
-            &body,
-        )
-        .await?;
+        self.soap_action(&self.rc_control_url, &self.rc_service_urn, "SetMute", &body)
+            .await?;
         Ok(())
     }
 
@@ -577,32 +691,5 @@ impl Controller for Renderer {
 }
 
 pub fn extract_xml_text(xml: &str, local_name: &str) -> Option<String> {
-    let doc = roxmltree::Document::parse(xml).ok()?;
-    for node in doc.descendants() {
-        if node.is_element() && node.tag_name().name().eq_ignore_ascii_case(local_name) {
-            return Some(node.text().unwrap_or("").trim().to_string());
-        }
-    }
-    None
-}
-
-fn parse_soap_fault(xml: &str) -> Option<(i32, String)> {
-    let doc = roxmltree::Document::parse(xml).ok()?;
-    let mut code = None;
-    let mut desc = String::new();
-    for node in doc.descendants() {
-        if !node.is_element() {
-            continue;
-        }
-        if node.tag_name().name().eq_ignore_ascii_case("errorCode") {
-            code = node.text().and_then(|t| t.trim().parse::<i32>().ok());
-        } else if node
-            .tag_name()
-            .name()
-            .eq_ignore_ascii_case("errorDescription")
-        {
-            desc = node.text().unwrap_or("").trim().to_string();
-        }
-    }
-    code.map(|c| (c, desc))
+    extract_element_text(xml, local_name)
 }

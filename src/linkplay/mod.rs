@@ -5,8 +5,7 @@ use async_trait::async_trait;
 
 use crate::upnp::{
     Controller, MediaItem, QueueController, Renderer, RendererInfo, Result, TransportStatus,
-    URN_LINKPLAY_PLAYQUEUE_1, UpnpError, build_didl, escape_xml, extract_xml_text,
-    new_soap_http_client,
+    URN_LINKPLAY_PLAYQUEUE_1, UpnpError, build_didl, escape_xml, escape_xml_text, extract_xml_text,
 };
 
 const TACET_LIST_NAME: &str = "tacet";
@@ -18,7 +17,6 @@ const LINKPLAY_BATCH_SIZE: usize = 50;
 pub struct LinkplayRenderer {
     base: Arc<Renderer>,
     play_queue_url: String,
-    http: reqwest::Client,
 }
 
 /// Promotes `r` to a `LinkplayRenderer` when the UPnP device advertises
@@ -36,49 +34,24 @@ impl LinkplayRenderer {
         Self {
             base,
             play_queue_url,
-            http: new_soap_http_client(),
         }
     }
 
     async fn soap_call(&self, action: &str, inner_body: &str) -> Result<String> {
-        let env = format!(
-            r#"<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:{action} xmlns:u="{URN_LINKPLAY_PLAYQUEUE_1}">{inner_body}</u:{action}></s:Body></s:Envelope>"#
-        );
-        let soap_action_hdr = format!(r#""{URN_LINKPLAY_PLAYQUEUE_1}#{action}""#);
-        let url = self.play_queue_url.clone();
-        self.base
-            .do_soap(|| {
-                let env = env.clone();
-                let soap_action_hdr = soap_action_hdr.clone();
-                let url = url.clone();
-                async move {
-                    let resp = self
-                        .http
-                        .post(&url)
-                        .header("Content-Type", r#"text/xml; charset="utf-8""#)
-                        .header("SOAPACTION", soap_action_hdr)
-                        .header("Connection", "close")
-                        .body(env)
-                        .send()
-                        .await?;
-                    let status = resp.status().as_u16();
-                    let body = resp.text().await?;
-                    if (200..300).contains(&status) {
-                        return Ok(body);
-                    }
-                    if let Some(code_str) = crate::upnp::extract_xml_text(&body, "errorCode") {
-                        let code = code_str.trim().parse::<i32>().unwrap_or(0);
-                        let desc = crate::upnp::extract_xml_text(&body, "errorDescription")
-                            .unwrap_or_default();
-                        if code == 401 || code == 602 {
-                            return Err(UpnpError::ActionUnsupported);
-                        }
-                        return Err(UpnpError::SoapFault { code, desc });
-                    }
-                    Err(UpnpError::HttpStatus { status, body })
-                }
-            })
+        match self
+            .base
+            .soap_action(
+                &self.play_queue_url,
+                URN_LINKPLAY_PLAYQUEUE_1,
+                action,
+                inner_body,
+            )
             .await
+        {
+            Ok(body) => Ok(body),
+            Err(e) if e.is_action_unsupported() => Err(UpnpError::ActionUnsupported),
+            Err(e) => Err(e),
+        }
     }
 
     async fn get_queue_index(&self) -> Option<i32> {
@@ -97,9 +70,14 @@ impl LinkplayRenderer {
             return Ok(());
         }
         let sinks = self.base.info().sink_protocols;
-        let qctx = build_queue_context_xml(list_name, items, &sinks);
-        let body = format!("<QueueContext>{}</QueueContext>", escape_xml(&qctx));
-        self.soap_call("AppendTracksInQueue", &body).await?;
+        let mut start = 0;
+        while start < items.len() {
+            let end = (start + LINKPLAY_BATCH_SIZE).min(items.len());
+            let qctx = build_queue_context_xml(list_name, &items[start..end], &sinks);
+            let body = format!("<QueueContext>{}</QueueContext>", escape_xml_text(&qctx));
+            self.soap_call("AppendTracksInQueue", &body).await?;
+            start = end;
+        }
         Ok(())
     }
 }
@@ -186,15 +164,12 @@ impl QueueController for LinkplayRenderer {
         let sinks = self.base.info().sink_protocols;
         let first_end = items.len().min(LINKPLAY_BATCH_SIZE);
         let qctx = build_queue_context_xml(TACET_LIST_NAME, &items[..first_end], &sinks);
-        let body = format!("<QueueContext>{}</QueueContext>", escape_xml(&qctx));
+        let body = format!("<QueueContext>{}</QueueContext>", escape_xml_text(&qctx));
         self.soap_call("CreateQueue", &body).await?;
 
-        let mut start = first_end;
-        while start < items.len() {
-            let end = (start + LINKPLAY_BATCH_SIZE).min(items.len());
-            self.append_queue_named(TACET_LIST_NAME, &items[start..end])
+        if first_end < items.len() {
+            self.append_queue_named(TACET_LIST_NAME, &items[first_end..])
                 .await?;
-            start = end;
         }
 
         // Linkplay PlayQueue indices are 1-based.
@@ -379,13 +354,12 @@ mod tests {
                 name: "WiiM Test".into(),
                 ..Default::default()
             },
-            "127.0.0.1".into(),
-            format!("http://{addr}/AVT"),
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            pq_url.clone(),
+            crate::upnp::renderer::RendererEndpoints {
+                local_ip: "127.0.0.1".into(),
+                av_control_url: format!("http://{addr}/AVT"),
+                play_queue_control_url: pq_url.clone(),
+                ..Default::default()
+            },
         ));
         let lp = LinkplayRenderer::new(upnp, pq_url);
 
