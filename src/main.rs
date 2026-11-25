@@ -125,6 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !cli.public_url.trim().is_empty() {
         manager.set_public_url(cli.public_url.trim());
     }
+    manager.load_persisted_zones();
     configure_event_log(&manager, &cli.event_log)?;
 
     let mgr_gena = Arc::clone(&manager);

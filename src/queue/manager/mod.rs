@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex as AsyncMutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
@@ -39,8 +39,25 @@ pub(super) struct ZoneInner {
     pub(super) active_quality: Option<AudioQuality>,
     pub(super) next_preloaded: bool,
     pub(super) set_next_unsupported: bool,
+    pub(super) user_stopped: bool,
+    pub(super) loaded_at: Instant,
     pub(super) last_played_item_id: String,
     pub(super) last_command_at: Instant,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedZoneQueue {
+    #[serde(default)]
+    queue: Vec<Track>,
+    #[serde(default)]
+    original_queue: Vec<Track>,
+    #[serde(default)]
+    current_index: i32,
+    #[serde(default)]
+    shuffle: bool,
+    #[serde(default)]
+    repeat: RepeatMode,
 }
 
 pub(super) struct Zone {
@@ -55,6 +72,8 @@ pub struct Manager {
     public_url: RwLock<String>,
     stream_mode: RwLock<StreamMode>,
     pub(super) zones: RwLock<HashMap<String, Arc<Zone>>>,
+    saved_qualities: RwLock<HashMap<String, AudioQuality>>,
+    saved_queues: RwLock<HashMap<String, PersistedZoneQueue>>,
     gena: RwLock<Option<Arc<GenaClient>>>,
     item_seq: AtomicU64,
     event_seq: AtomicU64,
@@ -79,6 +98,8 @@ impl Manager {
             public_url: RwLock::new(String::new()),
             stream_mode: RwLock::new(stream_mode),
             zones: RwLock::new(HashMap::new()),
+            saved_qualities: RwLock::new(HashMap::new()),
+            saved_queues: RwLock::new(HashMap::new()),
             gena: RwLock::new(None),
             item_seq: AtomicU64::new(0),
             event_seq: AtomicU64::new(0),
@@ -150,7 +171,86 @@ impl Manager {
         format!("http://{}:{}", ctrl.local_ip(), self.server_port)
     }
 
+    pub fn load_persisted_zones(&self) {
+        if let Ok(Some(raw)) = self.catalog.get_pref(crate::library::PREF_ZONE_QUALITIES)
+            && let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&raw)
+        {
+            let mut g = self
+                .saved_qualities
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            for (zid, q_str) in map {
+                if let Some(q) = AudioQuality::parse(&q_str) {
+                    g.insert(zid, q);
+                }
+            }
+        }
+        if let Ok(Some(raw)) = self.catalog.get_pref(crate::library::PREF_ZONE_QUEUES)
+            && let Ok(map) = serde_json::from_str::<HashMap<String, PersistedZoneQueue>>(&raw)
+        {
+            *self.saved_queues.write().unwrap_or_else(|e| e.into_inner()) = map;
+        }
+    }
+
+    pub(super) fn persist_zone_queues(&self) {
+        let mut out = self
+            .saved_queues
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        {
+            let zones = self.zones.read().unwrap_or_else(|e| e.into_inner());
+            for (zid, z) in zones.iter() {
+                let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+                if zi.ctrl.info().kind == "player" {
+                    continue;
+                }
+                if zi.queue.is_empty() && zi.repeat == RepeatMode::Off && !zi.shuffle {
+                    out.remove(zid);
+                } else {
+                    let tracks: Vec<Track> = zi
+                        .queue
+                        .iter()
+                        .take(500)
+                        .map(|it| it.track.clone())
+                        .collect();
+                    let orig_tracks: Vec<Track> = if zi.shuffle {
+                        zi.original_queue
+                            .iter()
+                            .take(500)
+                            .map(|it| it.track.clone())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let idx = if tracks.is_empty() {
+                        -1
+                    } else {
+                        zi.current_index.clamp(0, tracks.len() as i32 - 1)
+                    };
+                    out.insert(
+                        zid.clone(),
+                        PersistedZoneQueue {
+                            queue: tracks,
+                            original_queue: orig_tracks,
+                            current_index: idx,
+                            shuffle: zi.shuffle,
+                            repeat: zi.repeat,
+                        },
+                    );
+                }
+            }
+        }
+        *self.saved_queues.write().unwrap_or_else(|e| e.into_inner()) = out.clone();
+        if let Ok(enc) = serde_json::to_string(&out) {
+            let _ = self
+                .catalog
+                .set_pref(crate::library::PREF_ZONE_QUEUES, &enc);
+        }
+    }
+
     pub fn close(&self) {
+        self.persist_zone_queues();
         self.stop.cancel();
     }
 
@@ -208,15 +308,48 @@ impl Manager {
                 }
                 false
             } else {
+                let saved_q = self
+                    .saved_qualities
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&zone_id)
+                    .copied()
+                    .unwrap_or(AudioQuality::Original);
+                let restored = if info.kind != "player" {
+                    self.saved_queues
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(&zone_id)
+                        .cloned()
+                } else {
+                    None
+                };
+                let (queue, original_queue, current_index, shuffle, repeat) = match restored {
+                    Some(pq) => {
+                        let items = self.wrap_tracks(pq.queue);
+                        let orig = if pq.original_queue.is_empty() {
+                            items.clone()
+                        } else {
+                            self.wrap_tracks(pq.original_queue)
+                        };
+                        let idx = if items.is_empty() {
+                            -1
+                        } else {
+                            pq.current_index.clamp(0, items.len() as i32 - 1)
+                        };
+                        (items, orig, idx, pq.shuffle, pq.repeat)
+                    }
+                    None => (Vec::new(), Vec::new(), -1, false, RepeatMode::Off),
+                };
                 let z = Arc::new(Zone {
                     op_mu: AsyncMutex::new(()),
                     inner: Mutex::new(ZoneInner {
                         ctrl,
-                        queue: Vec::new(),
-                        original_queue: Vec::new(),
-                        current_index: -1,
-                        shuffle: false,
-                        repeat: RepeatMode::Off,
+                        original_queue,
+                        queue,
+                        current_index,
+                        shuffle,
+                        repeat,
                         revision: 1,
                         status: TransportStatus {
                             state: "STOPPED".into(),
@@ -228,10 +361,12 @@ impl Manager {
                         current_uri: String::new(),
                         next_uri: String::new(),
                         next_index: -1,
-                        audio_quality: AudioQuality::Original,
+                        audio_quality: saved_q,
                         active_quality: None,
                         next_preloaded: false,
                         set_next_unsupported: !info.supports_set_next,
+                        user_stopped: false,
+                        loaded_at: Instant::now() - Duration::from_secs(60),
                         last_played_item_id: String::new(),
                         last_command_at: Instant::now() - Duration::from_secs(60),
                     }),

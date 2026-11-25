@@ -188,7 +188,12 @@ pub fn resolve_track_quality(
     info: &RendererInfo,
     transcoder_available: bool,
 ) -> (AudioQuality, &'static str) {
-    let is_dsd = track.ext.eq_ignore_ascii_case(".dsf") || track.mime.contains("dsf");
+    let low_mime = track.mime.to_ascii_lowercase();
+    let is_dsd = (track.bit_depth == 1 && track.sample_rate >= 2_000_000)
+        || track.ext.eq_ignore_ascii_case(".dsf")
+        || track.ext.eq_ignore_ascii_case(".dff")
+        || low_mime.contains("dsf")
+        || low_mime.contains("dsd");
     if is_dsd && !renderer_supports_dsd(info) && transcoder_available {
         return (AudioQuality::Wav, "wav");
     }

@@ -437,4 +437,97 @@ mod tests {
         assert_eq!(lines[1]["src"], "gena");
         assert_eq!(lines[1]["zoneId"], "zone:test");
     }
+
+    #[tokio::test]
+    async fn zone_persistence_and_repeat_one_no_self_preload() {
+        use crate::upnp::{Controller, MediaItem, RendererInfo, TransportStatus, UpnpError};
+        use async_trait::async_trait;
+        use std::time::Duration;
+
+        struct StubUpnp(RendererInfo);
+        #[async_trait]
+        impl Controller for StubUpnp {
+            fn info(&self) -> RendererInfo {
+                self.0.clone()
+            }
+            fn local_ip(&self) -> String {
+                "127.0.0.1".into()
+            }
+            async fn set_uri(&self, _: &MediaItem) -> std::result::Result<(), UpnpError> {
+                Ok(())
+            }
+            async fn set_next_uri(&self, _: &MediaItem) -> std::result::Result<(), UpnpError> {
+                Ok(())
+            }
+            async fn play(&self) -> std::result::Result<(), UpnpError> {
+                Ok(())
+            }
+            async fn pause(&self) -> std::result::Result<(), UpnpError> {
+                Ok(())
+            }
+            async fn stop(&self) -> std::result::Result<(), UpnpError> {
+                Ok(())
+            }
+            async fn seek(&self, _: Duration) -> std::result::Result<(), UpnpError> {
+                Ok(())
+            }
+            async fn set_volume(&self, _: i32) -> std::result::Result<(), UpnpError> {
+                Ok(())
+            }
+            async fn set_mute(&self, _: bool) -> std::result::Result<(), UpnpError> {
+                Ok(())
+            }
+            async fn status(&self) -> std::result::Result<TransportStatus, UpnpError> {
+                Ok(TransportStatus::default())
+            }
+        }
+
+        // Repeat=One must NOT self-preload the same track as next_uri.
+        let h = setup_player_harness("qrep1");
+        h.mgr
+            .set_queue(&h.zone_id, vec![test_track(1), test_track(2)], 0, true)
+            .await
+            .unwrap();
+        h.mgr.set_repeat(&h.zone_id, RepeatMode::One).await.unwrap();
+        h.preload_count
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        h.rp.report_state(StateReport {
+            state: "PLAYING".into(),
+            position_sec: Some(110.0),
+            duration_sec: Some(120.0),
+            ..Default::default()
+        });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(h.preload_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        h.mgr.close();
+
+        // Persisted UPnP zone queue + repeat mode must restore across Manager restarts.
+        let cat = Catalog::new_in_memory(vec![]);
+        let mk_info = || RendererInfo {
+            id: "upnp:persist1".into(),
+            name: "Persist Zone".into(),
+            kind: "upnp".into(),
+            ..Default::default()
+        };
+        let mgr1 = Manager::new(Arc::clone(&cat), None, 4320, StreamMode::Relay);
+        mgr1.register_renderer(Arc::new(StubUpnp(mk_info())));
+        let t1 = test_track(1);
+        let t2 = test_track(2);
+        mgr1.set_queue("upnp:persist1", vec![t1.clone(), t2], 0, true)
+            .await
+            .unwrap();
+        mgr1.set_repeat("upnp:persist1", RepeatMode::All)
+            .await
+            .unwrap();
+        mgr1.close();
+
+        let mgr2 = Manager::new(Arc::clone(&cat), None, 4320, StreamMode::Relay);
+        mgr2.load_persisted_zones();
+        mgr2.register_renderer(Arc::new(StubUpnp(mk_info())));
+        let snap = mgr2.zone_snapshot("upnp:persist1").unwrap();
+        assert_eq!(snap.queue.len(), 2);
+        assert_eq!(snap.queue[0].track.id, t1.id);
+        assert_eq!(snap.repeat, RepeatMode::All);
+        mgr2.close();
+    }
 }

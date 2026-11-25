@@ -45,12 +45,17 @@ impl Manager {
             // Ignore GENA initial snapshot (seq == 0 on AVTransport) to avoid spurious advances.
             let is_gena_initial = ev.service == "AVTransport" && ev.seq == 0;
             if !is_gena_initial
+                && !zi.user_stopped
+                && zi.loaded_at.elapsed() > Duration::from_secs(2)
                 && prev_state == PlaybackState::Playing
                 && new_state == PlaybackState::Stopped
                 && ctrl.as_queue_controller().is_none()
                 && zi.last_command_at.elapsed() > Duration::from_secs(3)
             {
                 need_advance = true;
+            }
+            if recorded_track.is_none() {
+                recorded_track = maybe_record_play(&mut zi, new_state);
             }
 
             if vol_changed || pb_changed {
@@ -201,12 +206,17 @@ impl Manager {
                 pb_changed = true;
                 recorded_track = Some(tr);
             }
-            if prev_state == PlaybackState::Playing
+            if !zi.user_stopped
+                && zi.loaded_at.elapsed() > Duration::from_secs(2)
+                && prev_state == PlaybackState::Playing
                 && new_state == PlaybackState::Stopped
                 && ctrl.as_queue_controller().is_none()
                 && zi.last_command_at.elapsed() > Duration::from_secs(3)
             {
                 need_advance = true;
+            }
+            if recorded_track.is_none() {
+                recorded_track = maybe_record_play(&mut zi, new_state);
             }
 
             if vol_changed || pb_changed {
@@ -273,8 +283,47 @@ fn apply_event_fields(zi: &mut ZoneInner, ev: &DeviceEvent) -> (bool, bool) {
     }
     if ev.has_track_uri && !ev.track_uri.is_empty() {
         zi.status.track_uri = ev.track_uri.clone();
+        if is_foreign_track_uri(zi, &ev.track_uri) && zi.status.state != "STOPPED" {
+            zi.status.state = "STOPPED".into();
+            pb_changed = true;
+        }
     }
     (vol_changed, pb_changed)
+}
+
+fn is_foreign_track_uri(zi: &ZoneInner, uri: &str) -> bool {
+    if uri.is_empty() || zi.current_uri.is_empty() {
+        return false;
+    }
+    if uri == zi.current_uri || (!zi.next_uri.is_empty() && uri == zi.next_uri) {
+        return false;
+    }
+    !uri.contains("/media/local/") && !uri.contains("/media/qobuz/")
+}
+
+fn maybe_record_play(zi: &mut ZoneInner, state: PlaybackState) -> Option<Track> {
+    if state != PlaybackState::Playing || zi.current_index < 0 {
+        return None;
+    }
+    let item = zi.queue.get(zi.current_index as usize)?;
+    if zi.last_played_item_id == item.item_id {
+        return None;
+    }
+    let dur_secs = if !zi.status.duration.is_zero() {
+        zi.status.duration.as_secs()
+    } else {
+        item.track.duration_sec.max(0) as u64
+    };
+    let threshold = if dur_secs > 0 {
+        (dur_secs / 2).clamp(5, 30)
+    } else {
+        5
+    };
+    if zi.status.position.as_secs() < threshold {
+        return None;
+    }
+    zi.last_played_item_id = item.item_id.clone();
+    Some(item.track.clone())
 }
 
 fn apply_poll_status(zi: &mut ZoneInner, st: &crate::upnp::TransportStatus) -> (bool, bool) {
@@ -289,7 +338,12 @@ fn apply_poll_status(zi: &mut ZoneInner, st: &crate::upnp::TransportStatus) -> (
         zi.status.muted = st.muted;
         vol_changed = true;
     }
-    if st.state != zi.status.state {
+    if !st.track_uri.is_empty() && is_foreign_track_uri(zi, &st.track_uri) {
+        if zi.status.state != "STOPPED" {
+            zi.status.state = "STOPPED".into();
+            pb_changed = true;
+        }
+    } else if st.state != zi.status.state {
         zi.status.state = st.state.clone();
         pb_changed = true;
     }
@@ -347,6 +401,7 @@ fn arm_gapless_preload(
         && !zi.status.duration.is_zero()
         && zi.status.duration.saturating_sub(zi.status.position) <= Duration::from_secs(25)
         && let Some(n) = compute_next_index(zi)
+        && n != zi.current_index
     {
         zi.next_preloaded = true;
         zi.next_index = n;
