@@ -351,13 +351,24 @@ impl RemotePlayer {
             (tx, ack_rx)
         };
 
-        if tx.send(cmd).await.is_err() {
-            self.state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .pending
-                .remove(&id);
-            return Err(UpnpError::Other(PlayerError::Disconnected.to_string()));
+        match tokio::time::timeout(self.command_timeout, tx.send(cmd)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .pending
+                    .remove(&id);
+                return Err(UpnpError::Other(PlayerError::Disconnected.to_string()));
+            }
+            Err(_) => {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .pending
+                    .remove(&id);
+                return Err(UpnpError::Other(PlayerError::CommandTimeout.to_string()));
+            }
         }
 
         match tokio::time::timeout(self.command_timeout, ack_rx).await {

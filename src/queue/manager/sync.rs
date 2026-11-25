@@ -412,7 +412,13 @@ fn detect_gapless_transition(zi: &mut ZoneInner, track_uri: &str) -> Option<Trac
         zi.next_preloaded = false;
         zi.next_uri.clear();
         zi.next_index = -1;
-        return Some(zi.queue[zi.current_index as usize].track.clone());
+        let tr = zi.queue[zi.current_index as usize].track.clone();
+        zi.status.position = Duration::ZERO;
+        zi.status.duration = Duration::from_secs(tr.duration_sec.max(0) as u64);
+        zi.loaded_at = Instant::now();
+        zi.position_updated_at = Utc::now();
+        zi.last_played_item_id.clear();
+        return Some(tr);
     }
     None
 }

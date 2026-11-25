@@ -270,7 +270,7 @@ impl GenaClient {
         }
 
         let mut subs = Vec::new();
-        if !av_event_url.is_empty() {
+        if av_event_url.starts_with("http://") {
             subs.push(new_sub(
                 renderer_id,
                 SERVICE_AV_TRANSPORT,
@@ -278,7 +278,7 @@ impl GenaClient {
                 &cb_base,
             ));
         }
-        if !rc_event_url.is_empty() {
+        if rc_event_url.starts_with("http://") {
             subs.push(new_sub(
                 renderer_id,
                 SERVICE_RENDERING_CONTROL,

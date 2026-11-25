@@ -275,9 +275,15 @@ pub async fn add_queue_items(
     body: Bytes,
 ) -> ApiResult<Json<serde_json::Value>> {
     let req: AddQueueItemsReq = parse_strict_json(&body)?;
+    let pos = req.position.trim();
+    if !pos.is_empty() && !pos.eq_ignore_ascii_case("end") && !pos.eq_ignore_ascii_case("next") {
+        return Err(ApiError::bad_request(
+            "position must be \"end\" or \"next\"",
+        ));
+    }
     let tracks = resolve_source(&st, req.source).await?;
     let autoplay = req.autoplay.unwrap_or(true);
-    let snap = if req.position.eq_ignore_ascii_case("next") {
+    let snap = if pos.eq_ignore_ascii_case("next") {
         st.manager
             .play_next_with_autoplay(&zone_id, tracks, autoplay)
             .await?

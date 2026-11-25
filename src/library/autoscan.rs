@@ -263,7 +263,6 @@ fn is_relevant_path(p: &Path, kind: &EventKind) -> bool {
                 | "aiff"
                 | "aif"
                 | "m4a"
-                | "mp4"
                 | "mp3"
                 | "ogg"
                 | "opus"

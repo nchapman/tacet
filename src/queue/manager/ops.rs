@@ -802,9 +802,10 @@ impl Manager {
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
-        let (ctrl, changed, prev_len, tail_tracks, quality, q_ev, pb_ev) = {
+        let (ctrl, changed, prev_len, old_cur_idx, tail_tracks, quality, q_ev, pb_ev) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             let prev_len = zi.queue.len();
+            let old_cur_idx = zi.current_index;
             let changed = zi.shuffle != enabled;
             if changed {
                 zi.shuffle = enabled;
@@ -857,6 +858,7 @@ impl Manager {
                 Arc::clone(&zi.ctrl),
                 changed,
                 prev_len,
+                old_cur_idx,
                 tail_tracks,
                 zi.audio_quality,
                 Self::make_items_event(zone_id, &zi),
@@ -866,9 +868,22 @@ impl Manager {
         self.emit("zone.queue", zone_id, &q_ev);
         self.emit("zone.playback", zone_id, &pb_ev);
         self.persist_zone_queues();
-        if changed && enabled && prev_len > 1 && !tail_tracks.is_empty() {
-            self.sync_native_shuffle_tail(zone_id, &ctrl, prev_len, &tail_tracks, quality)
-                .await;
+        if changed
+            && enabled
+            && prev_len > 1
+            && old_cur_idx >= 0
+            && (old_cur_idx as usize) < prev_len
+            && !tail_tracks.is_empty()
+        {
+            self.sync_native_shuffle_tail(
+                zone_id,
+                &ctrl,
+                prev_len,
+                old_cur_idx as usize,
+                &tail_tracks,
+                quality,
+            )
+            .await;
         }
         Ok(self.snapshot_zone(zone_id, &z))
     }
@@ -878,26 +893,49 @@ impl Manager {
         zone_id: &str,
         ctrl: &Arc<dyn Controller>,
         prev_len: usize,
+        old_cur_idx: usize,
         tail_tracks: &[Track],
         quality: AudioQuality,
     ) {
         let Some(qc) = ctrl.as_queue_controller() else {
             return;
         };
-        let mut items = Vec::with_capacity(tail_tracks.len());
-        for t in tail_tracks {
-            if let Ok((mi, _)) = self.build_media_item(t, ctrl, quality).await {
-                items.push(mi);
-            }
+        let Some(items) = self.build_all_media_items(tail_tracks, ctrl, quality).await else {
+            return;
+        };
+        // Remove items after old_cur_idx, then items before old_cur_idx, leaving ONLY the
+        // currently playing track untouched at native index 0 before appending the shuffled tail.
+        let mut ok = true;
+        if old_cur_idx + 1 < prev_len {
+            ok = qc
+                .remove_queue_range(old_cur_idx + 1, prev_len - 1)
+                .await
+                .is_ok();
         }
-        if items.len() != tail_tracks.len() {
+        if ok && old_cur_idx > 0 {
+            ok = qc.remove_queue_range(0, old_cur_idx - 1).await.is_ok();
+        }
+        if !ok {
+            tracing::warn!(zone = %zone_id, "native shuffle clear failed");
             return;
         }
-        if let Err(e) = qc.remove_queue_range(1, prev_len - 1).await {
-            tracing::warn!(zone = %zone_id, error = %e, "native shuffle tail clear failed");
-        } else if let Err(e) = qc.append_queue(&items).await {
+        if let Err(e) = qc.append_queue(&items).await {
             tracing::warn!(zone = %zone_id, error = %e, "native shuffle tail append failed");
         }
+    }
+
+    async fn build_all_media_items(
+        &self,
+        tracks: &[Track],
+        ctrl: &Arc<dyn Controller>,
+        quality: AudioQuality,
+    ) -> Option<Vec<crate::upnp::MediaItem>> {
+        let mut items = Vec::with_capacity(tracks.len());
+        for t in tracks {
+            let (mi, _) = self.build_media_item(t, ctrl, quality).await.ok()?;
+            items.push(mi);
+        }
+        Some(items)
     }
 
     pub async fn set_repeat(&self, zone_id: &str, mode: RepeatMode) -> Result<ZoneSnapshot> {

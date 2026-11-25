@@ -168,6 +168,15 @@ fn scan_roots_blocking(store: &LibraryStore, roots: &[PathBuf]) -> Result<(usize
             .then_with(|| a.file_path.cmp(&b.file_path))
     });
 
+    // Re-verify all roots are still mounted after walking so a mid-scan NAS unmount
+    // cannot trigger soft-deletion of the existing local library.
+    for root in roots {
+        if let Err(e) = std::fs::read_dir(root) {
+            tracing::warn!(root = %root.display(), error = %e, "local music root disappeared during scan; preserving existing library");
+            return Ok((0, false));
+        }
+    }
+
     let albums = build_albums_from_tracks(&all_tracks);
     let count = all_tracks.len();
     store.replace_provider(SOURCE_LOCAL, SOURCE_TYPE_LOCAL, &albums, &all_tracks, true)?;

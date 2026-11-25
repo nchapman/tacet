@@ -194,6 +194,13 @@ impl MediaHandler {
         };
         if let Some(spec) = parse_transcode_spec(quality, container, &track, total_samples, tc_info)
         {
+            if quality.trim().to_ascii_lowercase().starts_with("opus_") && !tc_info.has_libopus {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "ffmpeg libopus encoder unavailable",
+                )
+                    .into_response();
+            }
             let Some(ref ffmpeg) = tc_info.ffmpeg_path else {
                 return (StatusCode::SERVICE_UNAVAILABLE, "ffmpeg unavailable").into_response();
             };
@@ -244,6 +251,13 @@ impl MediaHandler {
             ..Default::default()
         };
         if let Some(spec) = parse_transcode_spec(quality, container, &synthetic_track, 0, tc_info) {
+            if quality.trim().to_ascii_lowercase().starts_with("opus_") && !tc_info.has_libopus {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "ffmpeg libopus encoder unavailable",
+                )
+                    .into_response();
+            }
             let Some(ref ffmpeg) = tc_info.ffmpeg_path else {
                 return (StatusCode::SERVICE_UNAVAILABLE, "ffmpeg unavailable").into_response();
             };

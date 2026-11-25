@@ -96,6 +96,15 @@ impl Client {
             offset += PAGE_SIZE;
         }
 
+        let albums = self.hydrate_favorite_albums(fav_albums).await?;
+
+        Ok(RemoteCollection {
+            albums,
+            tracks: fav_tracks,
+        })
+    }
+
+    async fn hydrate_favorite_albums(&self, fav_albums: Vec<QAlbum>) -> Result<Vec<Album>> {
         use futures_util::stream::{self, StreamExt};
 
         let mut indexed: Vec<(usize, Album)> = Vec::with_capacity(fav_albums.len());
@@ -108,7 +117,11 @@ impl Client {
                     summary.available = false;
                     Ok((idx, summary))
                 }
-                Err(e) => Err(e),
+                Err(e @ (QobuzError::Unauthenticated | QobuzError::RateLimited)) => Err(e),
+                Err(e) => {
+                    tracing::warn!(album_id = %qa.id, error = %e, "qobuz favorites sync: album detail fetch failed; using summary");
+                    Ok((idx, qa.to_library_album(true)))
+                }
             }
         }))
         .buffer_unordered(3);
@@ -117,12 +130,7 @@ impl Client {
             indexed.push(res?);
         }
         indexed.sort_by_key(|(idx, _)| *idx);
-        let albums = indexed.into_iter().map(|(_, a)| a).collect();
-
-        Ok(RemoteCollection {
-            albums,
-            tracks: fav_tracks,
-        })
+        Ok(indexed.into_iter().map(|(_, a)| a).collect())
     }
 
     pub async fn add_favorite(&self, kind: &str, external_id: &str) -> Result<()> {
