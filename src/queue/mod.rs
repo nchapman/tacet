@@ -107,6 +107,10 @@ mod tests {
         let rp_bg = Arc::clone(&rp);
         let played_urls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let played_urls_bg = Arc::clone(&played_urls);
+        let preload_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let preload_count_bg = Arc::clone(&preload_count);
+        let played_urls_all_next = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let next_urls_bg = Arc::clone(&played_urls_all_next);
         tokio::spawn(async move {
             while let Some(cmd) = stream.commands.recv().await {
                 let url = cmd
@@ -114,7 +118,12 @@ mod tests {
                     .as_ref()
                     .map(|m| m.url.clone())
                     .unwrap_or_default();
-                if !url.is_empty() {
+                if cmd.cmd_type == "set_next_uri" {
+                    preload_count_bg.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if !url.is_empty() {
+                        next_urls_bg.lock().unwrap().push(url.clone());
+                    }
+                } else if !url.is_empty() {
                     played_urls_bg.lock().unwrap().push(url.clone());
                 }
                 rp_bg.report_state(StateReport {
@@ -178,18 +187,45 @@ mod tests {
         let snap = mgr.set_shuffle(&r.zone_id, false).await.unwrap();
         assert!(!snap.shuffle);
 
-        // Push STOPPED on current track triggers auto-advance to index 1
+        // Rapid push position ticks near end of track must arm gapless preload at most ONCE
+        // (regression test for preload feedback storm on position updates).
         mgr.set_repeat(&r.zone_id, RepeatMode::Off).await.unwrap();
+        mgr.play_index(&r.zone_id, 0).await.unwrap();
         let cur_url = played_urls
             .lock()
             .unwrap()
             .last()
             .cloned()
             .unwrap_or_default();
+        preload_count.store(0, std::sync::atomic::Ordering::SeqCst);
+        for sec in [105.0, 106.0, 107.0, 108.0, 109.0] {
+            rp.report_state(StateReport {
+                state: "PLAYING".into(),
+                track_uri: cur_url.clone(),
+                position_sec: Some(sec),
+                duration_sec: Some(120.0),
+                ..Default::default()
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            preload_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "gapless preload must fire once, not on every position tick"
+        );
+
+        // Gapless transition: reporting the preloaded track_uri advances current_index to 1
+        let next_url = played_urls_all_next
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .unwrap_or_default();
+        assert!(!next_url.is_empty());
         rp.report_state(StateReport {
-            state: "STOPPED".into(),
-            track_uri: cur_url,
-            position_sec: Some(120.0),
+            state: "PLAYING".into(),
+            track_uri: next_url,
+            position_sec: Some(0.5),
             duration_sec: Some(120.0),
             ..Default::default()
         });
@@ -201,7 +237,7 @@ mod tests {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "timed out waiting for auto-advance to index 1 (got {})",
+                "timed out waiting for gapless advance to index 1 (got {})",
                 after.current_index
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;

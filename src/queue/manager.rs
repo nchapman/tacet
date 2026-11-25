@@ -1316,7 +1316,7 @@ impl Manager {
             return;
         };
         let mut need_advance = false;
-        let mut need_preload: Option<(i32, Track, AudioQuality, u64)> = None;
+        let mut need_preload: Option<(i32, Track, AudioQuality, i32)> = None;
         let mut recorded_track: Option<Track> = None;
         let advance_rev: u64;
 
@@ -1390,7 +1390,9 @@ impl Manager {
             }
             advance_rev = zi.revision;
 
-            // Arm gapless SetNextAVTransportURI when within 25s of end of track on push position updates
+            // Arm gapless SetNextAVTransportURI when within 25s of end of track on push position updates.
+            // Mark next_preloaded optimistically under the lock so rapid position ticks cannot spawn
+            // duplicate set_next_uri calls (cleared on failure in preload_next_if_unchanged).
             if new_state == PlaybackState::Playing
                 && !zi.next_preloaded
                 && !zi.set_next_unsupported
@@ -1399,11 +1401,13 @@ impl Manager {
                 && zi.status.duration.saturating_sub(zi.status.position) <= Duration::from_secs(25)
                 && let Some(n) = compute_next_index(&zi)
             {
+                zi.next_preloaded = true;
+                zi.next_index = n;
                 need_preload = Some((
                     n,
                     zi.queue[n as usize].track.clone(),
                     zi.audio_quality,
-                    zi.revision,
+                    zi.current_index,
                 ));
             }
 
@@ -1427,11 +1431,11 @@ impl Manager {
             self.emit("zone.playback", &ev.renderer_id, &pe);
         }
 
-        if let Some((ni, tr, rq, expected_rev)) = need_preload {
+        if let Some((ni, tr, rq, expected_cur)) = need_preload {
             let mgr = Arc::clone(self);
             let z_clone = Arc::clone(&z);
             tokio::spawn(async move {
-                mgr.preload_next_if_unchanged(&z_clone, &ctrl, ni, &tr, rq, expected_rev)
+                mgr.preload_next_if_unchanged(&z_clone, &ctrl, ni, &tr, rq, expected_cur)
                     .await;
             });
         }
@@ -1452,34 +1456,47 @@ impl Manager {
         ni: i32,
         tr: &Track,
         rq: AudioQuality,
-        expected_rev: u64,
+        expected_cur: i32,
     ) {
         let Ok((mi, _)) = self.build_media_item(tr, ctrl, rq).await else {
+            let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if zi.current_index == expected_cur && zi.next_index == ni {
+                zi.next_preloaded = false;
+                zi.next_index = -1;
+            }
             return;
         };
         let _op = z.op_mu.lock().await;
         {
             let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if zi.revision != expected_rev || zi.next_preloaded {
+            if zi.current_index != expected_cur || zi.next_index != ni {
                 return;
             }
         }
         match ctrl.set_next_uri(&mi).await {
             Ok(()) => {
                 let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-                if zi.revision == expected_rev {
+                if zi.current_index == expected_cur && zi.next_index == ni {
                     zi.next_preloaded = true;
                     zi.next_uri = mi.url;
                     zi.next_index = ni;
                 }
             }
             Err(e) if e.is_action_unsupported() => {
-                z.inner
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .set_next_unsupported = true;
+                let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+                zi.set_next_unsupported = true;
+                if zi.current_index == expected_cur && zi.next_index == ni {
+                    zi.next_preloaded = false;
+                    zi.next_index = -1;
+                }
             }
-            Err(_) => {}
+            Err(_) => {
+                let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+                if zi.current_index == expected_cur && zi.next_index == ni {
+                    zi.next_preloaded = false;
+                    zi.next_index = -1;
+                }
+            }
         }
     }
 
@@ -1536,7 +1553,7 @@ impl Manager {
         };
 
         let mut need_advance = false;
-        let mut need_preload: Option<(i32, Track, AudioQuality, u64)> = None;
+        let mut need_preload: Option<(i32, Track, AudioQuality, i32)> = None;
         let mut recorded_track: Option<Track> = None;
         let advance_rev: u64;
 
@@ -1622,11 +1639,13 @@ impl Manager {
                 && zi.status.duration.saturating_sub(zi.status.position) <= Duration::from_secs(25)
                 && let Some(n) = compute_next_index(&zi)
             {
+                zi.next_preloaded = true;
+                zi.next_index = n;
                 need_preload = Some((
                     n,
                     zi.queue[n as usize].track.clone(),
                     zi.audio_quality,
-                    zi.revision,
+                    zi.current_index,
                 ));
             }
 
