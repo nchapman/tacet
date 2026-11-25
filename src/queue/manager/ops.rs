@@ -601,12 +601,22 @@ impl Manager {
     }
 
     pub async fn seek(&self, zone_id: &str, position_sec: i32) -> Result<ZoneSnapshot> {
+        if position_sec < 0 {
+            return Err(QueueError::InvalidArgument(
+                "positionSec must be non-negative".into(),
+            ));
+        }
         let z = self
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
-        let pos = Duration::from_secs(position_sec.max(0) as u64);
         let ctrl = Arc::clone(&z.inner.lock().unwrap_or_else(|e| e.into_inner()).ctrl);
+        if !ctrl.info().supports_seek {
+            return Err(QueueError::CapabilityUnsupported(
+                "renderer does not support seek".into(),
+            ));
+        }
+        let pos = Duration::from_secs(position_sec as u64);
         ctrl.seek(pos)
             .await
             .map_err(|e| QueueError::Renderer(e.to_string()))?;
@@ -623,18 +633,27 @@ impl Manager {
     }
 
     pub async fn set_volume(&self, zone_id: &str, volume: i32) -> Result<ZoneSnapshot> {
+        if !(0..=100).contains(&volume) {
+            return Err(QueueError::InvalidArgument(
+                "volume must be between 0 and 100".into(),
+            ));
+        }
         let z = self
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
-        let vol = volume.clamp(0, 100);
         let ctrl = Arc::clone(&z.inner.lock().unwrap_or_else(|e| e.into_inner()).ctrl);
-        ctrl.set_volume(vol)
+        if !ctrl.info().has_volume {
+            return Err(QueueError::CapabilityUnsupported(
+                "renderer does not support volume control".into(),
+            ));
+        }
+        ctrl.set_volume(volume)
             .await
             .map_err(|e| QueueError::Renderer(e.to_string()))?;
         let vol_ev = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-            zi.status.volume = vol;
+            zi.status.volume = volume;
             zi.status.has_vol_value = true;
             zi.revision += 1;
             VolumeEvent {
@@ -654,6 +673,11 @@ impl Manager {
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
         let ctrl = Arc::clone(&z.inner.lock().unwrap_or_else(|e| e.into_inner()).ctrl);
+        if !ctrl.info().has_volume {
+            return Err(QueueError::CapabilityUnsupported(
+                "renderer does not support mute control".into(),
+            ));
+        }
         ctrl.set_mute(muted)
             .await
             .map_err(|e| QueueError::Renderer(e.to_string()))?;
@@ -684,6 +708,7 @@ impl Manager {
                 zi.shuffle = enabled;
                 let cur_id = current_item_pair(&zi).0;
                 if enabled {
+                    zi.original_queue = zi.queue.clone();
                     let mut rest: Vec<Item> = zi
                         .queue
                         .iter()
@@ -700,7 +725,15 @@ impl Manager {
                     next_q.extend(rest);
                     zi.queue = next_q;
                 } else {
-                    zi.queue = zi.original_queue.clone();
+                    let mut restored = zi.original_queue.clone();
+                    let seen: std::collections::HashSet<String> =
+                        restored.iter().map(|it| it.item_id.clone()).collect();
+                    for it in &zi.queue {
+                        if !seen.contains(&it.item_id) {
+                            restored.push(it.clone());
+                        }
+                    }
+                    zi.queue = restored;
                     zi.current_index = zi
                         .queue
                         .iter()
@@ -729,21 +762,18 @@ impl Manager {
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
-        let (ctrl, shuffle, pb_ev) = {
+        let (ctrl, pb_ev) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             zi.repeat = mode;
             zi.next_preloaded = false;
             zi.next_uri.clear();
             zi.next_index = -1;
             zi.revision += 1;
-            (
-                Arc::clone(&zi.ctrl),
-                zi.shuffle,
-                self.make_playback_event(zone_id, &zi),
-            )
+            (Arc::clone(&zi.ctrl), self.make_playback_event(zone_id, &zi))
         };
         if let Some(qc) = ctrl.as_queue_controller() {
-            let _ = qc.set_loop_mode(mode.as_str(), shuffle).await;
+            // Tacet owns shuffle order; never enable device-side shuffle.
+            let _ = qc.set_loop_mode(mode.as_str(), false).await;
         }
         self.emit("zone.playback", zone_id, &pb_ev);
         self.persist_zone_queues();

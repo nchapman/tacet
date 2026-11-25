@@ -43,6 +43,7 @@ pub(super) struct ZoneInner {
     pub(super) loaded_at: Instant,
     pub(super) last_played_item_id: String,
     pub(super) last_command_at: Instant,
+    pub(super) last_poll: Instant,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -289,24 +290,18 @@ impl Manager {
         let info = ctrl.info();
         let zone_id = info.id.clone();
 
-        if let Some((av_ev, rc_ev)) = ctrl.event_urls()
-            && let Some(gena) = self.gena.read().unwrap_or_else(|e| e.into_inner()).clone()
-        {
-            let cb_base = self.base_url_for(ctrl.as_ref());
-            gena.watch_renderer(&zone_id, &cb_base, &av_ev, &rc_ev);
-        }
-
-        let is_new = {
+        let (is_new, need_gena) = {
             let mut g = self.zones.write().unwrap_or_else(|e| e.into_inner());
             if let Some(existing) = g.get(&zone_id) {
                 let mut zi = existing.inner.lock().unwrap_or_else(|e| e.into_inner());
                 let old_info = zi.ctrl.info();
                 // Keep live controller instance intact when endpoint is unchanged so periodic
                 // discovery sweeps do not tear down active Cast sessions or UPnP SOAP locks.
-                if old_info.location != info.location || old_info.host != info.host {
-                    zi.ctrl = ctrl;
+                let changed = old_info.location != info.location || old_info.host != info.host;
+                if changed {
+                    zi.ctrl = Arc::clone(&ctrl);
                 }
-                false
+                (false, changed)
             } else {
                 let saved_q = self
                     .saved_qualities
@@ -344,7 +339,7 @@ impl Manager {
                 let z = Arc::new(Zone {
                     op_mu: AsyncMutex::new(()),
                     inner: Mutex::new(ZoneInner {
-                        ctrl,
+                        ctrl: Arc::clone(&ctrl),
                         original_queue,
                         queue,
                         current_index,
@@ -369,12 +364,21 @@ impl Manager {
                         loaded_at: Instant::now() - Duration::from_secs(60),
                         last_played_item_id: String::new(),
                         last_command_at: Instant::now() - Duration::from_secs(60),
+                        last_poll: Instant::now() - Duration::from_secs(60),
                     }),
                 });
                 g.insert(zone_id.clone(), z);
-                true
+                (true, true)
             }
         };
+
+        if let Some((av_ev, rc_ev)) = ctrl.event_urls()
+            && let Some(gena) = self.gena.read().unwrap_or_else(|e| e.into_inner()).clone()
+            && (need_gena || !gena.is_active(&zone_id))
+        {
+            let cb_base = self.base_url_for(ctrl.as_ref());
+            gena.watch_renderer(&zone_id, &cb_base, &av_ev, &rc_ev);
+        }
 
         if is_new {
             let zones = self.list_zones();

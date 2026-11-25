@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 
@@ -182,10 +182,36 @@ impl Manager {
     }
 
     async fn poll_one_zone(&self, zone_id: String, z: Arc<Zone>) {
-        let ctrl = Arc::clone(&z.inner.lock().unwrap_or_else(|e| e.into_inner()).ctrl);
-        if ctrl.push_connected() {
-            return;
-        }
+        let ctrl = {
+            let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let info = zi.ctrl.info();
+            if info.kind == "player" || zi.ctrl.push_connected() {
+                return;
+            }
+            if info.kind == "cast" && zi.status.state == "STOPPED" {
+                return;
+            }
+            let has_gena = self
+                .gena
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .is_some_and(|g| g.is_active(&zone_id));
+            let near_end = zi.status.state == "PLAYING"
+                && zi.status.duration > Duration::ZERO
+                && zi.status.duration.saturating_sub(zi.status.position) <= Duration::from_secs(15);
+            let cadence = match zi.status.state.as_str() {
+                "PLAYING" if near_end => Duration::from_secs(2),
+                "PLAYING" => Duration::from_secs(if has_gena { 15 } else { 3 }),
+                "TRANSITIONING" => Duration::from_secs(if has_gena { 10 } else { 2 }),
+                _ => Duration::from_secs(if has_gena { 60 } else { 10 }),
+            };
+            if zi.last_poll.elapsed() < cadence {
+                return;
+            }
+            zi.last_poll = Instant::now();
+            Arc::clone(&zi.ctrl)
+        };
         let Ok(st) = ctrl.status().await else {
             return;
         };
@@ -422,6 +448,7 @@ fn clear_preload_if_matching(z: &Zone, expected_cur: i32, next_index: i32, mark_
     }
     if zi.current_index == expected_cur && zi.next_index == next_index {
         zi.next_preloaded = false;
+        zi.next_uri.clear();
         zi.next_index = -1;
     }
 }
