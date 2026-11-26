@@ -197,8 +197,19 @@ All 10 heads below take the exact same `1280`-d embedding, have official `.onnx`
 | `mtg_jamendo_instrument-discogs-effnet-1` | 2.6 MB | 0.032 ms | 0.33 ms | 40 instruments (`piano`, `cello`, `brass`, `acousticguitar`, …) |
 | **ALL 10 COMBINED** | **9.11 MB** | **0.11 ms** | **2.0 ms** | **0.5% overhead on top of the 350 ms base encoder** |
 
-### 7.4 Implementation & Blending Notes
-- **Store raw (unnormalized) mean-pooled `1280`-d `f32` embeddings** (~5 KB/track) in SQLite, and L2-normalize in memory for cosine search. This preserves the exact input scale expected by downstream heads so any new head can be run over 10,000 stored tracks in ~1 second later with zero audio re-decoding.
+### 7.4 Storage, Quantization & In-Memory Search (Verified Live)
+Tested on 35 real tracks from the local library (`discogs-effnet` raw outputs sit in `[-0.12, +0.99]` due to Swish/SiLU activations):
+
+| Format | Bytes / track | 50k tracks | Recall@10 | Mean cos err | Max head drift |
+|---|---:|---:|---:|---:|---:|
+| `float32` | 5,120 B | 256 MB | 1.0000 | 0 | 0 |
+| `float16` (2×) | 2,560 B | 128 MB | 1.0000 | 0.000008 | 0.00017 |
+| **`int8` sym (4×)** | **1,284 B** | **64 MB** | **1.0000** | **0.00043** | **0.00459** |
+| **`uint8` asym (4×)** | **1,288 B** | **64 MB** | **0.9971** | **0.00021** | **0.00446** |
+
+- **Skip dimensionality reduction (PCA / truncation / 1-bit binary)**: `discogs-effnet` is not Matryoshka-trained, PCA drifts as albums are added and breaks downstream heads, and 1-bit binary quantization collapses recall on audio embeddings (`0.10–0.30`).
+- **On disk (SQLite `BLOB`)**: Store the **raw (unnormalized) mean-pooled `1280`-d vector** as **`uint8` asymmetric** (`uint8[1280]` + `min: f32` + `scale: f32` = **1,288 bytes/track**). Keeping the raw vector preserves vector magnitude for all future classification heads (reconstruct via `q[i] * scale + min`) while losing nothing for cosine search (L2-normalization is computed on load).
+- **In RAM (no `sqlite-vec` C extension needed)**: Load blobs on startup, L2-normalize once, and store **`int8` symmetric** (`1,284` bytes/track — 12.8 MB per 10k tracks, 64 MB per 50k tracks) for pure-integer SIMD dot-products (`(sa * sb) * Σ(qa[i] * qb[i])`) yielding ~1–2 ms search across 50k tracks and effortless multi-hop Sonic Adventure / k-means clustering.
 - **Exact mel-spectrogram validation**: Validate the pure-Rust (`rustfft`) Slaney mel frontend against Essentia's reference output to `< 1e-4` error.
 - **Licensing & distribution**: Essentia pretrained weights are **CC BY-NC-SA 4.0** (non-commercial). Download weights on demand into `tacet`'s data directory when the user enables Sonic Analysis rather than bundling them in the binary.
 - **Blended Local + Qobuz UX (Plexamp pattern)**: Keep one unified UI (*Track Radio*, *Artist Radio*, *Album Radio*, *Continue Playing*, *Guest DJs*). Local libraries get full Sonic Analysis + ListenBrainz + offline fallback; Qobuz tracks seamlessly blend Qobuz `/radio/*`, `/dynamic/suggest`, ListenBrainz, and metadata/credits DJ rules — with `prefer_local_tracks()` preferring local copies throughout. Optional future enhancement: passively embed played Qobuz tracks via `tacet`'s audio proxy so frequently played streaming favorites join the same local embedding space over time.
