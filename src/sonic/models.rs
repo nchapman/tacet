@@ -316,11 +316,12 @@ fn ort_env() -> Result<&'static Environment, String> {
 
 fn load_session(path: &Path) -> Result<Session, String> {
     let env = ort_env()?;
+    let threads = super::sonic_ort_threads();
     let mut builder = Session::builder(env)
         .map_err(|e| format!("create ort builder: {e}"))?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|e| format!("set ort opt level: {e}"))?
-        .with_intra_threads(2)
+        .with_intra_threads(threads)
         .map_err(|e| format!("set ort threads: {e}"))?;
     builder
         .commit_from_file(path)

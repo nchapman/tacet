@@ -7,9 +7,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use futures_util::stream::{self, StreamExt};
 use serde::Serialize;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -23,6 +24,35 @@ pub use quantize::{EMBEDDING_DIM, Int8UnitVec, QuantizedEmbedding, quantize_uint
 
 const BATCH_LIMIT: usize = 32;
 const PERIODIC_WAKE_SECS: u64 = 15 * 60;
+const STATUS_EMIT_MIN_INTERVAL: Duration = Duration::from_millis(500);
+
+type StatusCallback = Arc<dyn Fn(SonicStatus) + Send + Sync>;
+
+/// Default worker budget for local sonic analysis: half of available logical
+/// cores, clamped to `[1, 4]` so analysis scales up on multi-core hosts without
+/// starving audio playback or memory on small NAS devices.
+/// Overridable via `TACET_SONIC_THREADS` (clamped to `[1, 8]`).
+pub(crate) fn sonic_parallelism() -> usize {
+    if let Ok(raw) = std::env::var("TACET_SONIC_THREADS")
+        && let Ok(n) = raw.trim().parse::<usize>()
+    {
+        return n.clamp(1, 8);
+    }
+    let cores = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(2);
+    clamp_half_cores(cores)
+}
+
+/// ONNX intra-op thread count kept conservative (`[1, 2]`) so concurrent
+/// decode/FFT pipeline workers do not oversubscribe CPU cores.
+pub(crate) fn sonic_ort_threads() -> usize {
+    sonic_parallelism().clamp(1, 2)
+}
+
+fn clamp_half_cores(cores: usize) -> usize {
+    (cores / 2).clamp(1, 4)
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +73,7 @@ pub struct SonicStatus {
 struct WorkerMeta {
     last_run_at: Option<i64>,
     last_error: Option<String>,
+    last_emit: Option<Instant>,
 }
 
 pub struct SonicWorker {
@@ -57,6 +88,7 @@ pub struct SonicWorker {
     notify: Arc<Notify>,
     shutdown: CancellationToken,
     meta: Mutex<WorkerMeta>,
+    on_status: RwLock<Option<StatusCallback>>,
 }
 
 impl SonicWorker {
@@ -88,7 +120,53 @@ impl SonicWorker {
             notify: Arc::new(Notify::new()),
             shutdown,
             meta: Mutex::new(WorkerMeta::default()),
+            on_status: RwLock::new(None),
         })
+    }
+
+    pub fn set_on_status<F>(&self, f: F)
+    where
+        F: Fn(SonicStatus) + Send + Sync + 'static,
+    {
+        *self.on_status.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
+    }
+
+    fn emit_status(&self) {
+        self.meta
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .last_emit = Some(Instant::now());
+        let cb = self
+            .on_status
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(cb) = cb {
+            cb(self.status());
+        }
+    }
+
+    fn emit_status_throttled(&self) {
+        let should_emit = {
+            let mut meta = self.meta.lock().unwrap_or_else(|e| e.into_inner());
+            let due = meta
+                .last_emit
+                .is_none_or(|t| t.elapsed() >= STATUS_EMIT_MIN_INTERVAL);
+            if due {
+                meta.last_emit = Some(Instant::now());
+            }
+            due
+        };
+        if should_emit {
+            let cb = self
+                .on_status
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            if let Some(cb) = cb {
+                cb(self.status());
+            }
+        }
     }
 
     pub fn index(&self) -> &Arc<SonicIndex> {
@@ -104,6 +182,7 @@ impl SonicWorker {
         let _ = self
             .catalog
             .set_pref(PREF_SONIC_ENABLED, if enabled { "true" } else { "false" });
+        self.emit_status();
         if enabled {
             self.trigger();
         }
@@ -170,8 +249,10 @@ impl SonicWorker {
         {
             return 0;
         }
+        self.emit_status();
         let processed = self.run_pending_loop(ffmpeg.clone()).await;
         self.running.store(false, Ordering::SeqCst);
+        self.emit_status();
         processed
     }
 
@@ -237,27 +318,41 @@ impl SonicWorker {
         consecutive_errors: &mut usize,
         failed_this_pass: &mut HashSet<String>,
     ) -> (usize, bool) {
+        let concurrency = sonic_parallelism();
         let mut processed = 0usize;
-        for track in batch {
-            if self.shutdown.is_cancelled() || !self.enabled() {
+        let mut stream = stream::iter(batch.iter().cloned())
+            .map(|track| async move {
+                if self.shutdown.is_cancelled() || !self.enabled() {
+                    return (track.id, None);
+                }
+                let res = self.analyze_track(&track, ffmpeg, models).await;
+                (track.id, Some(res))
+            })
+            .buffered(concurrency);
+
+        while let Some((track_id, outcome)) = stream.next().await {
+            let Some(res) = outcome else {
                 return (processed, true);
-            }
-            match self.analyze_track(track, ffmpeg, models).await {
+            };
+            match res {
                 Ok(()) => {
                     processed += 1;
                     *consecutive_errors = 0;
                     self.record_success();
                 }
                 Err(msg) => {
-                    tracing::warn!(track_id = %track.id, error = %msg, "sonic analysis failed for track");
+                    tracing::warn!(track_id = %track_id, error = %msg, "sonic analysis failed for track");
                     self.record_error(msg);
-                    failed_this_pass.insert(track.id.clone());
+                    failed_this_pass.insert(track_id);
                     *consecutive_errors += 1;
                     if *consecutive_errors >= 10 {
                         tracing::warn!("pausing sonic analysis pass after 10 consecutive errors");
                         return (processed, true);
                     }
                 }
+            }
+            if self.shutdown.is_cancelled() || !self.enabled() {
+                return (processed, true);
             }
         }
         (processed, false)
@@ -316,8 +411,10 @@ impl SonicWorker {
         }
         if !SonicModels::models_present(&self.models_dir) {
             self.downloading.store(true, Ordering::SeqCst);
+            self.emit_status();
             let res = SonicModels::ensure_downloaded(&self.models_dir).await;
             self.downloading.store(false, Ordering::SeqCst);
+            self.emit_status();
             res?;
         }
         let dir = self.models_dir.clone();
@@ -330,15 +427,21 @@ impl SonicWorker {
     }
 
     fn record_success(&self) {
-        let mut meta = self.meta.lock().unwrap_or_else(|e| e.into_inner());
-        meta.last_run_at = Some(Utc::now().timestamp());
-        meta.last_error = None;
+        {
+            let mut meta = self.meta.lock().unwrap_or_else(|e| e.into_inner());
+            meta.last_run_at = Some(Utc::now().timestamp());
+            meta.last_error = None;
+        }
+        self.emit_status_throttled();
     }
 
     fn record_error(&self, msg: String) {
-        let mut meta = self.meta.lock().unwrap_or_else(|e| e.into_inner());
-        meta.last_run_at = Some(Utc::now().timestamp());
-        meta.last_error = Some(msg);
+        {
+            let mut meta = self.meta.lock().unwrap_or_else(|e| e.into_inner());
+            meta.last_run_at = Some(Utc::now().timestamp());
+            meta.last_error = Some(msg);
+        }
+        self.emit_status_throttled();
     }
 }
 
@@ -355,4 +458,22 @@ fn resolve_sonic_enabled(catalog: &Catalog) -> bool {
             let t = v.trim();
             t == "1" || t.eq_ignore_ascii_case("true")
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_half_cores;
+
+    #[test]
+    fn half_cores_clamps_to_safe_bounds() {
+        assert_eq!(clamp_half_cores(0), 1);
+        assert_eq!(clamp_half_cores(1), 1);
+        assert_eq!(clamp_half_cores(2), 1);
+        assert_eq!(clamp_half_cores(3), 1);
+        assert_eq!(clamp_half_cores(4), 2);
+        assert_eq!(clamp_half_cores(6), 3);
+        assert_eq!(clamp_half_cores(8), 4);
+        assert_eq!(clamp_half_cores(16), 4);
+        assert_eq!(clamp_half_cores(32), 4);
+    }
 }

@@ -3,8 +3,8 @@ pub mod types;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use tokio::sync::Notify;
@@ -31,11 +31,16 @@ const UNMATCHED_RETRY_SECS: i64 = 30 * 86_400;
 const MAX_RATE_LIMIT_RETRIES: usize = 3;
 const PERIODIC_WAKE_SECS: u64 = 15 * 60;
 
+const STATUS_EMIT_MIN_INTERVAL: Duration = Duration::from_millis(500);
+
 #[derive(Default)]
 struct WorkerMeta {
     last_run_at: Option<i64>,
     last_error: Option<String>,
+    last_emit: Option<Instant>,
 }
+
+type StatusCallback = Arc<dyn Fn(EnrichmentStatus) + Send + Sync>;
 
 pub struct EnrichmentWorker {
     catalog: Arc<Catalog>,
@@ -45,6 +50,7 @@ pub struct EnrichmentWorker {
     shutdown: CancellationToken,
     running: AtomicBool,
     meta: Mutex<WorkerMeta>,
+    on_status: RwLock<Option<StatusCallback>>,
 }
 
 impl EnrichmentWorker {
@@ -62,7 +68,53 @@ impl EnrichmentWorker {
             shutdown,
             running: AtomicBool::new(false),
             meta: Mutex::new(WorkerMeta::default()),
+            on_status: RwLock::new(None),
         })
+    }
+
+    pub fn set_on_status<F>(&self, f: F)
+    where
+        F: Fn(EnrichmentStatus) + Send + Sync + 'static,
+    {
+        *self.on_status.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
+    }
+
+    fn emit_status(&self) {
+        self.meta
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .last_emit = Some(Instant::now());
+        let cb = self
+            .on_status
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(cb) = cb {
+            cb(self.status());
+        }
+    }
+
+    fn emit_status_throttled(&self) {
+        let should_emit = {
+            let mut meta = self.meta.lock().unwrap_or_else(|e| e.into_inner());
+            let due = meta
+                .last_emit
+                .is_none_or(|t| t.elapsed() >= STATUS_EMIT_MIN_INTERVAL);
+            if due {
+                meta.last_emit = Some(Instant::now());
+            }
+            due
+        };
+        if should_emit {
+            let cb = self
+                .on_status
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            if let Some(cb) = cb {
+                cb(self.status());
+            }
+        }
     }
 
     pub fn enabled(&self) -> bool {
@@ -125,8 +177,10 @@ impl EnrichmentWorker {
         {
             return 0;
         }
+        self.emit_status();
         let processed = self.run_pending_loop().await;
         self.running.store(false, Ordering::SeqCst);
+        self.emit_status();
         processed
     }
 
@@ -344,15 +398,21 @@ impl EnrichmentWorker {
     }
 
     fn record_success(&self) {
-        let mut meta = self.meta.lock().unwrap_or_else(|e| e.into_inner());
-        meta.last_run_at = Some(Utc::now().timestamp());
-        meta.last_error = None;
+        {
+            let mut meta = self.meta.lock().unwrap_or_else(|e| e.into_inner());
+            meta.last_run_at = Some(Utc::now().timestamp());
+            meta.last_error = None;
+        }
+        self.emit_status_throttled();
     }
 
     fn record_error(&self, msg: String) {
-        let mut meta = self.meta.lock().unwrap_or_else(|e| e.into_inner());
-        meta.last_run_at = Some(Utc::now().timestamp());
-        meta.last_error = Some(msg);
+        {
+            let mut meta = self.meta.lock().unwrap_or_else(|e| e.into_inner());
+            meta.last_run_at = Some(Utc::now().timestamp());
+            meta.last_error = Some(msg);
+        }
+        self.emit_status_throttled();
     }
 }
 

@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { tacetClient } from "../api/client";
 import { radioSeedKey } from "../components/RadioButton";
@@ -15,6 +16,7 @@ import type {
   TransportAction,
   ZoneSnapshot,
 } from "../api/types";
+import { queryKeys } from "../lib/query";
 
 export type ConnectionStatus = "connecting" | "live" | "reconnecting";
 
@@ -71,6 +73,7 @@ export interface UseTacetOptions {
 }
 
 export function useTacet(options?: UseTacetOptions | string | null) {
+  const queryClient = useQueryClient();
   const opts: UseTacetOptions =
     typeof options === "string" || options == null ? { defaultZoneId: options } : options;
   const { defaultZoneId, preferLocalPending = false, onSnapshotZones } = opts;
@@ -173,6 +176,8 @@ export function useTacet(options?: UseTacetOptions | string | null) {
         if (snap.settings) setSettings(snap.settings);
         if (snap.qobuz) setQobuzStatus(snap.qobuz);
         if (snap.library) setLibraryStatus(snap.library);
+        if (snap.sonic) queryClient.setQueryData(queryKeys.sonic.status, snap.sonic);
+        if (snap.enrichment) queryClient.setQueryData(queryKeys.enrichment.status, snap.enrichment);
       },
       onZonesUpdated: (ev) => {
         replaceZones(ev.zones ?? []);
@@ -251,10 +256,12 @@ export function useTacet(options?: UseTacetOptions | string | null) {
       onSettingsUpdated: (s) => setSettings(s),
       onQobuzStatus: (st) => setQobuzStatus(st),
       onLibraryUpdated: (st) => setLibraryStatus(st),
+      onSonicStatus: (st) => queryClient.setQueryData(queryKeys.sonic.status, st),
+      onEnrichmentStatus: (st) => queryClient.setQueryData(queryKeys.enrichment.status, st),
     });
 
     return unsubscribe;
-  }, [replaceZones, syncClockOffset]);
+  }, [queryClient, replaceZones, syncClockOffset]);
 
   const activeZone = useMemo<ZoneSnapshot | null>(
     () => resolveActiveZone(zones, selectedZoneId, defaultZoneId, preferLocalPending),

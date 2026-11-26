@@ -78,6 +78,8 @@ export interface EventHandlers {
   onSettingsUpdated?: (ev: Settings) => void;
   onQobuzStatus?: (ev: QobuzStatus) => void;
   onLibraryUpdated?: (ev: LibraryStatus) => void;
+  onSonicStatus?: (ev: SonicStatus) => void;
+  onEnrichmentStatus?: (ev: EnrichmentStatus) => void;
   onResync?: () => void;
   onOpen?: () => void;
   onError?: () => void;
@@ -421,6 +423,8 @@ export class TacetClient {
     bind<Settings>("settings.updated", handlers.onSettingsUpdated);
     bind<QobuzStatus>("qobuz.status", handlers.onQobuzStatus);
     bind<LibraryStatus>("library.updated", handlers.onLibraryUpdated);
+    bind<SonicStatus>("sonic.status", handlers.onSonicStatus);
+    bind<EnrichmentStatus>("enrichment.status", handlers.onEnrichmentStatus);
     es.addEventListener("resync", () => handlers.onResync?.());
 
     return () => es.close();

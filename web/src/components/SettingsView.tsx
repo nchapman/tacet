@@ -1,14 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Compass, HardDrive, Plus, Radio, RefreshCw, Speaker } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Check, Compass, Plus, Radio, RefreshCw, Speaker } from "lucide-react";
+import { useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtCount } from "@/api/format";
 import type { LibraryStatus, QobuzStatus, StreamMode, ZoneSnapshot } from "@/api/types";
-import { LibraryIntelligenceSection } from "@/components/LibraryIntelligenceSection";
-import { Badge } from "@/components/ui/badge";
+import { LibrarySettingsSection } from "@/components/LibrarySettingsSection";
 import { Button } from "@/components/ui/button";
 import { PageBody, PageHeader } from "@/components/ui/PageHeader";
-import { Switch } from "@/components/ui/switch";
 import { invalidateQobuzLogout, QOBUZ_SEARCH_GC_TIME_MS, QOBUZ_SEARCH_STALE_TIME_MS, queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 
@@ -34,15 +32,6 @@ interface SettingsViewProps {
   onNotify?: (title: string, detail?: string) => void;
 }
 
-const SCAN_INTERVAL_OPTIONS = [
-  { minutes: 0, label: "Off" },
-  { minutes: 15, label: "15m" },
-  { minutes: 30, label: "30m" },
-  { minutes: 60, label: "1h" },
-  { minutes: 360, label: "6h" },
-  { minutes: 1440, label: "24h" },
-] as const;
-
 export function SettingsView({
   libraryStatus,
   qobuzStatus,
@@ -65,20 +54,8 @@ export function SettingsView({
   onNotify,
 }: SettingsViewProps) {
   const queryClient = useQueryClient();
-  const [syncing, setSyncing] = useState(false);
+  const [syncingQobuz, setSyncingQobuz] = useState(false);
   const [errMsg, setErrMsg] = useState("");
-
-  const prevScanningRef = useRef(Boolean(libraryStatus?.scanning));
-  useEffect(() => {
-    const scanning = Boolean(libraryStatus?.scanning);
-    if (prevScanningRef.current && !scanning && libraryStatus) {
-      onNotify?.(
-        "Library Sync Complete",
-        `${fmtCount(libraryStatus.albums)} albums · ${fmtCount(libraryStatus.tracks)} tracks`,
-      );
-    }
-    prevScanningRef.current = scanning;
-  }, [libraryStatus, onNotify]);
 
   const discoverQuery = useQuery({
     queryKey: queryKeys.discover.feed([]),
@@ -97,19 +74,15 @@ export function SettingsView({
     }
   };
 
-  const handleSync = async (provider: "all" | "local" | "qobuz") => {
-    setSyncing(true);
+  const handleSyncQobuz = async () => {
+    setSyncingQobuz(true);
     setErrMsg("");
     try {
-      await tacetClient.syncLibrary(provider, false);
-      onNotify?.(
-        provider === "all" ? "Library Sync Started" : `Syncing ${provider === "local" ? "Local Library" : "Qobuz"}`,
-        "Scanning in the background…",
-      );
+      await tacetClient.syncLibrary("qobuz", false);
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      setSyncing(false);
+      setSyncingQobuz(false);
     }
   };
 
@@ -141,127 +114,19 @@ export function SettingsView({
           </div>
         )}
 
-        {/* Unified Library & Sync */}
-        <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5 space-y-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-400/10 text-emerald-300 border border-emerald-400/20">
-                <HardDrive className="h-5 w-5" />
-              </div>
-              <div>
-                <h2 className="text-base font-semibold text-white">Library</h2>
-                <p className="text-xs text-muted-foreground">
-                  {libraryStatus
-                    ? `${fmtCount(libraryStatus.albums)} albums · ${fmtCount(libraryStatus.tracks)} tracks (${fmtCount(libraryStatus.localAlbums)} local, ${fmtCount(libraryStatus.remoteAlbums)} Qobuz)`
-                    : "Loading status…"}
-                </p>
-              </div>
-            </div>
-            {libraryStatus?.scanning && <Badge variant="live">Syncing</Badge>}
-          </div>
-
-          {libraryStatus?.scanning && (
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/[0.08]">
-              <div className="h-full w-1/3 rounded-full bg-emerald-400 animate-pulse" />
-            </div>
-          )}
-
-          {(libraryStatus?.missingTracks ?? 0) > 0 && (
-            <p className="text-xs text-muted-foreground">
-              {fmtCount(libraryStatus!.missingTracks)} missing local track(s) are soft-deleted and will restore automatically if
-              their drive reconnects within the retention window.
-            </p>
-          )}
-
-          <div className="flex flex-wrap gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              disabled={syncing || Boolean(libraryStatus?.scanning)}
-              onClick={() => void handleSync("all")}
-            >
-              <RefreshCw className={cn("h-3.5 w-3.5", (syncing || libraryStatus?.scanning) && "animate-spin")} />
-              Sync All Sources
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={syncing || Boolean(libraryStatus?.scanning)}
-              onClick={() => void handleSync("local")}
-            >
-              Rescan Local Files
-            </Button>
-          </div>
-
-          <div className="border-t border-white/[0.06] pt-4 flex items-center justify-between gap-4">
-            <div className="min-w-0">
-              <div className="text-sm font-medium text-white">Group album versions</div>
-              <p className="text-xs text-muted-foreground">
-                Combine duplicate local and Qobuz editions of the same album into a single entry.
-              </p>
-            </div>
-            <Switch
-              aria-label="Group album versions"
-              checked={groupVersions}
-              onCheckedChange={onGroupVersionsChange}
-            />
-          </div>
-
-          {libraryStatus?.configured && (
-            <>
-              <div className="border-t border-white/[0.06] pt-4 flex items-center justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-white">Watch for file changes</div>
-                  <p className="text-xs text-muted-foreground">
-                    Automatically scan when audio files or album folders are added, updated, or removed.
-                  </p>
-                </div>
-                <Switch
-                  aria-label="Watch for file changes"
-                  checked={libraryWatchEnabled}
-                  onCheckedChange={onLibraryWatchChange}
-                />
-              </div>
-
-              <div className="border-t border-white/[0.06] pt-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-white">Scheduled rescan</div>
-                  <p className="text-xs text-muted-foreground">
-                    Periodic incremental check (recommended even with watching for NAS and network mounts).
-                  </p>
-                </div>
-                <div className="flex items-center gap-1 rounded-xl border border-white/[0.08] bg-white/[0.03] p-1">
-                  {SCAN_INTERVAL_OPTIONS.map((opt) => {
-                    const active = libraryScanIntervalMin === opt.minutes;
-                    return (
-                      <button
-                        key={opt.minutes}
-                        type="button"
-                        aria-pressed={active}
-                        onClick={() => {
-                          if (!active) onLibraryScanIntervalChange(opt.minutes);
-                        }}
-                        className={cn(
-                          "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer",
-                          active
-                            ? "bg-white text-black"
-                            : "text-muted-foreground hover:text-foreground hover:bg-white/[0.06]",
-                        )}
-                      >
-                        {opt.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </>
-          )}
-        </section>
-
-        {/* Library Intelligence (Sonic Analysis & Metadata Enrichment) */}
-        <LibraryIntelligenceSection onNotify={onNotify} onError={setErrMsg} />
+        {/* Unified Library (Scan, Enrichment, Sonic Analysis, and Settings) */}
+        <LibrarySettingsSection
+          libraryStatus={libraryStatus}
+          qobuzStatus={qobuzStatus}
+          libraryWatchEnabled={libraryWatchEnabled}
+          libraryScanIntervalMin={libraryScanIntervalMin}
+          groupVersions={groupVersions}
+          onLibraryWatchChange={onLibraryWatchChange}
+          onLibraryScanIntervalChange={onLibraryScanIntervalChange}
+          onGroupVersionsChange={onGroupVersionsChange}
+          onNotify={onNotify}
+          onError={setErrMsg}
+        />
 
         {/* Qobuz Account & Streaming Delivery */}
         <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5 space-y-5">
@@ -283,7 +148,7 @@ export function SettingsView({
             <div className="flex items-center gap-2">
               {qobuzStatus?.authenticated ? (
                 <>
-                  <Button type="button" variant="secondary" size="sm" disabled={syncing} onClick={() => void handleSync("qobuz")}>
+                  <Button type="button" variant="secondary" size="sm" disabled={syncingQobuz || Boolean(libraryStatus?.scanning)} onClick={() => void handleSyncQobuz()}>
                     Sync Favorites
                   </Button>
                   <Button type="button" variant="ghost" size="sm" onClick={() => void handleLogoutQobuz()}>

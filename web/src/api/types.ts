@@ -401,6 +401,8 @@ export interface SnapshotEvent {
   settings: Settings;
   qobuz: QobuzStatus;
   library: LibraryStatus;
+  sonic?: SonicStatus | null;
+  enrichment?: EnrichmentStatus | null;
 }
 
 export type QobuzDelivery = "auto" | "force" | "direct";

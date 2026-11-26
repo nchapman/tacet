@@ -197,6 +197,10 @@ fn start_background_workers(
         ResolverConfig::from_env(),
         state.shutdown.clone(),
     );
+    {
+        let q = Arc::clone(&state.manager);
+        enrichment.set_on_status(move |status| q.broadcast("enrichment.status", &status));
+    }
     state.set_enrichment(Arc::clone(&enrichment));
     enrichment.start();
 
@@ -207,6 +211,10 @@ fn start_background_workers(
         .map(PathBuf::from)
         .unwrap_or_else(|| data_dir.join("models").join("sonic"));
     let sonic = SonicWorker::new(Arc::clone(catalog), sonic_dir, state.shutdown.clone());
+    {
+        let q = Arc::clone(&state.manager);
+        sonic.set_on_status(move |status| q.broadcast("sonic.status", &status));
+    }
     state.set_sonic(Arc::clone(&sonic));
     sonic.start();
 }

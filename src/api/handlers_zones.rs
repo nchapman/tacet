@@ -583,6 +583,8 @@ pub async fn events_sse(State(st): State<Arc<AppState>>, RawQuery(raw_q): RawQue
         "settings": st.current_settings(),
         "qobuz": qobuz_status,
         "library": st.catalog.status(),
+        "sonic": st.sonic().map(|w| w.status()),
+        "enrichment": st.enrichment().map(|w| w.status()),
     });
     let init_event = SseEvent::default()
         .retry(Duration::from_secs(3))
