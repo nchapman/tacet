@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { tacetClient } from "../api/client";
+import { radioSeedKey } from "../components/RadioButton";
 import type {
   AudioQuality,
   LibraryStatus,
@@ -346,7 +347,7 @@ export function useTacet(options?: UseTacetOptions | string | null) {
         return undefined;
       }
       if (radioLoadingKeyRef.current) return undefined;
-      const key = `${kind}:${id}`;
+      const key = radioSeedKey(kind, id);
       radioLoadingKeyRef.current = key;
       setRadioLoadingKey(key);
       try {

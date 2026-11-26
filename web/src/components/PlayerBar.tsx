@@ -6,7 +6,6 @@ import {
   Maximize2,
   Pause,
   Play,
-  Radio,
   Repeat,
   Repeat1,
   Shuffle,
@@ -24,6 +23,7 @@ import { type PlaybackClockState, syncPlaybackClock, tickPlaybackClock } from "@
 import type { AudioQuality, RadioSeedKind, RepeatMode, StreamMode, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
 import { NowPlayingOverlay } from "@/components/NowPlayingOverlay";
+import { RadioIconButton } from "@/components/RadioButton";
 import { SignalPathPopover } from "@/components/SignalPathPopover";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
@@ -423,22 +423,16 @@ export const PlayerBar = memo(function PlayerBar({
             </PopoverContent>
           </Popover>
 
-          {onStartRadio && track?.id && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              disabled={Boolean(radioLoadingKey)}
-              onClick={() => onStartRadio("track", track.id)}
+          {track?.id && (
+            <RadioIconButton
+              kind="track"
+              seedId={track.id}
+              label={`Start Radio from ${track.title}`}
               title="Start Track Radio"
-              aria-label={`Start Radio from ${track.title}`}
-            >
-              {radioLoadingKey === `track:${track.id}` ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Radio className="h-4 w-4" />
-              )}
-            </Button>
+              onStartRadio={onStartRadio}
+              radioLoadingKey={radioLoadingKey}
+              variant="toolbar"
+            />
           )}
 
           <Button

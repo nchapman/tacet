@@ -1,11 +1,12 @@
 import { keepPreviousData, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ListPlus, Loader2, Play, Radio, SkipForward } from "lucide-react";
+import { ListPlus, Play, SkipForward } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
 import { fmtCount, fmtDuration, fmtQuality } from "@/api/format";
 import type { GenreSummary, QueuePosition, QueueSource, RadioSeedKind, Track } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
+import { RadioIconButton } from "@/components/RadioButton";
 import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAlbumHoverPrefetch, useArtistHoverPrefetch } from "@/lib/prefetch";
@@ -365,28 +366,14 @@ const SongRow = memo(function SongRow({
 
       {/* Actions */}
       <div className="flex items-center justify-end gap-0.5">
-        {onStartRadio && (() => {
-          const trackRadioSpinning = radioLoadingKey === `track:${tr.id}`;
-          return (
-            <button
-              type="button"
-              disabled={Boolean(radioLoadingKey)}
-              title="Start Radio"
-              aria-label={`Start Radio from ${tr.title}`}
-              onClick={() => onStartRadio("track", tr.id)}
-              className={cn(
-                "rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer disabled:cursor-default",
-                trackRadioSpinning ? "opacity-100 text-foreground" : "md:opacity-0 md:group-hover:opacity-100",
-              )}
-            >
-              {trackRadioSpinning ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Radio className="h-3.5 w-3.5" />
-              )}
-            </button>
-          );
-        })()}
+        <RadioIconButton
+          kind="track"
+          seedId={tr.id}
+          label={`Start Radio from ${tr.title}`}
+          onStartRadio={onStartRadio}
+          radioLoadingKey={radioLoadingKey}
+          hoverReveal="md"
+        />
         <button
           type="button"
           title="Play Next"

@@ -1,5 +1,5 @@
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, Radio, SkipForward, Sparkles } from "lucide-react";
+import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, SkipForward, Sparkles } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtCount, fmtDuration, isHiRes } from "@/api/format";
@@ -16,6 +16,7 @@ import type {
 import { AlbumArt, isArtworkLoaded, markArtworkLoaded, resolveArtworkSrc } from "@/components/ui/artwork";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { RadioButton, RadioIconButton, radioSeedKey } from "@/components/RadioButton";
 import { EditorialNote } from "@/components/ui/EditorialNote";
 import { ExplicitBadge } from "@/components/ui/ExplicitBadge";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -444,27 +445,14 @@ export function ArtistsView({
                     )}
                   </p>
                 </div>
-                {onStartRadio && (() => {
-                  const artistRadioId = view.remoteDetail?.artist.id ? String(view.remoteDetail.artist.id) : view.artist;
-                  const artistRadioSpinning = radioLoadingKey === `artist:${artistRadioId}`;
-                  return (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      disabled={Boolean(radioLoadingKey)}
-                      className="rounded-full h-9 px-4 shrink-0"
-                      onClick={() => onStartRadio("artist", artistRadioId)}
-                    >
-                      {artistRadioSpinning ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Radio className="h-4 w-4" />
-                      )}
-                      Radio
-                    </Button>
-                  );
-                })()}
+                <RadioButton
+                  kind="artist"
+                  seedId={view.remoteDetail?.artist.id ? String(view.remoteDetail.artist.id) : view.artist}
+                  onStartRadio={onStartRadio}
+                  radioLoadingKey={radioLoadingKey}
+                  size="sm"
+                  className="h-9 px-4 shrink-0"
+                />
               </div>
 
               <SmoothReveal open={Boolean(view.remoteDetail?.artist.biography)}>
@@ -738,26 +726,15 @@ function StackedAlbumCard({
             <ListPlus className="h-3.5 w-3.5" />
             Queue
           </Button>
-          {onStartRadio && (
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              disabled={Boolean(radioLoadingKey)}
-              className="rounded-full h-8 px-3.5"
-              onClick={(e) => {
-                e.stopPropagation();
-                onStartRadio("album", alb.id);
-              }}
-            >
-              {radioLoadingKey === `album:${alb.id}` ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Radio className="h-3.5 w-3.5" />
-              )}
-              Radio
-            </Button>
-          )}
+          <RadioButton
+            kind="album"
+            seedId={alb.id}
+            onStartRadio={onStartRadio}
+            radioLoadingKey={radioLoadingKey}
+            size="sm"
+            stopPropagation
+            className="h-8 px-3.5"
+          />
         </div>
       </div>
     </div>
@@ -903,7 +880,7 @@ const PopularTrackRow = memo(function PopularTrackRow({
           <span
             className={cn(
               "hidden pr-1 font-mono text-xs tabular-nums text-muted-foreground/80",
-              radioLoadingKey === `track:${tr.id}`
+              radioLoadingKey === radioSeedKey("track", tr.id)
                 ? "sm:hidden"
                 : "sm:inline group-hover:hidden group-focus-within:hidden",
             )}
@@ -914,30 +891,19 @@ const PopularTrackRow = memo(function PopularTrackRow({
         <div
           className={cn(
             "flex items-center gap-0.5",
-            radioLoadingKey === `track:${tr.id}`
+            radioLoadingKey === radioSeedKey("track", tr.id)
               ? "sm:flex"
               : "sm:hidden sm:group-hover:flex sm:group-focus-within:flex",
           )}
         >
-          {onStartRadio && (
-            <button
-              type="button"
-              disabled={Boolean(radioLoadingKey)}
-              title="Start Radio"
-              aria-label={`Start Radio from ${tr.title}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onStartRadio("track", tr.id);
-              }}
-              className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground cursor-pointer disabled:cursor-default"
-            >
-              {radioLoadingKey === `track:${tr.id}` ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-foreground" />
-              ) : (
-                <Radio className="h-3.5 w-3.5" />
-              )}
-            </button>
-          )}
+          <RadioIconButton
+            kind="track"
+            seedId={tr.id}
+            label={`Start Radio from ${tr.title}`}
+            onStartRadio={onStartRadio}
+            radioLoadingKey={radioLoadingKey}
+            stopPropagation
+          />
           <button
             type="button"
             title="Play Next"
