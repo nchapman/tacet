@@ -269,10 +269,11 @@ export function App() {
               : "Song Radio";
         const count = res.station.trackCount;
         const countLabel = `${count} ${count === 1 ? "track" : "tracks"}`;
+        const label = res.station.seedLabel?.trim();
         pushToast({
           tone: "radio",
-          title: `${kindLabel} started`,
-          detail: res.station.seedLabel ? `${res.station.seedLabel} · ${countLabel}` : countLabel,
+          title: label ? `${label} Radio Started` : `${kindLabel} Started`,
+          detail: `${kindLabel} · ${countLabel}`,
         });
       });
     },
