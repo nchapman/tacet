@@ -7,8 +7,27 @@ use super::types::{Candidate, CandidateSource, RadioScope};
 const ARTIST_WINDOW: usize = 4;
 const MAX_TRACKS_PER_ARTIST: usize = 3;
 
+/// Optional rule to hoist a matching opener track to index 0 when no exact `seed_track`
+/// is pinned (Album Radio hoists a track from the album; Artist Radio hoists the top
+/// recommended track by the artist).
+#[derive(Default)]
+pub enum OpenerRule<'a> {
+    #[default]
+    None,
+    Album {
+        album_id: &'a str,
+        seed_tracks: &'a [Track],
+    },
+    Artist {
+        artist: &'a str,
+        qobuz_artist_id: i64,
+        seed_tracks: &'a [Track],
+    },
+}
+
 pub struct RankContext<'a> {
     pub seed_track: Option<&'a Track>,
+    pub opener_rule: OpenerRule<'a>,
     pub exclude_track_ids: &'a HashSet<String>,
     pub scope: RadioScope,
     pub limit: usize,
@@ -56,20 +75,30 @@ pub fn rank_candidates<R: rand::Rng>(
             .then_with(|| a.track.id.cmp(&b.track.id))
     });
 
-    let seed_included = ctx.seed_track.is_some();
-    let target_tail = if seed_included {
+    // Pin exact seed track (Track Radio) or hoist top matching opener (Album/Artist Radio)
+    let opener = if let Some(seed) = ctx.seed_track {
+        Some((seed.clone(), None))
+    } else {
+        take_opener(&mut scored, &ctx.opener_rule, ctx.scope)
+    };
+
+    let has_opener = opener.is_some();
+    let target_tail = if has_opener {
         ctx.limit.saturating_sub(1)
     } else {
         ctx.limit
     };
 
-    let selected = space_and_select(scored, target_tail, ctx.seed_track);
+    let selected = space_and_select(scored, target_tail, opener.as_ref().map(|(t, _)| t));
 
-    let mut tracks = Vec::with_capacity(selected.len() + usize::from(seed_included));
+    let mut tracks = Vec::with_capacity(selected.len() + usize::from(has_opener));
     let mut source_counts: BTreeMap<String, usize> = BTreeMap::new();
 
-    if let Some(seed) = ctx.seed_track {
-        tracks.push(seed.clone());
+    if let Some((track, source)) = opener {
+        if let Some(src) = source {
+            *source_counts.entry(src.as_str().to_string()).or_insert(0) += 1;
+        }
+        tracks.push(track);
     }
     for cand in selected {
         *source_counts
@@ -82,6 +111,52 @@ pub fn rank_candidates<R: rand::Rng>(
         tracks,
         source_counts,
     }
+}
+
+fn take_opener(
+    scored: &mut Vec<Candidate>,
+    rule: &OpenerRule<'_>,
+    scope: RadioScope,
+) -> Option<(Track, Option<CandidateSource>)> {
+    let (idx, fallback_tracks) = match rule {
+        OpenerRule::None => return None,
+        OpenerRule::Album {
+            album_id,
+            seed_tracks,
+        } => {
+            let seed_ids: HashSet<&str> = seed_tracks.iter().map(|t| t.id.as_str()).collect();
+            let pos = scored.iter().position(|c| {
+                (!album_id.is_empty() && c.track.album_id == *album_id)
+                    || seed_ids.contains(c.track.id.as_str())
+            });
+            (pos, *seed_tracks)
+        }
+        OpenerRule::Artist {
+            artist,
+            qobuz_artist_id,
+            seed_tracks,
+        } => {
+            let norm_artist = normalize_artist_key(artist);
+            let seed_ids: HashSet<&str> = seed_tracks.iter().map(|t| t.id.as_str()).collect();
+            let pos = scored.iter().position(|c| {
+                (!norm_artist.is_empty() && normalize_artist_key(&c.track.artist) == norm_artist)
+                    || (*qobuz_artist_id > 0 && c.track.qobuz_artist_id == *qobuz_artist_id)
+                    || seed_ids.contains(c.track.id.as_str())
+            });
+            (pos, *seed_tracks)
+        }
+    };
+
+    if let Some(i) = idx {
+        let cand = scored.remove(i);
+        return Some((cand.track, Some(cand.source)));
+    }
+
+    fallback_tracks
+        .iter()
+        .find(|t| scope == RadioScope::All || t.source_type == SOURCE_TYPE_LOCAL)
+        .cloned()
+        .map(|t| (t, None))
 }
 
 fn deduplicate_candidates(
@@ -342,6 +417,7 @@ mod tests {
             candidates.clone(),
             &RankContext {
                 seed_track: Some(&seed),
+                opener_rule: OpenerRule::None,
                 exclude_track_ids: &exclude,
                 scope: RadioScope::All,
                 limit: 10,
@@ -360,6 +436,7 @@ mod tests {
             candidates,
             &RankContext {
                 seed_track: Some(&seed),
+                opener_rule: OpenerRule::None,
                 exclude_track_ids: &exclude,
                 scope: RadioScope::Local,
                 limit: 10,
@@ -443,6 +520,7 @@ mod tests {
             candidates,
             &RankContext {
                 seed_track: Some(&seed),
+                opener_rule: OpenerRule::None,
                 exclude_track_ids: &exclude,
                 scope: RadioScope::All,
                 limit: 6,
@@ -460,5 +538,87 @@ mod tests {
         assert_eq!(res.tracks[3].id, "local:good3");
         // Artist A only appears again once outside the 4-track window
         assert_eq!(res.tracks[4].id, "local:a2");
+    }
+
+    #[test]
+    fn album_and_artist_opener_rules_hoist_matching_track_and_space_next() {
+        let mut rng = StdRng::seed_from_u64(11);
+        let mut alb_t1 = mk_track("local:alb1", "Miles Davis", "So What", "", true);
+        alb_t1.album_id = "alb:kob".into();
+        let mut alb_t2 = mk_track("local:alb2", "Miles Davis", "Blue in Green", "", true);
+        alb_t2.album_id = "alb:kob".into();
+
+        let candidates = vec![
+            Candidate {
+                track: mk_track("local:other1", "Bill Evans", "Peace Piece", "", true),
+                score: 0.99,
+                source: CandidateSource::Sonic,
+            },
+            Candidate {
+                track: mk_track("local:other2", "John Coltrane", "Naima", "", true),
+                score: 0.92,
+                source: CandidateSource::Sonic,
+            },
+            Candidate {
+                track: alb_t2.clone(),
+                score: 0.80,
+                source: CandidateSource::Sonic,
+            },
+            Candidate {
+                track: alb_t1.clone(),
+                score: 0.70,
+                source: CandidateSource::LocalFallback,
+            },
+        ];
+
+        let exclude = HashSet::new();
+        let cooldowns = RecentCooldowns::default();
+        let feedback = HashMap::new();
+
+        // Album Radio hoists highest-scoring track from the album (alb_t2) to index 0
+        // and spaces index 1 away from Miles Davis.
+        let alb_res = rank_candidates(
+            candidates.clone(),
+            &RankContext {
+                seed_track: None,
+                opener_rule: OpenerRule::Album {
+                    album_id: "alb:kob",
+                    seed_tracks: std::slice::from_ref(&alb_t1),
+                },
+                exclude_track_ids: &exclude,
+                scope: RadioScope::All,
+                limit: 4,
+                cooldowns: &cooldowns,
+                feedback: &feedback,
+                now_unix: 1_700_000_000,
+                jitter: 0.0,
+            },
+            &mut rng,
+        );
+        assert_eq!(alb_res.tracks[0].id, "local:alb2");
+        assert_eq!(alb_res.tracks[1].id, "local:other1");
+
+        // Artist Radio hoists top recommended track by Miles Davis to index 0.
+        let art_res = rank_candidates(
+            candidates,
+            &RankContext {
+                seed_track: None,
+                opener_rule: OpenerRule::Artist {
+                    artist: "Miles Davis",
+                    qobuz_artist_id: 0,
+                    seed_tracks: std::slice::from_ref(&alb_t1),
+                },
+                exclude_track_ids: &exclude,
+                scope: RadioScope::All,
+                limit: 4,
+                cooldowns: &cooldowns,
+                feedback: &feedback,
+                now_unix: 1_700_000_000,
+                jitter: 0.0,
+            },
+            &mut rng,
+        );
+        assert_eq!(art_res.tracks[0].id, "local:alb2");
+        assert_eq!(art_res.tracks[1].id, "local:other1");
     }
 }

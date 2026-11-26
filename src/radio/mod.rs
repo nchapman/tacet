@@ -14,7 +14,7 @@ use crate::library::{Catalog, RecentCooldowns};
 use crate::qobuz::Client as QobuzClient;
 use crate::sonic::SonicIndex;
 
-use rank::{RankContext, rank_candidates};
+use rank::{OpenerRule, RankContext, rank_candidates};
 use seed::resolve_seed;
 use sources::fallback::candidates_from_fallback;
 use sources::listenbrainz::candidates_from_listenbrainz;
@@ -137,11 +137,25 @@ impl RadioEngine {
             cand.track = upgraded;
         }
 
+        let opener_rule = match &req.seed {
+            RadioSeed::Track { .. } => OpenerRule::None,
+            RadioSeed::Album { id } => OpenerRule::Album {
+                album_id: id.as_str(),
+                seed_tracks: &resolved.seed_tracks,
+            },
+            RadioSeed::Artist { .. } => OpenerRule::Artist {
+                artist: &resolved.artist_name,
+                qobuz_artist_id: resolved.qobuz_artist_id,
+                seed_tracks: &resolved.seed_tracks,
+            },
+        };
+
         let mut rng = rand::rng();
         let ranked = rank_candidates(
             all_candidates,
             &RankContext {
                 seed_track: resolved.seed_track.as_ref(),
+                opener_rule,
                 exclude_track_ids: &resolved.exclude_track_ids,
                 scope: req.scope,
                 limit,

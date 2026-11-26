@@ -279,7 +279,7 @@ Track, Album, and Artist Radio are implemented as a modular, local-first pipelin
 
 | Stage | **Track Radio** | **Album Radio** | **Artist Radio** |
 | :--- | :--- | :--- | :--- |
-| **Pinned at index 0?** | **Yes** — plays seed first (or continues seamlessly if already active in the zone) | No — starts into the blended station (album tracks act as anchors) | No — starts into the blended station (artist tracks act as anchors) |
+| **Opener at index 0** | **Exact selected track** (continues seamlessly if already active in the zone) | **Top-ranked track from that album** (rest spaced away from that artist) | **Top-ranked track by that artist** (rest spaced away from that artist) |
 | **Local `SonicIndex`** | Nearest neighbors to the track's 1280-d embedding | Nearest neighbors to the **centroid** of the album's analyzed tracks | Nearest neighbors to the **centroid** of the artist's analyzed tracks |
 | **Qobuz primary** | `GET /radio/track` + `POST /dynamic/suggest` (ISRC-resolved if local) | `GET /radio/album` + `POST /dynamic/suggest` (+ `similar_albums` if thin) | `GET /radio/artist` (+ `similar_artists` if thin) |
 | **ListenBrainz** | Uses track's `mb_artist_id` | Uses album's `mb_artist_id` | Uses artist's `mb_artist_id` |
