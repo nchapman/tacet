@@ -199,7 +199,12 @@ fn start_background_workers(
     state.set_enrichment(Arc::clone(&enrichment));
     enrichment.start();
 
-    let sonic_dir = data_dir.join("models").join("sonic");
+    let sonic_dir = std::env::var("TACET_SONIC_MODELS_DIR")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir.join("models").join("sonic"));
     let sonic = SonicWorker::new(Arc::clone(catalog), sonic_dir, state.shutdown.clone());
     state.set_sonic(Arc::clone(&sonic));
     sonic.start();

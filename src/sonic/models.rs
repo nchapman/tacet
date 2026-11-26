@@ -1,8 +1,12 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use ort::environment::Environment;
+use ort::session::Session;
+use ort::session::builder::GraphOptimizationLevel;
+use ort::value::Tensor;
 use serde::Deserialize;
-use tract_onnx::prelude::*;
 
 use crate::library::{SonicTagEntry, TrackSonicHeadsWrite};
 
@@ -77,8 +81,6 @@ const HEAD_SPECS: &[HeadSpec] = &[
     },
 ];
 
-type RunnableModel = std::sync::Arc<TypedRunnableModel>;
-
 #[derive(Deserialize)]
 struct EffnetMeta {
     #[serde(default)]
@@ -92,9 +94,9 @@ pub struct SonicInferenceResult {
 }
 
 pub struct SonicModels {
-    base: RunnableModel,
+    base: Mutex<Session>,
     style_labels: Vec<String>,
-    heads: Vec<(&'static HeadSpec, RunnableModel)>,
+    heads: Vec<(&'static HeadSpec, Mutex<Session>)>,
 }
 
 impl SonicModels {
@@ -128,7 +130,7 @@ impl SonicModels {
 
     pub fn load_from_dir(models_dir: &Path) -> Result<Self, String> {
         let base_path = models_dir.join(BASE_MODEL_FILE);
-        let base = load_onnx(&base_path)?;
+        let base = Mutex::new(load_session(&base_path)?);
 
         let style_labels = std::fs::read_to_string(models_dir.join(BASE_META_FILE))
             .ok()
@@ -140,8 +142,8 @@ impl SonicModels {
         for spec in HEAD_SPECS {
             let path = models_dir.join(spec.file);
             if path.is_file() {
-                match load_onnx(&path) {
-                    Ok(m) => heads.push((spec, m)),
+                match load_session(&path) {
+                    Ok(s) => heads.push((spec, Mutex::new(s))),
                     Err(e) => {
                         tracing::warn!(head = spec.key, error = %e, "skipping unreadable sonic head");
                     }
@@ -164,32 +166,46 @@ impl SonicModels {
         if num_patches == 0 || patches.len() != num_patches * PATCH_FRAMES * N_MELS {
             return Err("invalid mel patch buffer".into());
         }
-        let arr =
-            tract_ndarray::Array3::from_shape_vec((num_patches, PATCH_FRAMES, N_MELS), patches)
-                .map_err(|e| format!("build mel tensor: {e}"))?;
-        let input: Tensor = arr.into();
-        let outputs = self
-            .base
-            .run(tvec!(input.into()))
-            .map_err(|e| format!("run discogs-effnet: {e}"))?;
+        let input = Tensor::from_array(([num_patches, PATCH_FRAMES, N_MELS], patches))
+            .map_err(|e| format!("build mel tensor: {e}"))?;
 
-        let emb_out = outputs
-            .iter()
-            .find(|o| o.shape().last() == Some(&EMBEDDING_DIM))
-            .ok_or_else(|| "missing 1280-d embedding output".to_string())?;
-        let emb_view = emb_out
-            .to_plain_array_view::<f32>()
-            .map_err(|e| format!("extract embeddings: {e}"))?;
+        let (embedding, mut tags) = {
+            let mut session = self.base.lock().unwrap_or_else(|e| e.into_inner());
+            let outputs = session
+                .run(ort::inputs![input])
+                .map_err(|e| format!("run discogs-effnet: {e}"))?;
 
-        let mut embedding = vec![0.0f32; EMBEDDING_DIM];
-        let inv_n = 1.0 / (num_patches as f32);
-        for row in 0..num_patches {
-            for c in 0..EMBEDDING_DIM {
-                embedding[c] += emb_view[[row, c]] * inv_n;
+            let mut pooled_emb: Option<Vec<f32>> = None;
+            let mut style_tags = Vec::new();
+            let inv_n = 1.0 / (num_patches as f32);
+
+            for (_, val) in outputs.iter() {
+                let Ok((shape, data)) = val.try_extract_tensor::<f32>() else {
+                    continue;
+                };
+                let last_dim = shape.last().copied().unwrap_or(0) as usize;
+                if last_dim == EMBEDDING_DIM && data.len() == num_patches * EMBEDDING_DIM {
+                    let mut emb = vec![0.0f32; EMBEDDING_DIM];
+                    for row in 0..num_patches {
+                        let base = row * EMBEDDING_DIM;
+                        for c in 0..EMBEDDING_DIM {
+                            emb[c] += data[base + c] * inv_n;
+                        }
+                    }
+                    pooled_emb = Some(emb);
+                } else if !self.style_labels.is_empty()
+                    && last_dim == self.style_labels.len()
+                    && data.len() == num_patches * last_dim
+                {
+                    style_tags = extract_top_styles(data, &self.style_labels, num_patches);
+                }
             }
-        }
 
-        let mut tags = extract_top_styles(&outputs, &self.style_labels, num_patches);
+            let embedding =
+                pooled_emb.ok_or_else(|| "missing 1280-d embedding output".to_string())?;
+            (embedding, style_tags)
+        };
+
         let heads = self.run_heads(&embedding, &mut tags);
 
         Ok(SonicInferenceResult {
@@ -207,27 +223,28 @@ impl SonicModels {
         if self.heads.is_empty() {
             return None;
         }
-        let arr =
-            tract_ndarray::Array2::from_shape_vec((1, EMBEDDING_DIM), embedding.to_vec()).ok()?;
-        let input: Tensor = arr.into();
-
         let mut scores = TrackSonicHeadsWrite {
             heads_version: HEADS_VERSION,
             ..Default::default()
         };
         let mut any = false;
 
-        for (spec, model) in &self.heads {
-            let Ok(outs) = model.run(tvec!(input.clone().into())) else {
+        for (spec, mutex) in &self.heads {
+            let Ok(input) = Tensor::from_array(([1usize, EMBEDDING_DIM], embedding.to_vec()))
+            else {
                 continue;
             };
-            let Some(first) = outs.first() else {
+            let mut session = mutex.lock().unwrap_or_else(|e| e.into_inner());
+            let Ok(outputs) = session.run(ort::inputs![input]) else {
                 continue;
             };
-            let Ok(view) = first.to_plain_array_view::<f32>() else {
+            let Some((_, first)) = outputs.iter().next() else {
                 continue;
             };
-            let Some(&val) = view.iter().nth(spec.positive_idx) else {
+            let Ok((_, data)) = first.try_extract_tensor::<f32>() else {
+                continue;
+            };
+            let Some(&val) = data.get(spec.positive_idx) else {
                 continue;
             };
             if !val.is_finite() {
@@ -235,96 +252,89 @@ impl SonicModels {
             }
             let clamped = val.clamp(0.0, 1.0);
             any = true;
-            match spec.key {
-                "engagement" => scores.engagement = Some(clamped),
-                "approachability" => scores.approachability = Some(clamped),
-                "instrumental" => scores.instrumental = Some(clamped),
-                "danceability" => scores.danceability = Some(clamped),
-                "mood_relaxed" => {
-                    scores.mood_relaxed = Some(clamped);
-                    if clamped >= 0.65 {
-                        tags.push(SonicTagEntry {
-                            kind: "mood".into(),
-                            tag: "relaxed".into(),
-                            score: f64::from(clamped),
-                            source: "head".into(),
-                        });
-                    }
-                }
-                "mood_acoustic" => {
-                    scores.mood_acoustic = Some(clamped);
-                    if clamped >= 0.65 {
-                        tags.push(SonicTagEntry {
-                            kind: "mood".into(),
-                            tag: "acoustic".into(),
-                            score: f64::from(clamped),
-                            source: "head".into(),
-                        });
-                    }
-                }
-                "mood_aggressive" => {
-                    scores.mood_aggressive = Some(clamped);
-                    if clamped >= 0.65 {
-                        tags.push(SonicTagEntry {
-                            kind: "mood".into(),
-                            tag: "aggressive".into(),
-                            score: f64::from(clamped),
-                            source: "head".into(),
-                        });
-                    }
-                }
-                "mood_electronic" => {
-                    scores.mood_electronic = Some(clamped);
-                    if clamped >= 0.65 {
-                        tags.push(SonicTagEntry {
-                            kind: "mood".into(),
-                            tag: "electronic".into(),
-                            score: f64::from(clamped),
-                            source: "head".into(),
-                        });
-                    }
-                }
-                _ => {}
-            }
+            record_head_score(spec.key, clamped, &mut scores, tags);
         }
 
         any.then_some(scores)
     }
 }
 
-fn load_onnx(path: &Path) -> Result<RunnableModel, String> {
-    tract_onnx::onnx()
-        .model_for_path(path)
-        .map_err(|e| format!("parse {}: {e}", path.display()))?
-        .into_optimized()
-        .map_err(|e| format!("optimize {}: {e}", path.display()))?
-        .into_runnable()
-        .map_err(|e| format!("compile {}: {e}", path.display()))
+fn record_head_score(
+    key: &str,
+    val: f32,
+    scores: &mut TrackSonicHeadsWrite,
+    tags: &mut Vec<SonicTagEntry>,
+) {
+    match key {
+        "engagement" => scores.engagement = Some(val),
+        "approachability" => scores.approachability = Some(val),
+        "instrumental" => scores.instrumental = Some(val),
+        "danceability" => scores.danceability = Some(val),
+        "mood_relaxed" => {
+            scores.mood_relaxed = Some(val);
+            maybe_push_mood(tags, "relaxed", val);
+        }
+        "mood_acoustic" => {
+            scores.mood_acoustic = Some(val);
+            maybe_push_mood(tags, "acoustic", val);
+        }
+        "mood_aggressive" => {
+            scores.mood_aggressive = Some(val);
+            maybe_push_mood(tags, "aggressive", val);
+        }
+        "mood_electronic" => {
+            scores.mood_electronic = Some(val);
+            maybe_push_mood(tags, "electronic", val);
+        }
+        _ => {}
+    }
 }
 
-fn extract_top_styles(
-    outputs: &TVec<TValue>,
-    labels: &[String],
-    num_patches: usize,
-) -> Vec<SonicTagEntry> {
-    if labels.is_empty() {
-        return Vec::new();
+fn maybe_push_mood(tags: &mut Vec<SonicTagEntry>, name: &str, val: f32) {
+    if val >= 0.65 {
+        tags.push(SonicTagEntry {
+            kind: "mood".into(),
+            tag: name.into(),
+            score: f64::from(val),
+            source: "head".into(),
+        });
     }
-    let Some(act_out) = outputs
-        .iter()
-        .find(|o| o.shape().last() == Some(&labels.len()))
-    else {
-        return Vec::new();
-    };
-    let Ok(view) = act_out.to_plain_array_view::<f32>() else {
-        return Vec::new();
-    };
+}
+
+fn ort_env() -> Result<&'static Environment, String> {
+    static ENV: OnceLock<Result<Environment, String>> = OnceLock::new();
+    match ENV.get_or_init(|| {
+        ort::init()
+            .with_name("tacet-sonic")
+            .build()
+            .map_err(|e| format!("init ort environment: {e}"))
+    }) {
+        Ok(env) => Ok(env),
+        Err(e) => Err(e.clone()),
+    }
+}
+
+fn load_session(path: &Path) -> Result<Session, String> {
+    let env = ort_env()?;
+    let mut builder = Session::builder(env)
+        .map_err(|e| format!("create ort builder: {e}"))?
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|e| format!("set ort opt level: {e}"))?
+        .with_intra_threads(2)
+        .map_err(|e| format!("set ort threads: {e}"))?;
+    builder
+        .commit_from_file(path)
+        .map_err(|e| format!("load {}: {e}", path.display()))
+}
+
+fn extract_top_styles(data: &[f32], labels: &[String], num_patches: usize) -> Vec<SonicTagEntry> {
+    let n_classes = labels.len();
     let inv_n = 1.0 / (num_patches as f32);
-    let mut scored: Vec<(usize, f32)> = (0..labels.len())
+    let mut scored: Vec<(usize, f32)> = (0..n_classes)
         .map(|c| {
             let mut sum = 0.0f32;
             for r in 0..num_patches {
-                sum += view[[r, c]];
+                sum += data[r * n_classes + c];
             }
             (c, sum * inv_n)
         })

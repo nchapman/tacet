@@ -12,7 +12,7 @@ if [ "$(id -u)" = "0" ]; then
     chown -R "${PUID}:${PGID}" "$DATA_DIR"
   fi
 
-  exec su-exec "${PUID}:${PGID}" /usr/local/bin/tacet "$@"
+  exec gosu "${PUID}:${PGID}" /usr/local/bin/tacet "$@"
 fi
 
 exec /usr/local/bin/tacet "$@"
