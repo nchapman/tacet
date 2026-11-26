@@ -25,10 +25,12 @@ import { SearchView } from "@/components/SearchView";
 import { SettingsView } from "@/components/SettingsView";
 import { type AppSection, MobileBottomNav, Sidebar } from "@/components/Sidebar";
 import { SongsView } from "@/components/SongsView";
+import { Toaster } from "@/components/Toaster";
 import { AmbientBackdrop } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
 import { useBrowserPlayer } from "@/hooks/useBrowserPlayer";
 import { useTacet } from "@/hooks/useTacet";
+import { useToast } from "@/hooks/useToast";
 import { albumDetailQueryOptions, setPrefetchQobuzConnected } from "@/lib/prefetch";
 import {
   invalidateLibraryQueries,
@@ -254,11 +256,27 @@ export function App() {
     },
     [tacet.addSource],
   );
+  const { toasts, pushToast, dismissToast } = useToast();
   const handleStartRadio = useCallback(
     (kind: RadioSeedKind, id: string) => {
-      void tacet.startRadio(kind, id);
+      void tacet.startRadio(kind, id).then((res) => {
+        if (!res?.station) return;
+        const kindLabel =
+          res.station.seedKind === "album"
+            ? "Album Radio"
+            : res.station.seedKind === "artist"
+              ? "Artist Radio"
+              : "Song Radio";
+        const count = res.station.trackCount;
+        const countLabel = `${count} ${count === 1 ? "track" : "tracks"}`;
+        pushToast({
+          tone: "radio",
+          title: `${kindLabel} started`,
+          detail: res.station.seedLabel ? `${res.station.seedLabel} · ${countLabel}` : countLabel,
+        });
+      });
     },
-    [tacet.startRadio],
+    [tacet.startRadio, pushToast],
   );
   const handleJumpItem = useCallback(
     (itemId: string) => {
@@ -591,18 +609,23 @@ export function App() {
       </div>
 
       {/* Spotify-style Bottom Player Bar (Desktop) & Mini-Player + Expandable Full-Screen Sheet (Mobile) */}
+      <Toaster
+        toasts={toasts}
+        onDismiss={dismissToast}
+        error={tacet.error}
+        onDismissError={tacet.clearError}
+      />
+
       <div className="relative z-10 shrink-0">
         <PlayerBar
           zones={tacet.zones}
           activeZone={tacet.activeZone}
           getClockOffsetMs={tacet.getClockOffsetMs}
-          error={tacet.error}
           discovering={tacet.discovering}
           transcodeAvailable={Boolean(tacet.settings.transcodeAvailable)}
           streamMode={tacet.settings.streamMode}
           queueOpen={queueOpen}
           browserPlayer={browserPlayer}
-          onDismissError={tacet.clearError}
           onTransport={handleTransport}
           onSeek={handleSeek}
           onVolume={handleVolume}

@@ -1,5 +1,4 @@
 import {
-  AlertCircle,
   Laptop,
   ListMusic,
   Loader2,
@@ -14,7 +13,6 @@ import {
   Speaker,
   Volume2,
   VolumeX,
-  X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
@@ -37,13 +35,11 @@ interface PlayerBarProps {
   zones: ZoneSnapshot[];
   activeZone: ZoneSnapshot | null;
   getClockOffsetMs: () => number;
-  error: string;
   discovering: boolean;
   transcodeAvailable: boolean;
   streamMode?: StreamMode;
   queueOpen: boolean;
   browserPlayer: BrowserPlayerController;
-  onDismissError: () => void;
   onTransport: (action: TransportAction) => void;
   onSeek: (sec: number) => void;
   onVolume: (vol: number) => void;
@@ -66,13 +62,11 @@ export const PlayerBar = memo(function PlayerBar({
   zones,
   activeZone,
   getClockOffsetMs,
-  error,
   discovering,
   transcodeAvailable,
   streamMode,
   queueOpen,
   browserPlayer,
-  onDismissError,
   onTransport,
   onSeek,
   onVolume,
@@ -197,25 +191,6 @@ export const PlayerBar = memo(function PlayerBar({
 
   return (
     <>
-      {/* Playback error toast above player bar */}
-      {error && (
-        <div
-          role="alert"
-          className="fixed bottom-[138px] inset-x-3 lg:inset-x-auto lg:bottom-[94px] lg:right-4 z-40 flex lg:max-w-md items-center gap-2.5 rounded-xl border border-red-500/30 bg-[#1a1012]/95 px-3.5 py-2.5 text-xs text-red-200 shadow-2xl backdrop-blur-xl"
-        >
-          <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
-          <span className="flex-1">{error}</span>
-          <button
-            type="button"
-            onClick={onDismissError}
-            aria-label="Dismiss error"
-            className="rounded-full p-0.5 hover:bg-white/10 cursor-pointer"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
-
       {/* ==================== DESKTOP PLAYER BAR (>= lg) ==================== */}
       <footer
         aria-label="Player controls"
