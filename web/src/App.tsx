@@ -257,6 +257,12 @@ export function App() {
     [tacet.addSource],
   );
   const { toasts, pushToast, dismissToast } = useToast();
+  const handleNotify = useCallback(
+    (title: string, detail?: string) => {
+      pushToast({ tone: "info", title, detail });
+    },
+    [pushToast],
+  );
   const handleStartRadio = useCallback(
     (kind: RadioSeedKind, id: string) => {
       void tacet.startRadio(kind, id).then((res) => {
@@ -589,6 +595,7 @@ export function App() {
                   onDiscover={handleDiscover}
                   onOpenConnect={handleOpenConnect}
                   onGoToQobuz={handleGoToQobuz}
+                  onNotify={handleNotify}
                 />
               }
             />

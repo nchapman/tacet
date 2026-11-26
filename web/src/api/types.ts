@@ -527,3 +527,31 @@ export interface SonicSimilarArtistItem {
   artist: ArtistSummary;
   score: number;
 }
+
+export interface SonicStatus {
+  enabled: boolean;
+  modelsReady: boolean;
+  downloading: boolean;
+  running: boolean;
+  ffmpegAvailable: boolean;
+  indexedTracks: number;
+  totalLocalTracks: number;
+  analyzedTracks: number;
+  headsComputedTracks: number;
+  pendingTracks: number;
+  lastRunAt?: string | null;
+  lastError?: string | null;
+}
+
+export interface EnrichmentStatus {
+  enabled: boolean;
+  running: boolean;
+  totalAlbums: number;
+  matchedAlbums: number;
+  partialAlbums: number;
+  unmatchedAlbums: number;
+  failedAlbums: number;
+  pendingAlbums: number;
+  lastRunAt?: string | null;
+  lastError?: string | null;
+}

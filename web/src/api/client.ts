@@ -8,6 +8,7 @@ import type {
   DiscoverFeed,
   DiscoverShelfPage,
   DiscoverZonesResponse,
+  EnrichmentStatus,
   GenreSummary,
   HeavyRotationAlbum,
   LibraryAlbumsQuery,
@@ -37,6 +38,7 @@ import type {
   SonicSimilarAlbumItem,
   SonicSimilarArtistItem,
   SonicSimilarTrackItem,
+  SonicStatus,
   StartRadioRequest,
   StartRadioResponse,
   StreamMode,
@@ -788,6 +790,24 @@ export class TacetClient {
 
   previewRadio(req: StartRadioRequest, opts?: RequestOptions): Promise<RadioPreviewResponse> {
     return this.request("/api/v1/radio/preview", { method: "POST", body: JSON.stringify(req) }, undefined, opts);
+  }
+
+  getSonicStatus(opts?: RequestOptions): Promise<SonicStatus> {
+    return this.request("/api/v1/library/sonic", {}, undefined, opts);
+  }
+
+  runSonic(enable?: boolean, opts?: RequestOptions): Promise<SonicStatus> {
+    const query = enable === undefined ? undefined : { enable: enable ? "true" : "false" };
+    return this.request("/api/v1/library/sonic/run", { method: "POST" }, query, opts);
+  }
+
+  getEnrichmentStatus(opts?: RequestOptions): Promise<EnrichmentStatus> {
+    return this.request("/api/v1/library/enrichment", {}, undefined, opts);
+  }
+
+  runEnrichment(retryFailed = false, opts?: RequestOptions): Promise<EnrichmentStatus> {
+    const query = retryFailed ? { retryFailed: "true" } : undefined;
+    return this.request("/api/v1/library/enrichment/run", { method: "POST" }, query, opts);
   }
 }
 

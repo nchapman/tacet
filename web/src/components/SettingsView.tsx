@@ -1,9 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, CheckCircle2, Compass, HardDrive, Plus, Radio, RefreshCw, Speaker } from "lucide-react";
-import { useState } from "react";
+import { Check, Compass, HardDrive, Plus, Radio, RefreshCw, Speaker } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtCount } from "@/api/format";
 import type { LibraryStatus, QobuzStatus, StreamMode, ZoneSnapshot } from "@/api/types";
+import { LibraryIntelligenceSection } from "@/components/LibraryIntelligenceSection";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PageBody, PageHeader } from "@/components/ui/PageHeader";
@@ -30,6 +31,7 @@ interface SettingsViewProps {
   onDiscover: () => void;
   onOpenConnect: () => void;
   onGoToQobuz: () => void;
+  onNotify?: (title: string, detail?: string) => void;
 }
 
 const SCAN_INTERVAL_OPTIONS = [
@@ -60,11 +62,23 @@ export function SettingsView({
   onDiscover,
   onOpenConnect,
   onGoToQobuz,
+  onNotify,
 }: SettingsViewProps) {
   const queryClient = useQueryClient();
   const [syncing, setSyncing] = useState(false);
-  const [msg, setMsg] = useState("");
   const [errMsg, setErrMsg] = useState("");
+
+  const prevScanningRef = useRef(Boolean(libraryStatus?.scanning));
+  useEffect(() => {
+    const scanning = Boolean(libraryStatus?.scanning);
+    if (prevScanningRef.current && !scanning && libraryStatus) {
+      onNotify?.(
+        "Library Sync Complete",
+        `${fmtCount(libraryStatus.albums)} albums · ${fmtCount(libraryStatus.tracks)} tracks`,
+      );
+    }
+    prevScanningRef.current = scanning;
+  }, [libraryStatus, onNotify]);
 
   const discoverQuery = useQuery({
     queryKey: queryKeys.discover.feed([]),
@@ -85,11 +99,13 @@ export function SettingsView({
 
   const handleSync = async (provider: "all" | "local" | "qobuz") => {
     setSyncing(true);
-    setMsg("");
     setErrMsg("");
     try {
       await tacetClient.syncLibrary(provider, false);
-      setMsg(provider === "all" ? "Library sync started in the background." : `Syncing ${provider}…`);
+      onNotify?.(
+        provider === "all" ? "Library Sync Started" : `Syncing ${provider === "local" ? "Local Library" : "Qobuz"}`,
+        "Scanning in the background…",
+      );
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -99,12 +115,11 @@ export function SettingsView({
 
   const handleLogoutQobuz = async () => {
     setErrMsg("");
-    setMsg("");
     try {
       const st = await tacetClient.qobuzLogout();
       onQobuzStatusChange(st);
       invalidateQobuzLogout(queryClient);
-      setMsg("Signed out of Qobuz. Your play history is preserved.");
+      onNotify?.("Signed Out of Qobuz", "Your play history is preserved.");
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : String(err));
     }
@@ -120,12 +135,6 @@ export function SettingsView({
 
       <PageBody>
         <div className="max-w-3xl px-4 sm:px-8 pt-6 space-y-6">
-        {msg && (
-          <div className="flex items-center gap-2 rounded-xl border border-emerald-400/25 bg-emerald-400/10 px-4 py-2.5 text-sm text-emerald-200">
-            <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
-            <span>{msg}</span>
-          </div>
-        )}
         {errMsg && (
           <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/50 px-4 py-2.5 text-sm text-red-200">
             {errMsg}
@@ -150,6 +159,12 @@ export function SettingsView({
             </div>
             {libraryStatus?.scanning && <Badge variant="live">Syncing</Badge>}
           </div>
+
+          {libraryStatus?.scanning && (
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/[0.08]">
+              <div className="h-full w-1/3 rounded-full bg-emerald-400 animate-pulse" />
+            </div>
+          )}
 
           {(libraryStatus?.missingTracks ?? 0) > 0 && (
             <p className="text-xs text-muted-foreground">
@@ -244,6 +259,9 @@ export function SettingsView({
             </>
           )}
         </section>
+
+        {/* Library Intelligence (Sonic Analysis & Metadata Enrichment) */}
+        <LibraryIntelligenceSection onNotify={onNotify} onError={setErrMsg} />
 
         {/* Qobuz Account & Streaming Delivery */}
         <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5 space-y-5">

@@ -144,10 +144,14 @@ export const queryKeys = {
   },
   sonic: {
     all: ["sonic"] as const,
+    status: ["sonic", "status"] as const,
     similarTracks: (trackId: string, limit = 5) => ["sonic", "similar-tracks", trackId, limit] as const,
     similarAlbums: (albumId: string, limit = 12) => ["sonic", "similar-albums", albumId, limit] as const,
     similarArtists: (artistName: string, limit = 12) =>
       ["sonic", "similar-artists", artistName.toLowerCase(), limit] as const,
+  },
+  enrichment: {
+    status: ["enrichment", "status"] as const,
   },
   radio: {
     preview: (kind: string, id: string, limit = 25) => ["radio", "preview", kind, id, limit] as const,
