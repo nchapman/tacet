@@ -17,7 +17,8 @@ use crate::library::probe::{probe_audio, read_embedded_art};
 use crate::library::store::{CachedLocalFile, LibraryStore};
 use crate::library::types::{
     Album, LibraryError, Result, SOURCE_LOCAL, SOURCE_TYPE_LOCAL, Track,
-    format_name_from_mime_or_ext, is_lossless_format, mime_for_ext, short_hash, short_hash_bytes,
+    format_name_from_mime_or_ext, is_lossless_format, mime_for_ext, normalize_isrc, short_hash,
+    short_hash_bytes,
 };
 
 const MAX_COVER_ART_BYTES: usize = 10 << 20; // 10 MiB
@@ -412,6 +413,7 @@ fn apply_lofty_tags(path: &Path, t: &mut Track) -> String {
     if let Some(y) = tag.year() {
         t.year = y as i32;
     }
+    apply_extended_tags(tag, t);
     if let Some(pic) = tag.pictures().first()
         && !pic.data().is_empty()
         && pic.data().len() <= MAX_COVER_ART_BYTES
@@ -420,6 +422,76 @@ fn apply_lofty_tags(path: &Path, t: &mut Track) -> String {
         return short_hash_bytes(pic.data());
     }
     String::new()
+}
+
+fn tag_str(tag: &lofty::tag::Tag, key: &lofty::tag::ItemKey) -> Option<String> {
+    tag.get_string(key)
+        .map(|v| v.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn parse_replaygain_db(s: &str) -> Option<f64> {
+    let trimmed = s
+        .trim()
+        .trim_end_matches("dB")
+        .trim_end_matches("db")
+        .trim_end_matches("DB")
+        .trim();
+    let v: f64 = trimmed.parse().ok()?;
+    v.is_finite().then_some(v)
+}
+
+fn parse_replaygain_peak(s: &str) -> Option<f64> {
+    let v: f64 = s.trim().parse().ok()?;
+    (v.is_finite() && v >= 0.0).then_some(v)
+}
+
+fn apply_extended_tags(tag: &lofty::tag::Tag, t: &mut Track) {
+    use lofty::tag::ItemKey;
+
+    if let Some(val) = tag_str(tag, &ItemKey::Isrc) {
+        let norm = normalize_isrc(&val);
+        if !norm.is_empty() {
+            t.isrc = norm;
+        }
+    }
+    if let Some(s) = tag_str(tag, &ItemKey::Composer) {
+        t.composer = s;
+    }
+    if let Some(s) = tag_str(tag, &ItemKey::ReplayGainTrackGain) {
+        t.replaygain_gain = parse_replaygain_db(&s);
+    }
+    if let Some(s) = tag_str(tag, &ItemKey::ReplayGainTrackPeak) {
+        t.replaygain_peak = parse_replaygain_peak(&s);
+    }
+    if let Some(s) = tag_str(tag, &ItemKey::MusicBrainzRecordingId)
+        .or_else(|| tag_str(tag, &ItemKey::MusicBrainzTrackId))
+    {
+        t.mb_recording_id = s;
+    }
+    if let Some(s) = tag_str(tag, &ItemKey::MusicBrainzArtistId) {
+        t.mb_artist_id = s;
+    }
+    if let Some(s) = tag_str(tag, &ItemKey::Label).or_else(|| tag_str(tag, &ItemKey::Publisher)) {
+        t.scan_label = s;
+    }
+    if let Some(s) = tag_str(tag, &ItemKey::Barcode) {
+        t.scan_upc = s;
+    }
+    if let Some(s) = tag_str(tag, &ItemKey::OriginalReleaseDate)
+        .or_else(|| tag_str(tag, &ItemKey::RecordingDate))
+    {
+        t.scan_release_date = s;
+    }
+    if let Some(s) = tag_str(tag, &ItemKey::MusicBrainzReleaseId) {
+        t.scan_mb_release_id = s;
+    }
+    if let Some(s) = tag_str(tag, &ItemKey::MusicBrainzReleaseGroupId) {
+        t.scan_mb_release_group_id = s;
+    }
+    if let Some(s) = tag_str(tag, &ItemKey::MusicBrainzReleaseArtistId) {
+        t.scan_mb_album_artist_id = s;
+    }
 }
 
 fn build_albums_from_tracks(tracks: &[Track]) -> Vec<Album> {
@@ -457,6 +529,28 @@ fn build_albums_from_tracks(tracks: &[Track]) -> Vec<Album> {
         }
         if entry.genre.is_empty() && !t.genre.is_empty() {
             entry.genre = t.genre.clone();
+        }
+        if entry.label.is_empty() && !t.scan_label.is_empty() {
+            entry.label = t.scan_label.clone();
+        }
+        if entry.upc.is_empty() && !t.scan_upc.is_empty() {
+            entry.upc = t.scan_upc.clone();
+        }
+        if entry.release_date.is_empty() && !t.scan_release_date.is_empty() {
+            entry.release_date = t.scan_release_date.clone();
+        }
+        if entry.mb_release_id.is_empty() && !t.scan_mb_release_id.is_empty() {
+            entry.mb_release_id = t.scan_mb_release_id.clone();
+        }
+        if entry.mb_release_group_id.is_empty() && !t.scan_mb_release_group_id.is_empty() {
+            entry.mb_release_group_id = t.scan_mb_release_group_id.clone();
+        }
+        if entry.mb_artist_id.is_empty() {
+            if !t.scan_mb_album_artist_id.is_empty() {
+                entry.mb_artist_id = t.scan_mb_album_artist_id.clone();
+            } else if !t.mb_artist_id.is_empty() {
+                entry.mb_artist_id = t.mb_artist_id.clone();
+            }
         }
         if entry.artwork_url.is_empty() && !t.artwork_url.is_empty() {
             entry.artwork_url = t.artwork_url.clone();

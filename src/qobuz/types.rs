@@ -415,13 +415,25 @@ impl QArtist {
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct QGenre {
     #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
     pub name: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct QLabel {
     #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
     pub name: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct QAudioInfo {
+    #[serde(default)]
+    pub replaygain_track_gain: Option<f64>,
+    #[serde(default)]
+    pub replaygain_track_peak: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -456,6 +468,8 @@ pub(crate) struct QAlbum {
     pub genre: QGenre,
     #[serde(default)]
     pub label: QLabel,
+    #[serde(default)]
+    pub upc: String,
     #[serde(default)]
     pub copyright: String,
     #[serde(default)]
@@ -560,9 +574,13 @@ impl QAlbum {
             artist: self.artist.name.trim().to_string(),
             genre: self.genre.name.trim().to_string(),
             label: self.label.name.trim().to_string(),
+            upc: self.upc.trim().to_string(),
             description: clean_qobuz_text(&self.description),
             copyright: self.copyright.trim().to_string(),
             release_date: self.release_date_original.trim().to_string(),
+            qobuz_artist_id: self.artist.id,
+            qobuz_genre_id: self.genre.id,
+            qobuz_label_id: self.label.id,
             awards,
             booklet_url,
             credits,
@@ -583,6 +601,8 @@ impl QAlbum {
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct QPerformer {
     #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
     pub name: String,
 }
 
@@ -594,6 +614,8 @@ pub(crate) struct QTrack {
     pub title: String,
     #[serde(default)]
     pub version: String,
+    #[serde(default)]
+    pub isrc: String,
     #[serde(default)]
     pub track_number: i32,
     #[serde(default)]
@@ -610,6 +632,10 @@ pub(crate) struct QTrack {
     pub performers: String,
     #[serde(default)]
     pub performer: QPerformer,
+    #[serde(default)]
+    pub composer: QPerformer,
+    #[serde(default)]
+    pub audio_info: QAudioInfo,
     #[serde(default)]
     pub album: Option<Box<QAlbum>>,
 }
@@ -629,6 +655,9 @@ impl QTrack {
         let mut genre = String::new();
         let mut year = 0i32;
         let mut artwork = String::new();
+        let mut qobuz_artist_id = self.performer.id;
+        let mut qobuz_genre_id = 0i64;
+        let mut qobuz_label_id = 0i64;
 
         if let Some(a) = alb {
             album_title = a.title.trim().to_string();
@@ -636,6 +665,11 @@ impl QTrack {
             if artist.is_empty() {
                 artist = album_artist.clone();
             }
+            if qobuz_artist_id == 0 {
+                qobuz_artist_id = a.artist.id;
+            }
+            qobuz_genre_id = a.genre.id;
+            qobuz_label_id = a.label.id;
             if !a.id.is_empty() {
                 album_id = format!("qobuz:{}", a.id);
             }
@@ -659,6 +693,14 @@ impl QTrack {
         {
             bd = a.maximum_bit_depth;
         }
+        let rg_gain = self
+            .audio_info
+            .replaygain_track_gain
+            .filter(|v| v.is_finite());
+        let rg_peak = self
+            .audio_info
+            .replaygain_track_peak
+            .filter(|v| v.is_finite() && *v >= 0.0);
 
         Track {
             id: format!("qobuz:{}", self.id),
@@ -683,7 +725,15 @@ impl QTrack {
             ext: ".flac".into(),
             artwork_url: artwork,
             explicit: self.parental_warning,
+            isrc: crate::library::normalize_isrc(&self.isrc),
+            replaygain_gain: rg_gain,
+            replaygain_peak: rg_peak,
+            composer: self.composer.name.trim().to_string(),
+            performers: self.performers.trim().to_string(),
             qobuz_track_id: self.id,
+            qobuz_artist_id,
+            qobuz_genre_id,
+            qobuz_label_id,
             available: true,
             ..Default::default()
         }
@@ -859,6 +909,8 @@ impl QDiscoverAlbum {
             title: self.title.trim().to_string(),
             artist: self.primary_artist(),
             genre: self.genre.name.trim().to_string(),
+            release_date: date_str.trim().to_string(),
+            qobuz_genre_id: self.genre.id,
             year,
             track_count: self.track_count,
             artwork_url: self.image.best(),

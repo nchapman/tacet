@@ -14,7 +14,7 @@ use super::store::LibraryStore;
 use super::types::{
     Album, AlbumFilter, ArtistSummary, FacetFilter, GenreSummary, HeavyRotationAlbum, LibraryError,
     ProviderSyncStatus, RemoteSource, Result, SOURCE_LOCAL, SOURCE_TYPE_LOCAL, SOURCE_TYPE_REMOTE,
-    Status, Track, TrackFilter, UnifiedSearchResult,
+    Status, Track, TrackFilter, UnifiedSearchResult, normalize_isrc,
 };
 
 type OnChangeFn = Arc<dyn Fn(Status) + Send + Sync>;
@@ -32,6 +32,7 @@ struct LocalLookupCache {
     etag: String,
     albums: LocalAlbumMap,
     tracks: LocalTrackMap,
+    tracks_by_isrc: LocalTrackMap,
 }
 
 pub struct Catalog {
@@ -76,6 +77,7 @@ impl Catalog {
                 etag: String::new(),
                 albums: Arc::new(HashMap::new()),
                 tracks: Arc::new(HashMap::new()),
+                tracks_by_isrc: Arc::new(HashMap::new()),
             }),
         }))
     }
@@ -267,12 +269,16 @@ impl Catalog {
         self.store.unified_search(query, limit)
     }
 
-    fn local_lookup_maps(&self) -> (LocalAlbumMap, LocalTrackMap) {
+    fn local_lookup_maps(&self) -> (LocalAlbumMap, LocalTrackMap, LocalTrackMap) {
         let cur_etag = format!("cat-{}", self.store.catalog_generation());
         {
             let g = self.local_lookup.read().unwrap_or_else(|e| e.into_inner());
             if g.etag == cur_etag && !cur_etag.is_empty() {
-                return (Arc::clone(&g.albums), Arc::clone(&g.tracks));
+                return (
+                    Arc::clone(&g.albums),
+                    Arc::clone(&g.tracks),
+                    Arc::clone(&g.tracks_by_isrc),
+                );
             }
         }
         let local_albs = self
@@ -306,9 +312,15 @@ impl Catalog {
             .map(|(v, _)| v)
             .unwrap_or_default();
         let mut by_key: HashMap<String, Vec<Track>> = HashMap::new();
+        let mut by_isrc: HashMap<String, Vec<Track>> = HashMap::new();
         for mut lt in local_tracks {
             if !lt.available {
                 continue;
+            }
+            lt.in_library = true;
+            let isrc_key = normalize_isrc(&lt.isrc);
+            if !isrc_key.is_empty() {
+                by_isrc.entry(isrc_key).or_default().push(lt.clone());
             }
             let k = format!(
                 "{}|{}",
@@ -316,24 +328,25 @@ impl Catalog {
                 norm_media_key(&lt.title)
             );
             if k != "|" {
-                lt.in_library = true;
                 by_key.entry(k).or_default().push(lt);
             }
         }
         let albums = Arc::new(alb_map);
         let tracks = Arc::new(by_key);
+        let tracks_by_isrc = Arc::new(by_isrc);
         let mut g = self.local_lookup.write().unwrap_or_else(|e| e.into_inner());
         g.etag = cur_etag;
         g.albums = Arc::clone(&albums);
         g.tracks = Arc::clone(&tracks);
-        (albums, tracks)
+        g.tracks_by_isrc = Arc::clone(&tracks_by_isrc);
+        (albums, tracks, tracks_by_isrc)
     }
 
     pub fn prefer_local_albums(&self, albums: Vec<Album>) -> Vec<Album> {
         if albums.is_empty() {
             return albums;
         }
-        let (local_by_key, _) = self.local_lookup_maps();
+        let (local_by_key, _, _) = self.local_lookup_maps();
 
         albums
             .into_iter()
@@ -358,7 +371,7 @@ impl Catalog {
         if tracks.is_empty() {
             return tracks;
         }
-        let (_, by_key) = self.local_lookup_maps();
+        let (_, by_key, by_isrc) = self.local_lookup_maps();
 
         tracks
             .into_iter()
@@ -366,6 +379,16 @@ impl Catalog {
                 if tr.source == SOURCE_LOCAL {
                     tr.in_library = true;
                     return tr;
+                }
+                let isrc_key = normalize_isrc(&tr.isrc);
+                if !isrc_key.is_empty()
+                    && let Some(cands) = by_isrc.get(&isrc_key)
+                    && let Some(mut best) = pick_best_local_track(cands, &tr.album)
+                {
+                    if best.artwork_url.is_empty() {
+                        best.artwork_url = tr.artwork_url;
+                    }
+                    return best;
                 }
                 let k = format!(
                     "{}|{}",

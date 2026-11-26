@@ -674,6 +674,8 @@ struct QPageTopTrack {
     #[serde(default)]
     version: String,
     #[serde(default)]
+    isrc: String,
+    #[serde(default)]
     duration: i32,
     #[serde(default)]
     parental_warning: bool,
@@ -720,6 +722,7 @@ impl QPageTopTrack {
             bit_depth: self.audio_info.maximum_bit_depth,
             sample_rate: normalize_sample_rate_hz(self.audio_info.maximum_sampling_rate),
             explicit: self.parental_warning,
+            isrc: crate::library::normalize_isrc(&self.isrc),
             available: true,
             ..Default::default()
         }

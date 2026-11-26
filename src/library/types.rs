@@ -122,6 +122,16 @@ pub struct Track {
     pub in_library: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub explicit: bool,
+    #[serde(default, skip_serializing_if = "is_empty_str")]
+    pub isrc: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaygain_gain: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaygain_peak: Option<f64>,
+    #[serde(default, skip_serializing_if = "is_empty_str")]
+    pub composer: String,
+    #[serde(default, skip_serializing_if = "is_empty_str")]
+    pub performers: String,
 
     // Internal fields (never exposed over JSON)
     #[serde(skip)]
@@ -134,6 +144,29 @@ pub struct Track {
     pub has_embed_art: bool,
     #[serde(skip)]
     pub qobuz_track_id: i64,
+    #[serde(skip)]
+    pub qobuz_artist_id: i64,
+    #[serde(skip)]
+    pub qobuz_genre_id: i64,
+    #[serde(skip)]
+    pub qobuz_label_id: i64,
+    #[serde(skip)]
+    pub mb_recording_id: String,
+    #[serde(skip)]
+    pub mb_artist_id: String,
+    // Transient album-level tags carried from local file scan to album builder
+    #[serde(skip)]
+    pub scan_label: String,
+    #[serde(skip)]
+    pub scan_upc: String,
+    #[serde(skip)]
+    pub scan_release_date: String,
+    #[serde(skip)]
+    pub scan_mb_release_id: String,
+    #[serde(skip)]
+    pub scan_mb_release_group_id: String,
+    #[serde(skip)]
+    pub scan_mb_album_artist_id: String,
 }
 
 impl Track {
@@ -207,6 +240,8 @@ pub struct Album {
     pub copyright: String,
     #[serde(default, skip_serializing_if = "is_empty_str")]
     pub release_date: String,
+    #[serde(default, skip_serializing_if = "is_empty_str")]
+    pub upc: String,
     #[serde(default, skip_serializing_if = "is_empty_vec")]
     pub awards: Vec<String>,
     #[serde(default, skip_serializing_if = "is_empty_str")]
@@ -247,6 +282,20 @@ pub struct Album {
     pub tracks: Vec<Track>,
     #[serde(default, skip_serializing_if = "is_empty_vec")]
     pub versions: Vec<AlbumVersion>,
+
+    // Internal canonical / provider IDs (never exposed over JSON)
+    #[serde(skip)]
+    pub qobuz_artist_id: i64,
+    #[serde(skip)]
+    pub qobuz_genre_id: i64,
+    #[serde(skip)]
+    pub qobuz_label_id: i64,
+    #[serde(skip)]
+    pub mb_release_id: String,
+    #[serde(skip)]
+    pub mb_release_group_id: String,
+    #[serde(skip)]
+    pub mb_artist_id: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -524,6 +573,19 @@ fn normalize_version_token(s: &str) -> String {
         }
     }
     out.trim().to_string()
+}
+
+pub fn normalize_isrc(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if cleaned.len() == 12 {
+        cleaned
+    } else {
+        String::new()
+    }
 }
 
 pub fn quality_rank(format: &str, bit_depth: i32, sample_rate: i32, source_type: &str) -> i64 {

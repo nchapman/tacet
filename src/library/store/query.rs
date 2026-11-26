@@ -1,6 +1,13 @@
 use rusqlite::{Connection, OptionalExtension, params, types::Value};
 
-use super::{LibraryStore, row_to_track, unix_to_dt};
+use super::{LibraryStore, TRACK_SELECT_COLS, TRACK_SELECT_COLS_T, row_to_track, unix_to_dt};
+
+const ALBUM_SELECT_COLS_A: &str = "a.id, a.source_type, a.provider, a.external_id, a.title, a.artist, a.genre, a.year, \
+    a.track_count, a.duration_sec, a.artwork_url, a.primary_format, \
+    a.max_bit_depth, a.max_sample_rate, a.version_group_id, a.is_primary, \
+    a.is_partial, a.available, a.added_at, \
+    a.upc, a.label, a.release_date, a.qobuz_artist_id, a.qobuz_genre_id, a.qobuz_label_id, \
+    a.mb_release_id, a.mb_release_group_id, a.mb_artist_id";
 use crate::library::types::{
     Album, AlbumFilter, AlbumVersion, ArtistSummary, FacetFilter, GenreSummary, LibraryError,
     Result, SOURCE_LOCAL, TopSearchResult, Track, TrackFilter, UnifiedSearchResult,
@@ -19,12 +26,11 @@ impl LibraryStore {
 
         let row: Option<Album> = conn
             .query_row(
-                "SELECT a.id, a.source_type, a.provider, a.external_id, a.title, a.artist, a.genre, a.year,
-                        a.track_count, a.duration_sec, a.artwork_url, a.primary_format,
-                        a.max_bit_depth, a.max_sample_rate, a.version_group_id, a.is_primary,
-                        a.is_partial, a.available, a.added_at,
-                        COALESCE((SELECT SUM(t.play_count) FROM tracks t WHERE t.album_id = a.id), 0)
-                 FROM albums a WHERE a.id = ?1",
+                &format!(
+                    "SELECT {ALBUM_SELECT_COLS_A},
+                            COALESCE((SELECT SUM(t.play_count) FROM tracks t WHERE t.album_id = a.id), 0)
+                     FROM albums a WHERE a.id = ?1"
+                ),
                 params![id],
                 |r| row_to_album(r, false),
             )
@@ -35,15 +41,11 @@ impl LibraryStore {
         };
 
         {
-            let mut stmt = conn.prepare(
-                "SELECT id, album_id, source_type, provider, external_id, title, artist, album_artist,
-                        album, genre, disc_number, track_number, year, duration_sec, sample_rate,
-                        bit_depth, channels, mime, ext, size_bytes, artwork_url, file_path,
-                        file_mtime_ns, folder_art, has_embed_art, qobuz_track_id, play_count,
-                        last_played_at, loved, available, added_at
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {TRACK_SELECT_COLS}
                  FROM tracks WHERE album_id = ?1 AND available = 1
-                 ORDER BY disc_number ASC, track_number ASC, sort_title ASC, id ASC",
-            )?;
+                 ORDER BY disc_number ASC, track_number ASC, sort_title ASC, id ASC"
+            ))?;
             let rows = stmt.query_map(params![album.id], row_to_track)?;
             for r in rows {
                 album.tracks.push(r?);
@@ -112,12 +114,7 @@ impl LibraryStore {
         let conn = inner.conn.as_ref().ok_or(LibraryError::NotFound)?;
         let row = conn
             .query_row(
-                "SELECT id, album_id, source_type, provider, external_id, title, artist, album_artist,
-                        album, genre, disc_number, track_number, year, duration_sec, sample_rate,
-                        bit_depth, channels, mime, ext, size_bytes, artwork_url, file_path,
-                        file_mtime_ns, folder_art, has_embed_art, qobuz_track_id, play_count,
-                        last_played_at, loved, available, added_at
-                 FROM tracks WHERE id = ?1",
+                &format!("SELECT {TRACK_SELECT_COLS} FROM tracks WHERE id = ?1"),
                 params![id],
                 row_to_track,
             )
@@ -130,12 +127,9 @@ impl LibraryStore {
         let conn = inner.conn.as_ref().ok_or(LibraryError::NotFound)?;
         let row = conn
             .query_row(
-                "SELECT id, album_id, source_type, provider, external_id, title, artist, album_artist,
-                        album, genre, disc_number, track_number, year, duration_sec, sample_rate,
-                        bit_depth, channels, mime, ext, size_bytes, artwork_url, file_path,
-                        file_mtime_ns, folder_art, has_embed_art, qobuz_track_id, play_count,
-                        last_played_at, loved, available, added_at
-                 FROM tracks WHERE artwork_url = ?1 AND available = 1 LIMIT 1",
+                &format!(
+                    "SELECT {TRACK_SELECT_COLS} FROM tracks WHERE artwork_url = ?1 AND available = 1 LIMIT 1"
+                ),
                 params![artwork_url],
                 row_to_track,
             )
@@ -382,8 +376,17 @@ fn row_to_album(r: &rusqlite::Row<'_>, with_version_count: bool) -> rusqlite::Re
         is_partial,
         available,
         added_at: unix_to_dt(r.get(18)?),
-        play_count: r.get(19)?,
-        version_count: if with_version_count { r.get(20)? } else { 0 },
+        upc: r.get(19)?,
+        label: r.get(20)?,
+        release_date: r.get(21)?,
+        qobuz_artist_id: r.get(22)?,
+        qobuz_genre_id: r.get(23)?,
+        qobuz_label_id: r.get(24)?,
+        mb_release_id: r.get(25)?,
+        mb_release_group_id: r.get(26)?,
+        mb_artist_id: r.get(27)?,
+        play_count: r.get(28)?,
+        version_count: if with_version_count { r.get(29)? } else { 0 },
         in_library: available && !is_partial,
         ..Default::default()
     })
@@ -469,10 +472,7 @@ fn query_albums_conn(conn: &Connection, f: &AlbumFilter) -> Result<(Vec<Album>, 
     let off_idx = query_vals.len();
 
     let sql = format!(
-        "SELECT a.id, a.source_type, a.provider, a.external_id, a.title, a.artist, a.genre, a.year,
-                a.track_count, a.duration_sec, a.artwork_url, a.primary_format,
-                a.max_bit_depth, a.max_sample_rate, a.version_group_id, a.is_primary,
-                a.is_partial, a.available, a.added_at,
+        "SELECT {ALBUM_SELECT_COLS_A},
                 COALESCE((SELECT SUM(t.play_count) FROM tracks t WHERE t.album_id = a.id), 0) AS play_count,
                 CASE WHEN a.version_group_id != '' THEN
                     (SELECT COUNT(*) FROM albums b WHERE b.version_group_id = a.version_group_id AND b.available = 1)
@@ -603,12 +603,7 @@ fn query_tracks_conn(conn: &Connection, f: &TrackFilter) -> Result<(Vec<Track>, 
     let off_idx = query_vals.len();
 
     let sql = format!(
-        "SELECT t.id, t.album_id, t.source_type, t.provider, t.external_id, t.title, t.artist,
-                t.album_artist, t.album, t.genre, t.disc_number, t.track_number, t.year,
-                t.duration_sec, t.sample_rate, t.bit_depth, t.channels, t.mime, t.ext,
-                t.size_bytes, t.artwork_url, t.file_path, t.file_mtime_ns, t.folder_art,
-                t.has_embed_art, t.qobuz_track_id, t.play_count, t.last_played_at,
-                t.loved, t.available, t.added_at
+        "SELECT {TRACK_SELECT_COLS_T}
          FROM tracks t
          {where_sql}
          ORDER BY {order_by}

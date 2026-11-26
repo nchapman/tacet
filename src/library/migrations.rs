@@ -159,6 +159,110 @@ CREATE TABLE IF NOT EXISTS provider_credentials (
 );
 "#,
     },
+    Migration {
+        version: 3,
+        name: "metadata_enrichment_and_sonic",
+        sql: r#"
+ALTER TABLE albums ADD COLUMN upc                 TEXT NOT NULL DEFAULT '';
+ALTER TABLE albums ADD COLUMN label               TEXT NOT NULL DEFAULT '';
+ALTER TABLE albums ADD COLUMN release_date        TEXT NOT NULL DEFAULT '';
+ALTER TABLE albums ADD COLUMN qobuz_artist_id     INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE albums ADD COLUMN qobuz_genre_id      INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE albums ADD COLUMN qobuz_label_id      INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE albums ADD COLUMN mb_release_id       TEXT NOT NULL DEFAULT '';
+ALTER TABLE albums ADD COLUMN mb_release_group_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE albums ADD COLUMN mb_artist_id        TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_albums_upc ON albums(upc) WHERE upc != '';
+CREATE INDEX IF NOT EXISTS idx_albums_mb_release_group ON albums(mb_release_group_id) WHERE mb_release_group_id != '';
+CREATE INDEX IF NOT EXISTS idx_albums_mb_artist ON albums(mb_artist_id) WHERE mb_artist_id != '';
+
+ALTER TABLE tracks ADD COLUMN isrc            TEXT NOT NULL DEFAULT '';
+ALTER TABLE tracks ADD COLUMN mb_recording_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE tracks ADD COLUMN mb_artist_id    TEXT NOT NULL DEFAULT '';
+ALTER TABLE tracks ADD COLUMN qobuz_artist_id INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN qobuz_genre_id  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN qobuz_label_id  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN replaygain_gain REAL;
+ALTER TABLE tracks ADD COLUMN replaygain_peak REAL;
+ALTER TABLE tracks ADD COLUMN composer        TEXT NOT NULL DEFAULT '';
+ALTER TABLE tracks ADD COLUMN performers      TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_tracks_isrc ON tracks(isrc) WHERE isrc != '';
+CREATE INDEX IF NOT EXISTS idx_tracks_mb_recording ON tracks(mb_recording_id) WHERE mb_recording_id != '';
+CREATE INDEX IF NOT EXISTS idx_tracks_mb_artist ON tracks(mb_artist_id) WHERE mb_artist_id != '';
+
+CREATE TABLE IF NOT EXISTS album_enrichment (
+    album_id    TEXT PRIMARY KEY REFERENCES albums(id) ON DELETE CASCADE,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    confidence  REAL NOT NULL DEFAULT 0.0,
+    matched_by  TEXT NOT NULL DEFAULT '[]',
+    resolved_at INTEGER NOT NULL DEFAULT 0,
+    retry_after INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS track_qobuz_match (
+    track_id        TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    qobuz_track_id  INTEGER NOT NULL DEFAULT 0,
+    qobuz_artist_id INTEGER NOT NULL DEFAULT 0,
+    qobuz_genre_id  INTEGER NOT NULL DEFAULT 0,
+    qobuz_label_id  INTEGER NOT NULL DEFAULT 0,
+    match_method    TEXT NOT NULL DEFAULT '',
+    matched_at      INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS track_sonic (
+    track_id      TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    model_version TEXT NOT NULL,
+    file_mtime_ns INTEGER NOT NULL DEFAULT 0,
+    emb_uint8     BLOB NOT NULL,
+    emb_min       REAL NOT NULL,
+    emb_scale     REAL NOT NULL,
+    bpm           REAL,
+    musical_key   TEXT NOT NULL DEFAULT '',
+    analyzed_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS track_sonic_heads (
+    track_id        TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    heads_version   INTEGER NOT NULL DEFAULT 1,
+    engagement      REAL,
+    approachability REAL,
+    instrumental    REAL,
+    danceability    REAL,
+    mood_relaxed    REAL,
+    mood_acoustic   REAL,
+    mood_aggressive REAL,
+    mood_electronic REAL,
+    computed_at     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS entity_tags (
+    entity_type TEXT NOT NULL,
+    entity_id   TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    tag         TEXT NOT NULL,
+    score       REAL NOT NULL DEFAULT 1.0,
+    source      TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (entity_type, entity_id, kind, tag)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_tags_lookup
+    ON entity_tags(entity_type, kind, tag, score DESC);
+
+CREATE TRIGGER IF NOT EXISTS trg_albums_delete_entity_tags
+AFTER DELETE ON albums
+BEGIN
+    DELETE FROM entity_tags WHERE entity_type = 'album' AND entity_id = OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_tracks_delete_entity_tags
+AFTER DELETE ON tracks
+BEGIN
+    DELETE FROM entity_tags WHERE entity_type = 'track' AND entity_id = OLD.id;
+END;
+"#,
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {

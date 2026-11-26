@@ -4,7 +4,7 @@ use chrono::Utc;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use super::versions::recompute_versions_tx;
-use super::{CachedLocalFile, LibraryStore, row_to_track};
+use super::{CachedLocalFile, LibraryStore, TRACK_SELECT_COLS, row_to_track};
 use crate::library::types::{
     Album, LibraryError, Result, SOURCE_LOCAL, SOURCE_TYPE_LOCAL, Track,
     format_name_from_mime_or_ext, is_lossless_format, sort_key, version_key,
@@ -14,14 +14,9 @@ impl LibraryStore {
     pub fn load_local_file_cache(&self) -> Result<HashMap<String, CachedLocalFile>> {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let conn = inner.conn.as_ref().ok_or(LibraryError::NotFound)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, album_id, source_type, provider, external_id, title, artist, album_artist,
-                    album, genre, disc_number, track_number, year, duration_sec, sample_rate,
-                    bit_depth, channels, mime, ext, size_bytes, artwork_url, file_path,
-                    file_mtime_ns, folder_art, has_embed_art, qobuz_track_id, play_count,
-                    last_played_at, loved, available, added_at
-             FROM tracks WHERE provider = ?1 AND file_path != ''",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TRACK_SELECT_COLS} FROM tracks WHERE provider = ?1 AND file_path != ''"
+        ))?;
         let rows = stmt.query_map(params![SOURCE_LOCAL], row_to_track)?;
         let mut out = HashMap::new();
         for r in rows {
@@ -362,8 +357,17 @@ fn upsert_album_row(
             id, source_type, provider, external_id, title, sort_title, artist, sort_artist,
             genre, year, track_count, duration_sec, artwork_url, primary_format,
             max_bit_depth, max_sample_rate, version_key, is_partial, available,
-            missing_since, added_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 0, ?20, ?21)
+            missing_since, added_at, updated_at,
+            upc, label, release_date, qobuz_artist_id, qobuz_genre_id, qobuz_label_id,
+            mb_release_id, mb_release_group_id, mb_artist_id
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+            ?9, ?10, ?11, ?12, ?13, ?14,
+            ?15, ?16, ?17, ?18, ?19,
+            0, ?20, ?21,
+            ?22, ?23, ?24, ?25, ?26, ?27,
+            ?28, ?29, ?30
+        )
         ON CONFLICT(id) DO UPDATE SET
             source_type = excluded.source_type,
             provider = excluded.provider,
@@ -384,7 +388,16 @@ fn upsert_album_row(
             is_partial = excluded.is_partial,
             available = excluded.available,
             missing_since = 0,
-            updated_at = excluded.updated_at",
+            updated_at = excluded.updated_at,
+            upc = CASE WHEN excluded.upc != '' THEN excluded.upc ELSE albums.upc END,
+            label = CASE WHEN excluded.label != '' THEN excluded.label ELSE albums.label END,
+            release_date = CASE WHEN excluded.release_date != '' THEN excluded.release_date ELSE albums.release_date END,
+            qobuz_artist_id = CASE WHEN excluded.qobuz_artist_id > 0 THEN excluded.qobuz_artist_id ELSE albums.qobuz_artist_id END,
+            qobuz_genre_id = CASE WHEN excluded.qobuz_genre_id > 0 THEN excluded.qobuz_genre_id ELSE albums.qobuz_genre_id END,
+            qobuz_label_id = CASE WHEN excluded.qobuz_label_id > 0 THEN excluded.qobuz_label_id ELSE albums.qobuz_label_id END,
+            mb_release_id = CASE WHEN excluded.mb_release_id != '' THEN excluded.mb_release_id ELSE albums.mb_release_id END,
+            mb_release_group_id = CASE WHEN excluded.mb_release_group_id != '' THEN excluded.mb_release_group_id ELSE albums.mb_release_group_id END,
+            mb_artist_id = CASE WHEN excluded.mb_artist_id != '' THEN excluded.mb_artist_id ELSE albums.mb_artist_id END",
         params![
             a.id,
             source_type,
@@ -407,47 +420,36 @@ fn upsert_album_row(
             if a.available { 1 } else { 0 },
             added,
             now,
+            a.upc,
+            a.label,
+            a.release_date,
+            a.qobuz_artist_id,
+            a.qobuz_genre_id,
+            a.qobuz_label_id,
+            a.mb_release_id,
+            a.mb_release_group_id,
+            a.mb_artist_id,
         ],
     )?;
     Ok(())
 }
 
-fn upsert_track_row(
-    tx: &Transaction<'_>,
-    t: &Track,
-    provider: &str,
-    source_type: &str,
-    now: i64,
-) -> Result<()> {
-    let added = t.added_at.map(|dt| dt.timestamp()).unwrap_or(now);
-    let s_title = sort_key(&t.title);
-    let s_artist = sort_key(if t.album_artist.is_empty() {
-        &t.artist
-    } else {
-        &t.album_artist
-    });
-    let s_album = sort_key(&t.album);
-    let ext_id = if t.external_id.is_empty() {
-        t.id.strip_prefix(&format!("{provider}:"))
-            .unwrap_or(&t.id)
-            .to_string()
-    } else {
-        t.external_id.clone()
-    };
-
-    tx.execute(
-        "INSERT INTO tracks(
+const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks(
             id, album_id, source_type, provider, external_id, title, sort_title, artist, sort_artist,
             album_artist, album, sort_album, genre, disc_number, track_number, year, duration_sec,
             sample_rate, bit_depth, channels, mime, ext, size_bytes, artwork_url,
             file_path, file_mtime_ns, folder_art, has_embed_art, qobuz_track_id,
-            available, missing_since, added_at, updated_at
+            available, missing_since, added_at, updated_at,
+            isrc, mb_recording_id, mb_artist_id, qobuz_artist_id, qobuz_genre_id, qobuz_label_id,
+            replaygain_gain, replaygain_peak, composer, performers
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
             ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
             ?18, ?19, ?20, ?21, ?22, ?23, ?24,
             ?25, ?26, ?27, ?28, ?29,
-            ?30, 0, ?31, ?32
+            ?30, 0, ?31, ?32,
+            ?33, ?34, ?35, ?36, ?37, ?38,
+            ?39, ?40, ?41, ?42
         )
         ON CONFLICT(id) DO UPDATE SET
             album_id = excluded.album_id,
@@ -480,7 +482,43 @@ fn upsert_track_row(
             qobuz_track_id = excluded.qobuz_track_id,
             available = excluded.available,
             missing_since = 0,
-            updated_at = excluded.updated_at",
+            updated_at = excluded.updated_at,
+            isrc = CASE WHEN excluded.isrc != '' THEN excluded.isrc ELSE tracks.isrc END,
+            mb_recording_id = CASE WHEN excluded.mb_recording_id != '' THEN excluded.mb_recording_id ELSE tracks.mb_recording_id END,
+            mb_artist_id = CASE WHEN excluded.mb_artist_id != '' THEN excluded.mb_artist_id ELSE tracks.mb_artist_id END,
+            qobuz_artist_id = CASE WHEN excluded.qobuz_artist_id > 0 THEN excluded.qobuz_artist_id ELSE tracks.qobuz_artist_id END,
+            qobuz_genre_id = CASE WHEN excluded.qobuz_genre_id > 0 THEN excluded.qobuz_genre_id ELSE tracks.qobuz_genre_id END,
+            qobuz_label_id = CASE WHEN excluded.qobuz_label_id > 0 THEN excluded.qobuz_label_id ELSE tracks.qobuz_label_id END,
+            replaygain_gain = COALESCE(excluded.replaygain_gain, tracks.replaygain_gain),
+            replaygain_peak = COALESCE(excluded.replaygain_peak, tracks.replaygain_peak),
+            composer = CASE WHEN excluded.composer != '' THEN excluded.composer ELSE tracks.composer END,
+            performers = CASE WHEN excluded.performers != '' THEN excluded.performers ELSE tracks.performers END";
+
+fn upsert_track_row(
+    tx: &Transaction<'_>,
+    t: &Track,
+    provider: &str,
+    source_type: &str,
+    now: i64,
+) -> Result<()> {
+    let added = t.added_at.map(|dt| dt.timestamp()).unwrap_or(now);
+    let s_title = sort_key(&t.title);
+    let s_artist = sort_key(if t.album_artist.is_empty() {
+        &t.artist
+    } else {
+        &t.album_artist
+    });
+    let s_album = sort_key(&t.album);
+    let ext_id = if t.external_id.is_empty() {
+        t.id.strip_prefix(&format!("{provider}:"))
+            .unwrap_or(&t.id)
+            .to_string()
+    } else {
+        t.external_id.clone()
+    };
+
+    tx.execute(
+        UPSERT_TRACK_SQL,
         params![
             t.id,
             t.album_id,
@@ -514,6 +552,16 @@ fn upsert_track_row(
             if t.available { 1 } else { 0 },
             added,
             now,
+            t.isrc,
+            t.mb_recording_id,
+            t.mb_artist_id,
+            t.qobuz_artist_id,
+            t.qobuz_genre_id,
+            t.qobuz_label_id,
+            t.replaygain_gain,
+            t.replaygain_peak,
+            t.composer,
+            t.performers,
         ],
     )?;
     Ok(())

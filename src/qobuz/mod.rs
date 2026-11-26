@@ -335,8 +335,9 @@ mod tests {
                         "id": "ed1",
                         "title": "Kind of Blue",
                         "artist": {"id": 10, "name": "Miles Davis"},
-                        "genre": {"name": "Jazz"},
-                        "label": {"name": "Columbia"},
+                        "genre": {"id": 80, "name": "Jazz"},
+                        "label": {"id": 77, "name": "Columbia"},
+                        "upc": "886973355220",
                         "copyright": "(P) 1959 Columbia Records",
                         "release_date_original": "1959-08-17",
                         "awards": [{"name": "Qobuzissime"}, {"name": "qobuzissime"}, {"name": "Diapason d'Or"}],
@@ -349,7 +350,7 @@ mod tests {
                         "maximum_sampling_rate": 192.0,
                         "tracks": {
                             "items": [
-                                {"id": 1, "title": "So What", "duration": 562, "track_number": 1, "media_number": 1, "parental_warning": true, "performers": "Miles Davis, MainArtist - Bill Evans, AssociatedPerformer, StudioPersonnel"},
+                                {"id": 1, "title": "So What", "isrc": "us-bjn-09-20070", "duration": 562, "track_number": 1, "media_number": 1, "parental_warning": true, "performer": {"id": 10, "name": "Miles Davis"}, "composer": {"id": 10, "name": "Miles Davis"}, "audio_info": {"replaygain_track_gain": -4.25, "replaygain_track_peak": 0.91}, "performers": "Miles Davis, MainArtist - Bill Evans, AssociatedPerformer, StudioPersonnel"},
                                 {"id": 2, "title": "Freddie Freeloader", "duration": 586, "track_number": 2, "media_number": 1, "parental_warning": false}
                             ]
                         }
@@ -387,6 +388,11 @@ mod tests {
         let alb = c.get_album("ed1").await.unwrap();
         assert_eq!(alb.copyright, "(P) 1959 Columbia Records");
         assert_eq!(alb.release_date, "1959-08-17");
+        assert_eq!(alb.upc, "886973355220");
+        assert_eq!(alb.label, "Columbia");
+        assert_eq!(alb.qobuz_artist_id, 10);
+        assert_eq!(alb.qobuz_genre_id, 80);
+        assert_eq!(alb.qobuz_label_id, 77);
         assert_eq!(alb.awards, vec!["Qobuzissime", "Diapason d'Or"]);
         assert_eq!(
             alb.booklet_url,
@@ -394,6 +400,13 @@ mod tests {
         );
         assert_eq!(alb.duration_sec, 562 + 586);
         assert!(alb.tracks[0].explicit);
+        assert_eq!(alb.tracks[0].isrc, "USBJN0920070");
+        assert_eq!(alb.tracks[0].replaygain_gain, Some(-4.25));
+        assert_eq!(alb.tracks[0].replaygain_peak, Some(0.91));
+        assert_eq!(alb.tracks[0].composer, "Miles Davis");
+        assert_eq!(alb.tracks[0].qobuz_artist_id, 10);
+        assert_eq!(alb.tracks[0].qobuz_genre_id, 80);
+        assert_eq!(alb.tracks[0].qobuz_label_id, 77);
         assert!(!alb.tracks[1].explicit);
         assert!(
             alb.credits

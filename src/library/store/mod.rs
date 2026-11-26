@@ -212,6 +212,22 @@ impl LibraryStore {
     }
 }
 
+pub(super) const TRACK_SELECT_COLS: &str = "id, album_id, source_type, provider, external_id, title, artist, album_artist, \
+    album, genre, disc_number, track_number, year, duration_sec, sample_rate, \
+    bit_depth, channels, mime, ext, size_bytes, artwork_url, file_path, \
+    file_mtime_ns, folder_art, has_embed_art, qobuz_track_id, play_count, \
+    last_played_at, loved, available, added_at, \
+    isrc, mb_recording_id, mb_artist_id, qobuz_artist_id, qobuz_genre_id, qobuz_label_id, \
+    replaygain_gain, replaygain_peak, composer, performers";
+
+pub(super) const TRACK_SELECT_COLS_T: &str = "t.id, t.album_id, t.source_type, t.provider, t.external_id, t.title, t.artist, t.album_artist, \
+    t.album, t.genre, t.disc_number, t.track_number, t.year, t.duration_sec, t.sample_rate, \
+    t.bit_depth, t.channels, t.mime, t.ext, t.size_bytes, t.artwork_url, t.file_path, \
+    t.file_mtime_ns, t.folder_art, t.has_embed_art, t.qobuz_track_id, t.play_count, \
+    t.last_played_at, t.loved, t.available, t.added_at, \
+    t.isrc, t.mb_recording_id, t.mb_artist_id, t.qobuz_artist_id, t.qobuz_genre_id, t.qobuz_label_id, \
+    t.replaygain_gain, t.replaygain_peak, t.composer, t.performers";
+
 pub(super) fn row_to_track(r: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
     let provider: String = r.get(3)?;
     Ok(Track {
@@ -247,8 +263,19 @@ pub(super) fn row_to_track(r: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         loved: r.get::<_, i32>(28)? != 0,
         available: r.get::<_, i32>(29)? != 0,
         added_at: unix_to_dt(r.get(30)?),
+        isrc: r.get(31)?,
+        mb_recording_id: r.get(32)?,
+        mb_artist_id: r.get(33)?,
+        qobuz_artist_id: r.get(34)?,
+        qobuz_genre_id: r.get(35)?,
+        qobuz_label_id: r.get(36)?,
+        replaygain_gain: r.get(37)?,
+        replaygain_peak: r.get(38)?,
+        composer: r.get(39)?,
+        performers: r.get(40)?,
         in_library: true,
         explicit: false,
+        ..Default::default()
     })
 }
 
