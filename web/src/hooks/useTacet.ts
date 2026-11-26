@@ -90,7 +90,9 @@ export function useTacet(options?: UseTacetOptions | string | null) {
   const [error, setError] = useState<string>("");
   const [discovering, setDiscovering] = useState(false);
   const [radioLoadingKey, setRadioLoadingKey] = useState<string | null>(null);
-  const radioLoadingKeyRef = useRef<string | null>(null);
+  const radioInFlightRef = useRef<string | null>(null);
+  const radioStartRevRef = useRef<number>(0);
+  const activeZoneRevRef = useRef<number>(0);
 
   const activeZoneIdRef = useRef(selectedZoneId);
   const clockOffsetMsRef = useRef(0);
@@ -218,8 +220,11 @@ export function useTacet(options?: UseTacetOptions | string | null) {
         });
       },
       onQueue: (ev) => {
-        if (ev.zoneId === activeZoneIdRef.current && radioLoadingKeyRef.current) {
-          radioLoadingKeyRef.current = null;
+        if (
+          ev.zoneId === activeZoneIdRef.current &&
+          radioInFlightRef.current &&
+          ev.revision > radioStartRevRef.current
+        ) {
           setRadioLoadingKey(null);
         }
         setZones((prev) => {
@@ -256,6 +261,7 @@ export function useTacet(options?: UseTacetOptions | string | null) {
     [zones, selectedZoneId, defaultZoneId, preferLocalPending],
   );
   activeZoneIdRef.current = activeZone?.zoneId ?? "";
+  activeZoneRevRef.current = activeZone?.revision ?? 0;
 
   const selectZone = useCallback((zoneId: string) => {
     setSelectedZoneId(zoneId);
@@ -350,9 +356,10 @@ export function useTacet(options?: UseTacetOptions | string | null) {
         setError("No UPnP renderer selected or discovered");
         return undefined;
       }
-      if (radioLoadingKeyRef.current) return undefined;
+      if (radioInFlightRef.current) return undefined;
       const key = radioSeedKey(kind, id);
-      radioLoadingKeyRef.current = key;
+      radioInFlightRef.current = key;
+      radioStartRevRef.current = activeZoneRevRef.current;
       setRadioLoadingKey(key);
       try {
         return await runAction(
@@ -360,8 +367,8 @@ export function useTacet(options?: UseTacetOptions | string | null) {
           (res) => upsertZone(res.zone),
         );
       } finally {
-        radioLoadingKeyRef.current = null;
-        setRadioLoadingKey(null);
+        radioInFlightRef.current = null;
+        setRadioLoadingKey((cur) => (cur === key ? null : cur));
       }
     },
     [activeZoneId, runAction, upsertZone],

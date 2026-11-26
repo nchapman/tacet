@@ -52,9 +52,11 @@ export function useToast() {
     ({ tone = "info", title, detail, durationMs = DEFAULT_DURATION_MS }: ToastInput) => {
       const id = nextIdRef.current++;
       setToasts((prev) => {
+        const closing = prev.filter((t) => t.closing);
         const active = prev.filter((t) => !t.closing);
-        const trimmed = active.length >= MAX_VISIBLE_TOASTS ? prev.slice(-(MAX_VISIBLE_TOASTS - 1)) : prev;
-        return [...trimmed, { id, tone, title, detail, closing: false }];
+        const keptActive =
+          active.length >= MAX_VISIBLE_TOASTS ? active.slice(-(MAX_VISIBLE_TOASTS - 1)) : active;
+        return [...closing, ...keptActive, { id, tone, title, detail, closing: false }];
       });
       if (durationMs > 0) {
         const handle = window.setTimeout(() => dismissToast(id), durationMs);

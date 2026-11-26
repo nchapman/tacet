@@ -996,13 +996,7 @@ impl Manager {
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
         let now_unix = Utc::now().timestamp();
-        let recency = if enabled {
-            self.catalog
-                .recent_play_recency(now_unix - FRESH_SHUFFLE_WINDOW_SECS)
-                .unwrap_or_else(|_| RecentPlayRecency::default())
-        } else {
-            RecentPlayRecency::default()
-        };
+        let recency = self.load_shuffle_recency(enabled, now_unix);
         let (ctrl, changed, prev_len, old_cur_idx, tail_tracks, quality, q_ev, pb_ev) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             let prev_len = zi.queue.len();
@@ -1138,6 +1132,21 @@ impl Manager {
             items.push(mi);
         }
         Some(items)
+    }
+
+    fn load_shuffle_recency(&self, enabled: bool, now_unix: i64) -> RecentPlayRecency {
+        if !enabled {
+            return RecentPlayRecency::default();
+        }
+        self.catalog
+            .recent_play_recency(now_unix - FRESH_SHUFFLE_WINDOW_SECS)
+            .unwrap_or_else(|err| {
+                tracing::warn!(
+                    error = %err,
+                    "recent_play_recency lookup failed; falling back to unweighted shuffle"
+                );
+                RecentPlayRecency::default()
+            })
     }
 
     pub async fn set_repeat(&self, zone_id: &str, mode: RepeatMode) -> Result<ZoneSnapshot> {
