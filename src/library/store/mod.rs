@@ -1,3 +1,4 @@
+mod enrichment;
 mod ingest;
 mod prefs;
 mod query;
@@ -15,6 +16,7 @@ use rusqlite::{Connection, params};
 use super::migrations::run_migrations;
 use super::types::{LibraryError, ProviderSyncStatus, Result, Track};
 
+pub use enrichment::{AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, TrackEnrichmentPatch};
 pub use query::build_fts_query;
 
 pub const DEFAULT_MISSING_RETENTION: Duration = Duration::from_secs(30 * 24 * 3600);

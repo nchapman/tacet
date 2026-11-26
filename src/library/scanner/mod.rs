@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::Notify;
 
-use super::store::LibraryStore;
+use super::store::{AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, LibraryStore};
 use super::types::{
     Album, AlbumFilter, ArtistSummary, FacetFilter, GenreSummary, HeavyRotationAlbum, LibraryError,
     ProviderSyncStatus, RemoteSource, Result, SOURCE_LOCAL, SOURCE_TYPE_LOCAL, SOURCE_TYPE_REMOTE,
@@ -451,6 +451,30 @@ impl Catalog {
     pub fn cover_art(&self, track_id: &str) -> Option<(Vec<u8>, String)> {
         let t = self.track(track_id)?;
         local::load_track_cover_art(&t)
+    }
+
+    pub fn list_albums_needing_enrichment(&self, now: i64, limit: usize) -> Result<Vec<Album>> {
+        self.store.list_albums_needing_enrichment(now, limit)
+    }
+
+    pub fn apply_album_enrichment(
+        &self,
+        album_id: &str,
+        update: &AlbumEnrichmentUpdate,
+    ) -> Result<()> {
+        self.store.apply_album_enrichment(album_id, update)
+    }
+
+    pub fn enrichment_stats(&self) -> Result<EnrichmentStats> {
+        self.store.get_enrichment_stats()
+    }
+
+    pub fn reset_enrichment_for_retry(&self, include_unmatched: bool) -> Result<usize> {
+        self.store.reset_enrichment_for_retry(include_unmatched)
+    }
+
+    pub fn list_entity_tags(&self, entity_type: &str, entity_id: &str) -> Result<Vec<EntityTag>> {
+        self.store.list_entity_tags(entity_type, entity_id)
     }
 
     pub fn cover_art_by_hash(&self, hash: &str) -> Option<(Vec<u8>, String)> {

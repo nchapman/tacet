@@ -7,5 +7,6 @@ pub mod media;
 pub mod player;
 pub mod qobuz;
 pub mod queue;
+pub mod resolver;
 pub mod singleflight;
 pub mod upnp;

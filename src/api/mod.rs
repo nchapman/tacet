@@ -28,6 +28,7 @@ use crate::media::{MediaHandler, detect_transcoder};
 use crate::player::Registry as PlayerRegistry;
 use crate::qobuz::{Client as QobuzClient, FORMAT_FLAC_192, quality_label};
 use crate::queue::{Manager as QueueManager, StreamMode};
+use crate::resolver::EnrichmentWorker;
 use crate::upnp::GenaClient;
 
 use self::errors::{ApiError, ApiResult, parse_strict_json};
@@ -53,6 +54,7 @@ pub struct Settings {
 pub struct AppState {
     pub catalog: Arc<Catalog>,
     pub auto_scanner: RwLock<Option<Arc<AutoScanner>>>,
+    pub enrichment: RwLock<Option<Arc<EnrichmentWorker>>>,
     pub qobuz: Option<Arc<QobuzClient>>,
     pub manager: Arc<QueueManager>,
     pub players: Arc<PlayerRegistry>,
@@ -91,6 +93,7 @@ impl AppState {
         Arc::new(Self {
             catalog,
             auto_scanner: RwLock::new(None),
+            enrichment: RwLock::new(None),
             qobuz,
             manager,
             players,
@@ -105,6 +108,23 @@ impl AppState {
 
     pub fn set_auto_scanner(&self, scanner: Arc<AutoScanner>) {
         *self.auto_scanner.write().unwrap_or_else(|e| e.into_inner()) = Some(scanner);
+    }
+
+    pub fn set_enrichment(&self, worker: Arc<EnrichmentWorker>) {
+        *self.enrichment.write().unwrap_or_else(|e| e.into_inner()) = Some(worker);
+    }
+
+    pub fn enrichment(&self) -> Option<Arc<EnrichmentWorker>> {
+        self.enrichment
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn trigger_enrichment(&self) {
+        if let Some(worker) = self.enrichment() {
+            worker.trigger();
+        }
     }
 
     pub fn set_public_url(&self, url: impl Into<String>) {
@@ -378,6 +398,14 @@ fn library_routes() -> Router<Arc<AppState>> {
             post(handlers_library::library_rescan),
         )
         .route("/api/v1/library/sync", post(handlers_library::library_sync))
+        .route(
+            "/api/v1/library/enrichment",
+            get(handlers_library::library_enrichment_status),
+        )
+        .route(
+            "/api/v1/library/enrichment/run",
+            post(handlers_library::library_enrichment_run),
+        )
         .route(
             "/api/v1/library/remote/albums",
             post(handlers_library::add_remote_album),

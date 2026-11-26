@@ -358,6 +358,7 @@ pub async fn library_rescan(
         st.catalog.scan().await?;
         st.media.prewarm_art();
         st.prewarm_artists();
+        st.trigger_enrichment();
         return Ok((
             StatusCode::OK,
             Json(serde_json::to_value(st.catalog.status()).unwrap_or_default()),
@@ -369,11 +370,64 @@ pub async fn library_rescan(
         if st_bg.catalog.scan().await.is_ok() {
             st_bg.media.prewarm_art();
             st_bg.prewarm_artists();
+            st_bg.trigger_enrichment();
         }
     });
     Ok((
         StatusCode::ACCEPTED,
         Json(serde_json::to_value(st.catalog.status()).unwrap_or_default()),
+    )
+        .into_response())
+}
+
+pub async fn library_enrichment_status(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    if let Some(worker) = st.enrichment() {
+        return Json(serde_json::to_value(worker.status()).unwrap_or_default());
+    }
+    let stats = st.catalog.enrichment_stats().unwrap_or_default();
+    let status = crate::resolver::EnrichmentStatus {
+        enabled: false,
+        running: false,
+        stats,
+        last_run_at: None,
+        last_error: None,
+    };
+    Json(serde_json::to_value(status).unwrap_or_default())
+}
+
+pub async fn library_enrichment_run(
+    State(st): State<Arc<AppState>>,
+    Query(qv): Query<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    let Some(worker) = st.enrichment() else {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "enrichment_unavailable",
+            "metadata enrichment worker is not enabled",
+            false,
+        ));
+    };
+    if !worker.enabled() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "enrichment_disabled",
+            "metadata enrichment worker is disabled",
+            false,
+        ));
+    }
+    let retry_failed = qv
+        .get("retryFailed")
+        .is_some_and(|v| v == "true" || v == "1");
+    let retry_unmatched = qv
+        .get("retryUnmatched")
+        .is_some_and(|v| v == "true" || v == "1");
+    if retry_failed || retry_unmatched {
+        let _ = st.catalog.reset_enrichment_for_retry(retry_unmatched);
+    }
+    worker.trigger();
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::to_value(worker.status()).unwrap_or_default()),
     )
         .into_response())
 }
@@ -457,6 +511,7 @@ async fn run_sync_for_provider(st: &AppState, prov: &str) -> ApiResult<()> {
             st.prewarm_artists();
         }
     }
+    st.trigger_enrichment();
     Ok(())
 }
 

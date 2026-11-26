@@ -2,7 +2,7 @@ use rusqlite::{Connection, OptionalExtension, params, types::Value};
 
 use super::{LibraryStore, TRACK_SELECT_COLS, TRACK_SELECT_COLS_T, row_to_track, unix_to_dt};
 
-const ALBUM_SELECT_COLS_A: &str = "a.id, a.source_type, a.provider, a.external_id, a.title, a.artist, a.genre, a.year, \
+pub(super) const ALBUM_SELECT_COLS_A: &str = "a.id, a.source_type, a.provider, a.external_id, a.title, a.artist, a.genre, a.year, \
     a.track_count, a.duration_sec, a.artwork_url, a.primary_format, \
     a.max_bit_depth, a.max_sample_rate, a.version_group_id, a.is_primary, \
     a.is_partial, a.available, a.added_at, \
@@ -351,7 +351,10 @@ fn pick_top_result(
     best
 }
 
-fn row_to_album(r: &rusqlite::Row<'_>, with_version_count: bool) -> rusqlite::Result<Album> {
+pub(super) fn row_to_album(
+    r: &rusqlite::Row<'_>,
+    with_version_count: bool,
+) -> rusqlite::Result<Album> {
     let provider: String = r.get(2)?;
     let is_partial = r.get::<_, i32>(16)? != 0;
     let available = r.get::<_, i32>(17)? != 0;

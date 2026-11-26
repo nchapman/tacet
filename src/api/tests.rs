@@ -572,3 +572,42 @@ async fn similar_endpoints_degrade_gracefully_without_qobuz() {
     assert_eq!(shelf.status(), StatusCode::OK);
     assert_eq!(json_body(shelf).await["items"], serde_json::json!([]));
 }
+
+#[tokio::test]
+async fn enrichment_endpoints_report_status_and_trigger_worker() {
+    let cat = Catalog::new_in_memory(vec![]);
+    let mgr = QueueManager::new(Arc::clone(&cat), None, 4320, StreamMode::Relay);
+    let state = AppState::new(Arc::clone(&cat), None, mgr, None, String::new());
+    let app = build_router(Arc::clone(&state));
+
+    // Without worker attached, status reports disabled and run returns 503.
+    let st_resp = send(&app, Method::GET, "/api/v1/library/enrichment", "").await;
+    assert_eq!(st_resp.status(), StatusCode::OK);
+    let st_j = json_body(st_resp).await;
+    assert_eq!(st_j["enabled"], false);
+    assert_eq!(st_j["totalAlbums"], 0);
+
+    let run_resp = send(&app, Method::POST, "/api/v1/library/enrichment/run", "").await;
+    assert_eq!(run_resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // Attach an enabled worker; status reports enabled and run returns 202.
+    let worker = crate::resolver::EnrichmentWorker::new(
+        Arc::clone(&cat),
+        crate::resolver::ResolverConfig::default(),
+        state.shutdown.clone(),
+    );
+    state.set_enrichment(worker);
+
+    let st_resp2 = send(&app, Method::GET, "/api/v1/library/enrichment", "").await;
+    assert_eq!(st_resp2.status(), StatusCode::OK);
+    assert_eq!(json_body(st_resp2).await["enabled"], true);
+
+    let run_resp2 = send(
+        &app,
+        Method::POST,
+        "/api/v1/library/enrichment/run?retryFailed=true",
+        "",
+    )
+    .await;
+    assert_eq!(run_resp2.status(), StatusCode::ACCEPTED);
+}

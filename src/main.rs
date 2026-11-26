@@ -20,6 +20,7 @@ use tacet::qobuz::{
     Client as QobuzClient, Config as QobuzConfig, FORMAT_FLAC_192, PersistedCredentials,
 };
 use tacet::queue::{AudioQuality, Manager as QueueManager, StreamMode};
+use tacet::resolver::{EnrichmentWorker, ResolverConfig};
 use tacet::upnp::{self, GenaClient, Monitor, MonitorCallbacks, MonitorConfig};
 
 #[derive(Parser, Debug)]
@@ -161,7 +162,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     state.media.set_art_cache_dir(cache_dir.join("art"));
 
-    // 5. AutoScanner, initial scan, manual renderers, UPnP & Cast monitors
+    // 5. Metadata enrichment worker, AutoScanner, initial scan, manual renderers, UPnP & Cast monitors
+    let enrichment = EnrichmentWorker::new(
+        Arc::clone(&catalog),
+        ResolverConfig::from_env(),
+        state.shutdown.clone(),
+    );
+    state.set_enrichment(Arc::clone(&enrichment));
+    enrichment.start();
+
     let auto_scanner = start_autoscan(&catalog, &state);
     spawn_manual_renderers(&catalog, &manager, &cli.renderer_url);
     let (upnp_monitor, cast_monitor) = start_device_monitors(&manager);
@@ -323,6 +332,7 @@ fn start_autoscan(catalog: &Arc<Catalog>, state: &Arc<AppState>) -> Arc<AutoScan
         Some(Arc::new(move |_| {
             state_for_scan.media.prewarm_art();
             state_for_scan.prewarm_artists();
+            state_for_scan.trigger_enrichment();
         })),
     );
     state.set_auto_scanner(Arc::clone(&auto_scanner));
@@ -336,10 +346,12 @@ fn start_autoscan(catalog: &Arc<Catalog>, state: &Arc<AppState>) -> Arc<AutoScan
                 tracing::info!(tracks = n, "initial local library scan complete");
                 state_bg.media.prewarm_art();
                 state_bg.prewarm_artists();
+                state_bg.trigger_enrichment();
             }
         });
     } else {
         state.prewarm_artists();
+        state.trigger_enrichment();
     }
     auto_scanner
 }
