@@ -10,7 +10,10 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::Notify;
 
-use super::store::{AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, LibraryStore};
+use super::store::{
+    AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, LibraryStore, SonicStats,
+    StoredSonicEmbedding, TrackSonicWrite,
+};
 use super::types::{
     Album, AlbumFilter, ArtistSummary, FacetFilter, GenreSummary, HeavyRotationAlbum, LibraryError,
     ProviderSyncStatus, RemoteSource, Result, SOURCE_LOCAL, SOURCE_TYPE_LOCAL, SOURCE_TYPE_REMOTE,
@@ -475,6 +478,26 @@ impl Catalog {
 
     pub fn list_entity_tags(&self, entity_type: &str, entity_id: &str) -> Result<Vec<EntityTag>> {
         self.store.list_entity_tags(entity_type, entity_id)
+    }
+
+    pub fn list_tracks_needing_sonic(
+        &self,
+        model_version: &str,
+        limit: usize,
+    ) -> Result<Vec<Track>> {
+        self.store.list_tracks_needing_sonic(model_version, limit)
+    }
+
+    pub fn save_track_sonic(&self, rec: &TrackSonicWrite) -> Result<()> {
+        self.store.save_track_sonic(rec)
+    }
+
+    pub fn load_all_track_sonic(&self, model_version: &str) -> Result<Vec<StoredSonicEmbedding>> {
+        self.store.load_all_track_sonic(model_version)
+    }
+
+    pub fn sonic_stats(&self, model_version: &str) -> Result<SonicStats> {
+        self.store.get_sonic_stats(model_version)
     }
 
     pub fn cover_art_by_hash(&self, hash: &str) -> Option<(Vec<u8>, String)> {

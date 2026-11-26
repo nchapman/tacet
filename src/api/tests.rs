@@ -611,3 +611,113 @@ async fn enrichment_endpoints_report_status_and_trigger_worker() {
     .await;
     assert_eq!(run_resp2.status(), StatusCode::ACCEPTED);
 }
+
+#[tokio::test]
+async fn sonic_endpoints_report_status_enable_and_query_similar_tracks() {
+    use crate::library::{
+        Album, SOURCE_LOCAL, SOURCE_TYPE_LOCAL, Track, TrackSonicHeadsWrite, TrackSonicWrite,
+    };
+    use crate::sonic::{EMBEDDING_DIM, MODEL_VERSION, SonicWorker, quantize_uint8};
+
+    let cat = Catalog::new_in_memory(vec![]);
+    let alb = Album {
+        id: "local:a1".into(),
+        source: SOURCE_LOCAL.into(),
+        source_type: SOURCE_TYPE_LOCAL.into(),
+        provider: SOURCE_LOCAL.into(),
+        title: "Test Album".into(),
+        artist: "Test Artist".into(),
+        available: true,
+        ..Default::default()
+    };
+    let mk_track = |id: &str, title: &str, path: &str| Track {
+        id: id.into(),
+        album_id: "local:a1".into(),
+        source: SOURCE_LOCAL.into(),
+        source_type: SOURCE_TYPE_LOCAL.into(),
+        provider: SOURCE_LOCAL.into(),
+        title: title.into(),
+        artist: "Test Artist".into(),
+        album: "Test Album".into(),
+        file_path: path.into(),
+        available: true,
+        ..Default::default()
+    };
+    let tracks = [
+        mk_track("local:t1", "Track One", "/music/t1.flac"),
+        mk_track("local:t2", "Track Two", "/music/t2.flac"),
+    ];
+    cat.store().upsert_album_with_tracks(&alb, &tracks).unwrap();
+
+    let mut e1 = vec![0.0f32; EMBEDDING_DIM];
+    e1[0] = 1.0;
+    let mut e2 = vec![0.0f32; EMBEDDING_DIM];
+    e2[0] = 0.9;
+    e2[1] = 0.2;
+    let q1 = quantize_uint8(&e1);
+    let q2 = quantize_uint8(&e2);
+    for (tid, q) in [("local:t1", q1), ("local:t2", q2)] {
+        cat.save_track_sonic(&TrackSonicWrite {
+            track_id: tid.into(),
+            model_version: MODEL_VERSION.into(),
+            file_mtime_ns: 0,
+            emb_uint8: q.bytes,
+            emb_min: q.min,
+            emb_scale: q.scale,
+            heads: Some(TrackSonicHeadsWrite {
+                heads_version: 1,
+                mood_relaxed: Some(0.8),
+                ..Default::default()
+            }),
+            tags: vec![],
+        })
+        .unwrap();
+    }
+
+    let mgr = QueueManager::new(Arc::clone(&cat), None, 4320, StreamMode::Relay);
+    let state = AppState::new(Arc::clone(&cat), None, mgr, None, String::new());
+    let tmp = tempfile::tempdir().unwrap();
+    let sonic = SonicWorker::new(
+        Arc::clone(&cat),
+        tmp.path().to_path_buf(),
+        state.shutdown.clone(),
+    );
+    state.set_sonic(sonic);
+    let app = build_router(state);
+
+    let st = json_body(send(&app, Method::GET, "/api/v1/library/sonic", "").await).await;
+    assert_eq!(st["enabled"], false);
+    assert_eq!(st["indexedTracks"], 2);
+    assert_eq!(st["analyzedTracks"], 2);
+    assert_eq!(st["pendingTracks"], 0);
+
+    // Disabled without ?enable=true returns 409 Conflict.
+    let run_disabled = send(&app, Method::POST, "/api/v1/library/sonic/run", "").await;
+    assert_eq!(run_disabled.status(), StatusCode::CONFLICT);
+
+    // Opting in with ?enable=true enables & returns 202.
+    let run_en = send(
+        &app,
+        Method::POST,
+        "/api/v1/library/sonic/run?enable=true",
+        "",
+    )
+    .await;
+    assert_eq!(run_en.status(), StatusCode::ACCEPTED);
+
+    // Similar tracks query uses RAM index.
+    let sim = json_body(
+        send(
+            &app,
+            Method::GET,
+            "/api/v1/tracks/local:t1/similar-sonic",
+            "",
+        )
+        .await,
+    )
+    .await;
+    let items = sim["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["track"]["id"], "local:t2");
+    assert!(items[0]["score"].as_f64().unwrap() > 0.9);
+}

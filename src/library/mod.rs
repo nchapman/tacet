@@ -8,7 +8,10 @@ pub mod types;
 pub use autoscan::{AutoScanConfig, AutoScanner};
 pub use probe::{AudioProps, probe_audio};
 pub use scanner::Catalog;
-pub use store::{AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, TrackEnrichmentPatch};
+pub use store::{
+    AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, SonicStats, SonicTagEntry,
+    StoredSonicEmbedding, TrackEnrichmentPatch, TrackSonicHeadsWrite, TrackSonicWrite,
+};
 pub use types::*;
 
 #[cfg(test)]

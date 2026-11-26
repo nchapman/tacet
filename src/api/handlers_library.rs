@@ -359,6 +359,7 @@ pub async fn library_rescan(
         st.media.prewarm_art();
         st.prewarm_artists();
         st.trigger_enrichment();
+        st.trigger_sonic();
         return Ok((
             StatusCode::OK,
             Json(serde_json::to_value(st.catalog.status()).unwrap_or_default()),
@@ -371,6 +372,7 @@ pub async fn library_rescan(
             st_bg.media.prewarm_art();
             st_bg.prewarm_artists();
             st_bg.trigger_enrichment();
+            st_bg.trigger_sonic();
         }
     });
     Ok((
@@ -430,6 +432,90 @@ pub async fn library_enrichment_run(
         Json(serde_json::to_value(worker.status()).unwrap_or_default()),
     )
         .into_response())
+}
+
+pub async fn library_sonic_status(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    if let Some(worker) = st.sonic() {
+        return Json(serde_json::to_value(worker.status()).unwrap_or_default());
+    }
+    let stats = st
+        .catalog
+        .sonic_stats(crate::sonic::MODEL_VERSION)
+        .unwrap_or_default();
+    let status = crate::sonic::SonicStatus {
+        enabled: false,
+        models_ready: false,
+        downloading: false,
+        running: false,
+        ffmpeg_available: crate::media::detect_transcoder().available(),
+        indexed_tracks: 0,
+        stats,
+        last_run_at: None,
+        last_error: None,
+    };
+    Json(serde_json::to_value(status).unwrap_or_default())
+}
+
+pub async fn library_sonic_run(
+    State(st): State<Arc<AppState>>,
+    Query(qv): Query<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    let Some(worker) = st.sonic() else {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "sonic_unavailable",
+            "sonic analysis worker is not configured",
+            false,
+        ));
+    };
+    if let Some(en) = qv.get("enable") {
+        let on = en == "true" || en == "1";
+        worker.set_enabled(on);
+        if !on {
+            return Ok((
+                StatusCode::OK,
+                Json(serde_json::to_value(worker.status()).unwrap_or_default()),
+            )
+                .into_response());
+        }
+    }
+    if !worker.enabled() {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "sonic_disabled",
+            "sonic analysis is disabled; pass ?enable=true to opt in and download models",
+            false,
+        ));
+    }
+    worker.trigger();
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::to_value(worker.status()).unwrap_or_default()),
+    )
+        .into_response())
+}
+
+pub async fn track_similar_sonic(
+    State(st): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(qv): Query<HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let (limit, _) = parse_page(&qv, 20, 100);
+    let Some(worker) = st.sonic() else {
+        return Json(serde_json::json!({ "items": [] }));
+    };
+    let matches = worker.index().similar_tracks(&id, limit as usize);
+    let items: Vec<serde_json::Value> = matches
+        .into_iter()
+        .filter_map(|(tid, score)| {
+            let track = st.catalog.track(&tid)?;
+            Some(serde_json::json!({
+                "track": track,
+                "score": score,
+            }))
+        })
+        .collect();
+    Json(serde_json::json!({ "items": items }))
 }
 
 #[derive(Deserialize, Default)]

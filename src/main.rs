@@ -21,6 +21,7 @@ use tacet::qobuz::{
 };
 use tacet::queue::{AudioQuality, Manager as QueueManager, StreamMode};
 use tacet::resolver::{EnrichmentWorker, ResolverConfig};
+use tacet::sonic::SonicWorker;
 use tacet::upnp::{self, GenaClient, Monitor, MonitorCallbacks, MonitorConfig};
 
 #[derive(Parser, Debug)]
@@ -162,15 +163,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     state.media.set_art_cache_dir(cache_dir.join("art"));
 
-    // 5. Metadata enrichment worker, AutoScanner, initial scan, manual renderers, UPnP & Cast monitors
-    let enrichment = EnrichmentWorker::new(
-        Arc::clone(&catalog),
-        ResolverConfig::from_env(),
-        state.shutdown.clone(),
-    );
-    state.set_enrichment(Arc::clone(&enrichment));
-    enrichment.start();
-
+    // 5. Background workers, AutoScanner, initial scan, manual renderers, UPnP & Cast monitors
+    start_background_workers(&catalog, &state, &data_dir);
     let auto_scanner = start_autoscan(&catalog, &state);
     spawn_manual_renderers(&catalog, &manager, &cli.renderer_url);
     let (upnp_monitor, cast_monitor) = start_device_monitors(&manager);
@@ -190,6 +184,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.close_async().await;
     catalog.close();
     Ok(())
+}
+
+fn start_background_workers(
+    catalog: &Arc<Catalog>,
+    state: &Arc<AppState>,
+    data_dir: &std::path::Path,
+) {
+    let enrichment = EnrichmentWorker::new(
+        Arc::clone(catalog),
+        ResolverConfig::from_env(),
+        state.shutdown.clone(),
+    );
+    state.set_enrichment(Arc::clone(&enrichment));
+    enrichment.start();
+
+    let sonic_dir = data_dir.join("models").join("sonic");
+    let sonic = SonicWorker::new(Arc::clone(catalog), sonic_dir, state.shutdown.clone());
+    state.set_sonic(Arc::clone(&sonic));
+    sonic.start();
 }
 
 async fn init_qobuz(catalog: &Arc<Catalog>, app_cache: Arc<Cache>) -> Arc<QobuzClient> {
@@ -333,6 +346,7 @@ fn start_autoscan(catalog: &Arc<Catalog>, state: &Arc<AppState>) -> Arc<AutoScan
             state_for_scan.media.prewarm_art();
             state_for_scan.prewarm_artists();
             state_for_scan.trigger_enrichment();
+            state_for_scan.trigger_sonic();
         })),
     );
     state.set_auto_scanner(Arc::clone(&auto_scanner));
@@ -347,11 +361,13 @@ fn start_autoscan(catalog: &Arc<Catalog>, state: &Arc<AppState>) -> Arc<AutoScan
                 state_bg.media.prewarm_art();
                 state_bg.prewarm_artists();
                 state_bg.trigger_enrichment();
+                state_bg.trigger_sonic();
             }
         });
     } else {
         state.prewarm_artists();
         state.trigger_enrichment();
+        state.trigger_sonic();
     }
     auto_scanner
 }

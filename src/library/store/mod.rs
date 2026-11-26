@@ -2,6 +2,7 @@ mod enrichment;
 mod ingest;
 mod prefs;
 mod query;
+mod sonic;
 mod versions;
 
 use std::collections::HashMap;
@@ -18,6 +19,9 @@ use super::types::{LibraryError, ProviderSyncStatus, Result, Track};
 
 pub use enrichment::{AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, TrackEnrichmentPatch};
 pub use query::build_fts_query;
+pub use sonic::{
+    SonicStats, SonicTagEntry, StoredSonicEmbedding, TrackSonicHeadsWrite, TrackSonicWrite,
+};
 
 pub const DEFAULT_MISSING_RETENTION: Duration = Duration::from_secs(30 * 24 * 3600);
 

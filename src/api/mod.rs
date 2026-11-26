@@ -29,6 +29,7 @@ use crate::player::Registry as PlayerRegistry;
 use crate::qobuz::{Client as QobuzClient, FORMAT_FLAC_192, quality_label};
 use crate::queue::{Manager as QueueManager, StreamMode};
 use crate::resolver::EnrichmentWorker;
+use crate::sonic::SonicWorker;
 use crate::upnp::GenaClient;
 
 use self::errors::{ApiError, ApiResult, parse_strict_json};
@@ -55,6 +56,7 @@ pub struct AppState {
     pub catalog: Arc<Catalog>,
     pub auto_scanner: RwLock<Option<Arc<AutoScanner>>>,
     pub enrichment: RwLock<Option<Arc<EnrichmentWorker>>>,
+    pub sonic: RwLock<Option<Arc<SonicWorker>>>,
     pub qobuz: Option<Arc<QobuzClient>>,
     pub manager: Arc<QueueManager>,
     pub players: Arc<PlayerRegistry>,
@@ -94,6 +96,7 @@ impl AppState {
             catalog,
             auto_scanner: RwLock::new(None),
             enrichment: RwLock::new(None),
+            sonic: RwLock::new(None),
             qobuz,
             manager,
             players,
@@ -123,6 +126,20 @@ impl AppState {
 
     pub fn trigger_enrichment(&self) {
         if let Some(worker) = self.enrichment() {
+            worker.trigger();
+        }
+    }
+
+    pub fn set_sonic(&self, worker: Arc<SonicWorker>) {
+        *self.sonic.write().unwrap_or_else(|e| e.into_inner()) = Some(worker);
+    }
+
+    pub fn sonic(&self) -> Option<Arc<SonicWorker>> {
+        self.sonic.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn trigger_sonic(&self) {
+        if let Some(worker) = self.sonic() {
             worker.trigger();
         }
     }
@@ -405,6 +422,18 @@ fn library_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/v1/library/enrichment/run",
             post(handlers_library::library_enrichment_run),
+        )
+        .route(
+            "/api/v1/library/sonic",
+            get(handlers_library::library_sonic_status),
+        )
+        .route(
+            "/api/v1/library/sonic/run",
+            post(handlers_library::library_sonic_run),
+        )
+        .route(
+            "/api/v1/tracks/{id}/similar-sonic",
+            get(handlers_library::track_similar_sonic),
         )
         .route(
             "/api/v1/library/remote/albums",

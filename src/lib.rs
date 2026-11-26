@@ -9,4 +9,5 @@ pub mod qobuz;
 pub mod queue;
 pub mod resolver;
 pub mod singleflight;
+pub mod sonic;
 pub mod upnp;

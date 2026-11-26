@@ -22,6 +22,7 @@ pub const PREF_ZONE_QUALITIES: &str = "zone_qualities";
 pub const PREF_ZONE_QUEUES: &str = "zone_queues";
 pub const PREF_LIBRARY_WATCH_ENABLED: &str = "library_watch_enabled";
 pub const PREF_LIBRARY_SCAN_INTERVAL_MIN: &str = "library_scan_interval_min";
+pub const PREF_SONIC_ENABLED: &str = "sonic_analysis_enabled";
 
 pub const DEFAULT_LIBRARY_WATCH_ENABLED: bool = true;
 pub const DEFAULT_LIBRARY_SCAN_INTERVAL_MIN: i32 = 60;
