@@ -73,10 +73,10 @@ export function QueueRelatedTab({ currentTrack, onAdd, onOpenArtist }: QueueRela
     );
   }
 
-  const initialLoading = sonicQuery.isLoading && relatedQuery.isLoading;
-  const nothingFound = !initialLoading && sonicItems.length === 0 && relatedTracks.length === 0;
+  const anyLoading = sonicQuery.isPending || relatedQuery.isPending;
+  const hasAnyResults = sonicItems.length > 0 || relatedTracks.length > 0;
 
-  if (initialLoading) {
+  if (!hasAnyResults && anyLoading) {
     return (
       <div className="flex items-center justify-center gap-2 py-16 text-xs text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
@@ -85,7 +85,7 @@ export function QueueRelatedTab({ currentTrack, onAdd, onOpenArtist }: QueueRela
     );
   }
 
-  if (nothingFound) {
+  if (!hasAnyResults) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
         <Radio className="h-8 w-8 text-white/20 mb-3" />
