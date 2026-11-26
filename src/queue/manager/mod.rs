@@ -328,9 +328,66 @@ impl Manager {
         *self.stream_mode.write().unwrap_or_else(|e| e.into_inner()) = mode;
     }
 
+    /// Dual-protocol deduplication: when a device (Linn DS/DSM, Lumin, upmpdcli)
+    /// advertises both plain UPnP AVTransport and OpenHome on the same UDN or
+    /// description URL, prefer OpenHome so users don't get duplicate fighting zones.
+    /// Returns `false` if the incoming renderer should be skipped.
+    fn deduplicate_dual_protocol(&self, info: &RendererInfo) -> bool {
+        let mut evicted_upnp_ids: Vec<String> = Vec::new();
+        {
+            let g = self.zones.read().unwrap_or_else(|e| e.into_inner());
+            if info.kind == "upnp" && !info.supports_queue {
+                let shadowed = g.values().any(|z| {
+                    let other = z
+                        .inner
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .ctrl
+                        .info();
+                    other.kind == "openhome" && same_physical_device(info, &other)
+                });
+                if shadowed {
+                    tracing::debug!(
+                        id = %info.id,
+                        name = %info.name,
+                        "skipping duplicate plain UPnP renderer shadowed by OpenHome"
+                    );
+                    return false;
+                }
+            } else if info.kind == "openhome" {
+                for (id, z) in g.iter() {
+                    let other = z
+                        .inner
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .ctrl
+                        .info();
+                    if other.kind == "upnp"
+                        && !other.supports_queue
+                        && same_physical_device(info, &other)
+                    {
+                        evicted_upnp_ids.push(id.clone());
+                    }
+                }
+            }
+        }
+        for dup_id in evicted_upnp_ids {
+            tracing::info!(
+                upnp_id = %dup_id,
+                openhome_id = %info.id,
+                "replacing duplicate plain UPnP renderer with OpenHome"
+            );
+            self.remove_renderer(&dup_id);
+        }
+        true
+    }
+
     pub fn register_renderer(&self, ctrl: Arc<dyn Controller>) {
         let info = ctrl.info();
         let zone_id = info.id.clone();
+        if !self.deduplicate_dual_protocol(&info) {
+            return;
+        }
 
         let (is_new, need_gena) = {
             let mut g = self.zones.write().unwrap_or_else(|e| e.into_inner());
@@ -860,4 +917,25 @@ pub(super) fn compute_next_index(zi: &ZoneInner) -> Option<i32> {
     } else {
         None
     }
+}
+
+fn normalized_device_udn(id: &str) -> &str {
+    let s = id.strip_prefix("openhome:").unwrap_or(id);
+    s.strip_prefix("uuid:")
+        .or_else(|| s.strip_prefix("UUID:"))
+        .unwrap_or(s)
+}
+
+fn same_physical_device(a: &RendererInfo, b: &RendererInfo) -> bool {
+    if !a.location.is_empty() && a.location == b.location {
+        return true;
+    }
+    if !a.host.is_empty() && a.host == b.host {
+        let ua = normalized_device_udn(&a.id);
+        let ub = normalized_device_udn(&b.id);
+        if !ua.is_empty() && ua.eq_ignore_ascii_case(ub) {
+            return true;
+        }
+    }
+    false
 }

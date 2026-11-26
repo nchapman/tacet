@@ -241,31 +241,49 @@ export function SignalPathPopover({
       });
     } else {
       const isCastKind = zone.renderer.kind === "cast";
+      const isOpenHomeKind = zone.renderer.kind === "openhome";
       const deliveryTag = isQobuz
-        ? streamMode === "direct" && !isOpus && !isWav
-          ? "Handoff"
-          : "Relay"
+        ? isOpenHomeKind
+          ? "Relay"
+          : streamMode === "direct" && !isOpus && !isWav
+            ? "Handoff"
+            : "Relay"
         : "LAN HTTP";
+      const transportTitle = isCastKind
+        ? "Google Cast"
+        : isOpenHomeKind
+          ? "OpenHome Media"
+          : "UPnP / DLNA AVTransport";
       const transportDetail = isCastKind
         ? "Cast media session"
-        : zone.gaplessArmed
-          ? "Gapless armed"
-          : zone.renderer.supportsSetNext
-            ? "Gapless ready"
-            : "Standard transport";
+        : isOpenHomeKind
+          ? "On-device Playlist · Gapless"
+          : zone.gaplessArmed
+            ? "Gapless armed"
+            : zone.renderer.supportsSetNext
+              ? "Gapless ready"
+              : "Standard transport";
       stages.push({
         icon: Radio,
-        title: isCastKind ? "Google Cast" : "UPnP / DLNA AVTransport",
+        title: transportTitle,
         detail: transportDetail,
         meta: deliveryTag,
         accent: "neutral",
       });
     }
 
+    const rendererFallback =
+      zone.renderer.kind === "openhome"
+        ? "OpenHome Renderer"
+        : zone.renderer.kind === "cast"
+          ? "Google Cast Renderer"
+          : "UPnP Renderer";
     const rendererName = isBrowserActive ? "This Browser" : zone.renderer.name;
     const rendererSub = isBrowserActive
       ? "Browser audio output"
-      : [zone.renderer.manufacturer, zone.renderer.model].filter(Boolean).join(" ") || zone.renderer.host || "UPnP Renderer";
+      : [zone.renderer.manufacturer, zone.renderer.model].filter(Boolean).join(" ") ||
+        zone.renderer.host ||
+        rendererFallback;
 
     stages.push({
       icon: Speaker,

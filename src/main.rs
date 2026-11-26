@@ -494,6 +494,7 @@ fn start_device_monitors(
                 mgr_c_upnp
                     .list_renderers_by_kind("upnp")
                     .into_iter()
+                    .chain(mgr_c_upnp.list_renderers_by_kind("openhome"))
                     .filter(|r| !r.host.is_empty())
                     .map(|r| r.host)
                     .collect()
@@ -513,7 +514,7 @@ fn start_device_monitors(
     let mgr_oh3 = Arc::clone(manager);
     let mgr_oh4 = Arc::clone(manager);
     let openhome_monitor = OpenHomeMonitor::new(
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         OpenHomeMonitorCallbacks {
             list_openhome: Arc::new(move || mgr_oh1.list_renderers_by_kind("openhome")),
             is_active: Arc::new(move |id| mgr_oh2.is_zone_active(id)),

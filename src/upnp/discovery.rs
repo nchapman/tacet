@@ -167,6 +167,7 @@ pub(crate) fn parse_msearch_location(raw: &str) -> Option<String> {
 
 async fn msearch_on_interface(
     bind_ip: Ipv4Addr,
+    targets: &'static [&'static str],
     deadline: tokio::time::Instant,
 ) -> Vec<(String, Option<Ipv4Addr>)> {
     let Ok(sock) = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)) else {
@@ -188,7 +189,7 @@ async fn msearch_on_interface(
     };
 
     let mcast_dest = SocketAddr::V4(SocketAddrV4::new(SSDP_MULTICAST_V4, SSDP_PORT));
-    let payloads: Vec<Vec<u8>> = MSEARCH_TARGETS
+    let payloads: Vec<Vec<u8>> = targets
         .iter()
         .map(|st| build_msearch_payload(st, 2).into_bytes())
         .collect();
@@ -225,16 +226,20 @@ async fn msearch_on_interface(
     found
 }
 
-/// Discovers UPnP/DLNA MediaRenderers across all active LAN interfaces via SSDP M-SEARCH.
-pub async fn discover() -> Result<Vec<Arc<Renderer>>> {
+/// Sends SSDP M-SEARCH probes for `targets` across all active LAN IPv4 interfaces
+/// and returns deduplicated `(location, local_ip)` pairs without performing any HTTP fetches.
+pub(crate) async fn msearch_locations(
+    targets: &'static [&'static str],
+    timeout: Duration,
+) -> Vec<(String, Option<Ipv4Addr>)> {
     let mut bind_ips = lan_ipv4_interfaces();
     if bind_ips.is_empty() {
         bind_ips.push(Ipv4Addr::UNSPECIFIED);
     }
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(2500);
+    let deadline = tokio::time::Instant::now() + timeout;
     let mut tasks = Vec::with_capacity(bind_ips.len());
     for ip in bind_ips {
-        tasks.push(tokio::spawn(msearch_on_interface(ip, deadline)));
+        tasks.push(tokio::spawn(msearch_on_interface(ip, targets, deadline)));
     }
 
     let mut locs: Vec<(String, Option<Ipv4Addr>)> = Vec::new();
@@ -248,6 +253,12 @@ pub async fn discover() -> Result<Vec<Arc<Renderer>>> {
             }
         }
     }
+    locs
+}
+
+/// Discovers UPnP/DLNA MediaRenderers across all active LAN interfaces via SSDP M-SEARCH.
+pub async fn discover() -> Result<Vec<Arc<Renderer>>> {
+    let locs = msearch_locations(MSEARCH_TARGETS, Duration::from_millis(2500)).await;
 
     let mut renderers = Vec::new();
     let mut seen_ids = HashSet::new();

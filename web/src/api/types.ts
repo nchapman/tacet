@@ -219,7 +219,7 @@ export interface LibraryArtistsQuery {
 
 export interface RendererInfo {
   id: string;
-  kind?: "upnp" | "player" | string;
+  kind?: "upnp" | "openhome" | "cast" | "player" | string;
   name: string;
   manufacturer?: string;
   model?: string;
@@ -229,6 +229,7 @@ export interface RendererInfo {
   supportsSetNext: boolean;
   supportsSeek: boolean;
   supportsEvents: boolean;
+  supportsQueue?: boolean;
   sinkProtocols?: string[];
 }
 

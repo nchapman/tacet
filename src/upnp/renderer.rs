@@ -159,6 +159,12 @@ pub trait QueueController: Send + Sync {
     async fn next(&self) -> Result<()>;
     async fn previous(&self) -> Result<()>;
     async fn set_loop_mode(&self, repeat: &str, shuffle: bool) -> Result<()>;
+    /// Whether the device natively supports repeating a single track (`RepeatMode::One`).
+    /// OpenHome `Playlist:1` only supports whole-playlist repeat, so it returns `false`
+    /// and `QueueManager` handles `RepeatMode::One` via a 1-track playlist + repeat-all.
+    fn supports_repeat_one(&self) -> bool {
+        true
+    }
 }
 
 /// Returns a reqwest client for UPnP XML GETs (device description, SCPD, probes):

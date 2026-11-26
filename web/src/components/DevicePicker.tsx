@@ -316,6 +316,11 @@ export function DeviceList({
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           <span className="truncate text-sm font-medium">{z.renderer.name}</span>
+                          {z.renderer.kind === "openhome" && (
+                            <span className="shrink-0 rounded bg-white/[0.08] px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                              OpenHome
+                            </span>
+                          )}
                           {nonOriginal && (
                             <span className="shrink-0 rounded bg-white/[0.08] px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
                               {qStop.shortLabel}
@@ -323,7 +328,10 @@ export function DeviceList({
                           )}
                         </div>
                         <div className="truncate text-xs text-muted-foreground">
-                          {z.renderer.model || (z.renderer.kind || "upnp").toUpperCase()}
+                          {z.renderer.model ||
+                            (z.renderer.kind === "openhome"
+                              ? "OpenHome"
+                              : (z.renderer.kind || "upnp").toUpperCase())}
                           {z.renderer.host ? ` · ${z.renderer.host}` : ""}
                         </div>
                       </div>

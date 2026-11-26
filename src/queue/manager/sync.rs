@@ -261,11 +261,19 @@ impl Manager {
             let prev_pos = zi.status.position;
             let prev_dur = zi.status.duration;
             let foreign = !st.track_uri.is_empty() && is_foreign_track_uri(&zi, &st.track_uri);
-            let (vol_changed, mut pb_changed) = apply_poll_status(&mut zi, &st);
+            let repeat_one_via_manager = is_manager_repeat_one(&zi, &ctrl);
+            let native_repeat_one_moved =
+                !foreign && repeat_one_via_manager && device_advanced_index(&zi, &st);
+
+            let (vol_changed, mut pb_changed) =
+                apply_poll_status(&mut zi, &st, !native_repeat_one_moved);
             let new_state = PlaybackState::normalize(&zi.status.state);
 
             if foreign {
                 recorded_event = flush_active_listen(&mut zi, &zone_id, FlushReason::Interrupted);
+            } else if native_repeat_one_moved {
+                recorded_event = flush_active_listen(&mut zi, &zone_id, FlushReason::NaturalEnd);
+                need_advance = true;
             }
 
             let (transitioned, gapless_ev) =
@@ -300,7 +308,7 @@ impl Manager {
                 && new_state == PlaybackState::Stopped
                 && zi.last_command_at.elapsed() > Duration::from_secs(3);
             if natural_stop {
-                if ctrl.as_queue_controller().is_none() {
+                if ctrl.as_queue_controller().is_none() || repeat_one_via_manager {
                     need_advance = true;
                 } else if recorded_event.is_none() {
                     recorded_event =
@@ -395,7 +403,25 @@ fn is_foreign_track_uri(zi: &ZoneInner, uri: &str) -> bool {
     !uri.contains("/media/local/") && !uri.contains("/media/qobuz/")
 }
 
-fn apply_poll_status(zi: &mut ZoneInner, st: &crate::upnp::TransportStatus) -> (bool, bool) {
+fn is_manager_repeat_one(zi: &ZoneInner, ctrl: &Arc<dyn Controller>) -> bool {
+    zi.repeat == RepeatMode::One
+        && ctrl
+            .as_queue_controller()
+            .is_some_and(|qc| !qc.supports_repeat_one())
+}
+
+fn device_advanced_index(zi: &ZoneInner, st: &crate::upnp::TransportStatus) -> bool {
+    st.has_queue_index
+        && st.queue_index >= 0
+        && st.queue_index != zi.current_index
+        && zi.last_command_at.elapsed() > Duration::from_secs(3)
+}
+
+fn apply_poll_status(
+    zi: &mut ZoneInner,
+    st: &crate::upnp::TransportStatus,
+    accept_queue_index: bool,
+) -> (bool, bool) {
     let mut vol_changed = false;
     let mut pb_changed = false;
 
@@ -427,7 +453,8 @@ fn apply_poll_status(zi: &mut ZoneInner, st: &crate::upnp::TransportStatus) -> (
     if !st.duration.is_zero() {
         zi.status.duration = st.duration;
     }
-    if st.has_queue_index
+    if accept_queue_index
+        && st.has_queue_index
         && st.queue_index >= 0
         && (st.queue_index as usize) < zi.queue.len()
         && st.queue_index != zi.current_index

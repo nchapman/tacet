@@ -1046,11 +1046,17 @@ impl Manager {
                 zi.next_index = -1;
                 zi.revision += 1;
             }
-            let tail_tracks: Vec<Track> = if changed && zi.current_index == 0 {
-                zi.queue.iter().skip(1).map(|it| it.track.clone()).collect()
-            } else {
-                Vec::new()
-            };
+            let tail_tracks: Vec<Track> =
+                if changed && zi.current_index >= 0 && (zi.current_index as usize) < zi.queue.len()
+                {
+                    zi.queue
+                        .iter()
+                        .skip(zi.current_index as usize + 1)
+                        .map(|it| it.track.clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
             (
                 Arc::clone(&zi.ctrl),
                 changed,
@@ -1211,9 +1217,17 @@ impl Manager {
         ctrl: &Arc<dyn Controller>,
         use_native_queue: bool,
     ) -> Result<()> {
-        let (queue_items, cur_idx, requested_q) = {
-            let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-            (zi.queue.clone(), zi.current_index, zi.audio_quality)
+        let (queue_items, cur_idx, requested_q, repeat_mode) = {
+            let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            // Bump last_command_at before multi-RPC native queue load so concurrent
+            // status polls don't mistake post-DeleteAll Stopped for a natural track end.
+            zi.last_command_at = Instant::now();
+            (
+                zi.queue.clone(),
+                zi.current_index,
+                zi.audio_quality,
+                zi.repeat,
+            )
         };
         if cur_idx < 0 || (cur_idx as usize) >= queue_items.len() {
             return Err(QueueError::EmptyQueue);
@@ -1237,6 +1251,8 @@ impl Manager {
                 }
             }
             if !all_media.is_empty() && qc.replace_queue(&all_media, native_cur_idx).await.is_ok() {
+                // Ensure persisted repeat mode is synced and device-side shuffle is off.
+                let _ = qc.set_loop_mode(repeat_mode.as_str(), false).await;
                 self.finish_start_locked(zone_id, z, cur_item, &media_item, eff_q, false);
                 return Ok(());
             }

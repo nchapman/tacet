@@ -27,7 +27,7 @@ export function ConnectModal({ open, externalError, onClose, onConnect }: Connec
         setUrl("");
         onClose();
       } else {
-        setError(externalError || "Could not connect to UPnP renderer at that URL.");
+        setError(externalError || "Could not connect to network renderer at that URL.");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -41,9 +41,9 @@ export function ConnectModal({ open, externalError, onClose, onConnect }: Connec
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
       <DialogContent>
-        <DialogTitle>Connect UPnP Renderer</DialogTitle>
+        <DialogTitle>Connect Network Renderer</DialogTitle>
         <DialogDescription className="mt-1">
-          Enter the device description XML URL when SSDP multicast discovery cannot cross VLANs or Docker networks.
+          Enter a UPnP or OpenHome device description XML URL when SSDP multicast discovery cannot cross VLANs or Docker networks.
         </DialogDescription>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">

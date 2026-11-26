@@ -16,7 +16,7 @@ use crate::library::{PREF_MANUAL_RENDERERS, PREF_ZONE_QUALITIES, Track};
 use crate::linkplay;
 use crate::player::{RegisterRequest, StateReport, UpdateRequest};
 use crate::queue::{AudioQuality, RepeatMode};
-use crate::upnp;
+use crate::upnp::{self, Controller};
 
 use super::AppState;
 use super::errors::{ApiError, ApiResult, parse_strict_json};
@@ -36,20 +36,34 @@ pub async fn get_zone(
 }
 
 pub async fn discover_zones(State(st): State<Arc<AppState>>) -> ApiResult<Json<serde_json::Value>> {
-    let found = upnp::discover().await?;
-    let count = found.len();
+    let (upnp_res, cast_found, oh_found) = tokio::join!(
+        upnp::discover(),
+        crate::cast::discover_cast(Duration::from_secs(2)),
+        crate::openhome::discover_openhome(Duration::from_secs(2)),
+    );
+    let found = upnp_res?;
+    let total = found.len() + cast_found.len() + oh_found.len();
+
+    // Register OpenHome before UPnP so dual-protocol devices resolve directly to OpenHome.
+    for dev in oh_found {
+        st.manager.register_renderer(dev);
+    }
     for dev in found {
         st.manager.register_renderer(linkplay::wrap(dev));
     }
-    let cast_found = crate::cast::discover_cast(Duration::from_secs(2)).await;
-    let cast_count = cast_found.len();
+    let claimed_hosts: std::collections::HashSet<String> = st
+        .manager
+        .list_renderers_by_kind("upnp")
+        .into_iter()
+        .chain(st.manager.list_renderers_by_kind("openhome"))
+        .filter(|r| !r.host.is_empty())
+        .map(|r| r.host)
+        .collect();
     for dev in cast_found {
-        st.manager.register_renderer(dev);
-    }
-    let oh_found = crate::openhome::discover_openhome(Duration::from_secs(2)).await;
-    let total = count + cast_count + oh_found.len();
-    for dev in oh_found {
-        st.manager.register_renderer(dev);
+        let host = dev.info().host;
+        if host.is_empty() || !claimed_hosts.contains(&host) {
+            st.manager.register_renderer(dev);
+        }
     }
     Ok(Json(serde_json::json!({
         "discovered": total,
