@@ -790,6 +790,33 @@ fn append_transcode_params(url: &mut String, eff_q: AudioQuality, container: &st
     }
 }
 
+#[cfg(test)]
+impl Manager {
+    pub(crate) fn test_advance_listen(&self, zone_id: &str, elapsed: Duration) {
+        if let Some(z) = self.get_zone(zone_id) {
+            let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(active) = zi.active_listen.as_mut() {
+                active.listened_ms = active
+                    .listened_ms
+                    .saturating_add(elapsed.as_millis() as u64);
+            }
+            let back = Instant::now() - Duration::from_secs(10);
+            zi.loaded_at = back;
+            zi.last_command_at = back;
+        }
+    }
+
+    pub(crate) async fn test_poll_zone(&self, zone_id: &str) {
+        if let Some(z) = self.get_zone(zone_id) {
+            {
+                let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+                zi.last_poll = Instant::now() - Duration::from_secs(120);
+            }
+            self.poll_one_zone(zone_id.to_string(), z).await;
+        }
+    }
+}
+
 fn qobuz_track_id(track: &Track) -> i64 {
     if track.qobuz_track_id > 0 {
         track.qobuz_track_id

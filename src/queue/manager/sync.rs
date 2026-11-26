@@ -241,7 +241,7 @@ impl Manager {
         Some(Arc::clone(&zi.ctrl))
     }
 
-    async fn poll_one_zone(&self, zone_id: String, z: Arc<Zone>) {
+    pub(super) async fn poll_one_zone(&self, zone_id: String, z: Arc<Zone>) {
         let Some(ctrl) = self.poll_controller_if_due(&zone_id, &z) else {
             return;
         };

@@ -213,4 +213,20 @@ mod tests {
         let path = idx.sonic_adventure("t_start", "t_end", 1);
         assert_eq!(path, vec!["t_start", "t_mid", "t_end"]);
     }
+
+    #[test]
+    fn sonic_index_handles_empty_unknown_and_trivial_inputs() {
+        let idx = SonicIndex::new();
+        assert!(idx.similar_tracks("missing", 5).is_empty());
+        assert!(idx.sonic_adventure("a", "b", 2).is_empty());
+
+        idx.upsert_track("t1".into(), basis_vec(0));
+        assert!(idx.similar_tracks("t1", 5).is_empty());
+        assert!(idx.similar_tracks("t1", 0).is_empty());
+        assert_eq!(idx.sonic_adventure("t1", "t1", 3), vec!["t1"]);
+        assert!(idx.sonic_adventure("t1", "missing", 1).is_empty());
+
+        idx.upsert_track("t2".into(), basis_vec(1));
+        assert_eq!(idx.sonic_adventure("t1", "t2", 0), vec!["t1", "t2"]);
+    }
 }

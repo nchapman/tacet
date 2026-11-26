@@ -78,6 +78,7 @@ mod tests {
     }
 
     struct TestPlayerHarness {
+        cat: Arc<Catalog>,
         mgr: Arc<Manager>,
         zone_id: String,
         rp: Arc<crate::player::RemotePlayer>,
@@ -101,7 +102,7 @@ mod tests {
 
     fn setup_player_harness(player_id: &str) -> TestPlayerHarness {
         let cat = Catalog::new_in_memory(vec![]);
-        let mgr = Manager::new(cat, None, 4320, StreamMode::Direct);
+        let mgr = Manager::new(Arc::clone(&cat), None, 4320, StreamMode::Direct);
         let mgr_reg = Arc::clone(&mgr);
         let mgr_push = Arc::clone(&mgr);
         let reg = Registry::new(
@@ -154,6 +155,7 @@ mod tests {
             }
         });
         TestPlayerHarness {
+            cat,
             mgr,
             zone_id: r.zone_id,
             rp,
@@ -559,5 +561,247 @@ mod tests {
             check_endpoint_mime(&safari_old, "audio/flac"),
             Err(QueueError::CapabilityUnsupported(_))
         ));
+    }
+
+    async fn wait_history_count(
+        cat: &Catalog,
+        expected: i64,
+    ) -> Vec<crate::library::PlayHistoryEntry> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let (items, total) = cat.play_history(50, 0, None, None).unwrap();
+            if total >= expected {
+                return items;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for {expected} history rows (got {total})"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn active_listen_skips_stops_gapless_and_foreign_takeover() {
+        let h = setup_player_harness("qlisten");
+        let mut t1 = test_track(1);
+        t1.duration_sec = 180;
+        let mut t2 = test_track(2);
+        t2.duration_sec = 300;
+        let mut t3 = test_track(3);
+        t3.duration_sec = 200;
+
+        h.mgr
+            .set_queue(&h.zone_id, vec![t1, t2, t3], 0, true)
+            .await
+            .unwrap();
+
+        // 1. Explicit next() after 10s -> Skipped
+        h.mgr
+            .test_advance_listen(&h.zone_id, std::time::Duration::from_secs(10));
+        h.mgr.next(&h.zone_id).await.unwrap();
+        let rows = wait_history_count(&h.cat, 1).await;
+        assert_eq!(rows[0].track_id, "local:1");
+        assert_eq!(rows[0].outcome, crate::library::PlayOutcome::Skipped);
+        assert_eq!(rows[0].duration_sec, 180);
+
+        // 2. Gapless transition after 160s on t2 (dur 300s) -> Completed once with t2's duration,
+        //    and t3 must NOT be recorded at 0s.
+        let t2_url = h.played_urls.lock().unwrap().last().cloned().unwrap();
+        h.mgr
+            .test_advance_listen(&h.zone_id, std::time::Duration::from_secs(160));
+        h.rp.report_state(StateReport {
+            state: "PLAYING".into(),
+            track_uri: t2_url,
+            position_sec: Some(290.0),
+            duration_sec: Some(300.0),
+            ..Default::default()
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        let t3_url = h.next_urls.lock().unwrap().last().cloned().unwrap();
+        h.rp.report_state(StateReport {
+            state: "PLAYING".into(),
+            track_uri: t3_url,
+            position_sec: Some(0.5),
+            duration_sec: Some(200.0),
+            ..Default::default()
+        });
+        let rows = wait_history_count(&h.cat, 2).await;
+        assert_eq!(rows.len(), 2, "t3 must not be recorded prematurely at 0s");
+        assert_eq!(rows[0].track_id, "local:2");
+        assert_eq!(rows[0].outcome, crate::library::PlayOutcome::Completed);
+        assert_eq!(rows[0].duration_sec, 300);
+
+        // 3. User stop() after 12s on t3 -> Partial (Interrupted, NOT Skipped)
+        h.mgr
+            .test_advance_listen(&h.zone_id, std::time::Duration::from_secs(12));
+        h.mgr.stop(&h.zone_id).await.unwrap();
+        let rows = wait_history_count(&h.cat, 3).await;
+        assert_eq!(rows[0].track_id, "local:3");
+        assert_eq!(rows[0].outcome, crate::library::PlayOutcome::Partial);
+
+        h.mgr.close();
+    }
+
+    struct MockPollNative {
+        info: crate::upnp::RendererInfo,
+        status: std::sync::Mutex<crate::upnp::TransportStatus>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::upnp::Controller for MockPollNative {
+        fn info(&self) -> crate::upnp::RendererInfo {
+            self.info.clone()
+        }
+        fn local_ip(&self) -> String {
+            "127.0.0.1".into()
+        }
+        async fn set_uri(&self, _item: &crate::upnp::MediaItem) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn set_next_uri(&self, _item: &crate::upnp::MediaItem) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn play(&self) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn pause(&self) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn stop(&self) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn seek(&self, _pos: std::time::Duration) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn status(&self) -> crate::upnp::Result<crate::upnp::TransportStatus> {
+            Ok(self.status.lock().unwrap().clone())
+        }
+        async fn set_volume(&self, _v: i32) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn set_mute(&self, _m: bool) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        fn as_queue_controller(&self) -> Option<&dyn crate::upnp::QueueController> {
+            Some(self)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::upnp::QueueController for MockPollNative {
+        async fn replace_queue(
+            &self,
+            _items: &[crate::upnp::MediaItem],
+            _start_index: usize,
+        ) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn append_queue(&self, _items: &[crate::upnp::MediaItem]) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn remove_queue_range(&self, _from: usize, _to: usize) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn move_queue_item(&self, _from: usize, _to: usize) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn play_index(&self, _index: usize) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn next(&self) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn previous(&self) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+        async fn set_loop_mode(&self, _repeat: &str, _shuffle: bool) -> crate::upnp::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn native_queue_transition_end_of_queue_and_repeat_one_accounting() {
+        let cat = Catalog::new_in_memory(vec![]);
+        let mgr = Manager::new(Arc::clone(&cat), None, 4320, StreamMode::Direct);
+        let mock = Arc::new(MockPollNative {
+            info: crate::upnp::RendererInfo {
+                id: "cast:acct".into(),
+                kind: "cast".into(),
+                name: "Cast".into(),
+                has_volume: true,
+                ..Default::default()
+            },
+            status: std::sync::Mutex::new(crate::upnp::TransportStatus {
+                state: "PLAYING".into(),
+                has_queue_index: true,
+                queue_index: 0,
+                has_position: true,
+                position: std::time::Duration::from_secs(0),
+                duration: std::time::Duration::from_secs(180),
+                ..Default::default()
+            }),
+        });
+        mgr.register_renderer(mock.clone());
+
+        let mut t1 = test_track(1);
+        t1.duration_sec = 180;
+        let mut t2 = test_track(2);
+        t2.duration_sec = 300;
+        mgr.set_queue("cast:acct", vec![t1, t2], 0, true)
+            .await
+            .unwrap();
+
+        // play_index must NOT record prematurely at 0s
+        mgr.play_index("cast:acct", 0).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(cat.play_history(10, 0, None, None).unwrap().1, 0);
+
+        // 1. Native transition queue_index 0 -> 1 with renderer already reporting t2's 300s duration:
+        //    t1 must flush as Completed with t1's own 180s duration.
+        mgr.test_advance_listen("cast:acct", std::time::Duration::from_secs(100));
+        {
+            let mut st = mock.status.lock().unwrap();
+            st.queue_index = 1;
+            st.position = std::time::Duration::from_secs(2);
+            st.duration = std::time::Duration::from_secs(300);
+        }
+        mgr.test_poll_zone("cast:acct").await;
+        let rows = wait_history_count(&cat, 1).await;
+        assert_eq!(rows[0].track_id, "local:1");
+        assert_eq!(rows[0].outcome, crate::library::PlayOutcome::Completed);
+        assert_eq!(rows[0].duration_sec, 180);
+
+        // 2. Native RepeatMode::One position wraparound (200s -> 3s) emits Completed for repeat #1
+        mgr.set_repeat("cast:acct", RepeatMode::One).await.unwrap();
+        {
+            let mut st = mock.status.lock().unwrap();
+            st.position = std::time::Duration::from_secs(200);
+        }
+        mgr.test_poll_zone("cast:acct").await;
+        mgr.test_advance_listen("cast:acct", std::time::Duration::from_secs(160));
+        {
+            let mut st = mock.status.lock().unwrap();
+            st.position = std::time::Duration::from_secs(3);
+        }
+        mgr.test_poll_zone("cast:acct").await;
+        let rows = wait_history_count(&cat, 2).await;
+        assert_eq!(rows[0].track_id, "local:2");
+        assert_eq!(rows[0].outcome, crate::library::PlayOutcome::Completed);
+        assert_eq!(rows[0].duration_sec, 300);
+
+        // 3. End-of-queue PLAYING -> STOPPED flushes repeat #2 immediately as Completed
+        mgr.set_repeat("cast:acct", RepeatMode::Off).await.unwrap();
+        mgr.test_advance_listen("cast:acct", std::time::Duration::from_secs(170));
+        {
+            let mut st = mock.status.lock().unwrap();
+            st.state = "STOPPED".into();
+        }
+        mgr.test_poll_zone("cast:acct").await;
+        let rows = wait_history_count(&cat, 3).await;
+        assert_eq!(rows[0].track_id, "local:2");
+        assert_eq!(rows[0].outcome, crate::library::PlayOutcome::Completed);
+
+        mgr.close();
     }
 }

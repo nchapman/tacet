@@ -543,6 +543,7 @@ mod tests {
             provider: SOURCE_LOCAL.into(),
             title: "Track One".into(),
             artist: "Artist One".into(),
+            file_path: "/music/t1.flac".into(),
             duration_sec: 200,
             available: true,
             ..Default::default()
@@ -566,6 +567,7 @@ mod tests {
             provider: SOURCE_LOCAL.into(),
             title: "Track Two".into(),
             artist: "Artist Two".into(),
+            file_path: "/music/t2.flac".into(),
             duration_sec: 200,
             available: true,
             ..Default::default()
@@ -757,5 +759,212 @@ mod tests {
         assert_eq!((stats.total_plays, stats.total_skips), (2, 1));
         assert_eq!(stats.total_listened_sec, 195 + 12 + 230);
         assert!(stats.top_artists.iter().any(|a| a.artist == "Qobuz Artist"));
+    }
+
+    fn seed_legacy_v3_play_events_db(db: &std::path::Path) {
+        {
+            let cat = Catalog::open(&db.to_string_lossy(), vec![]).unwrap();
+            let local_alb = Album {
+                id: "local:a1".into(),
+                source: SOURCE_LOCAL.into(),
+                source_type: SOURCE_TYPE_LOCAL.into(),
+                provider: SOURCE_LOCAL.into(),
+                external_id: "a1".into(),
+                title: "Kind of Blue".into(),
+                artist: "Miles Davis".into(),
+                genre: "Jazz".into(),
+                artwork_url: "/art/a1.jpg".into(),
+                mb_artist_id: "mb-art-1".into(),
+                available: true,
+                ..Default::default()
+            };
+            let local_tr = Track {
+                id: "local:t1".into(),
+                album_id: "local:a1".into(),
+                source: SOURCE_LOCAL.into(),
+                source_type: SOURCE_TYPE_LOCAL.into(),
+                provider: SOURCE_LOCAL.into(),
+                external_id: "t1".into(),
+                title: "So What".into(),
+                artist: "Miles Davis".into(),
+                album_artist: "Miles Davis".into(),
+                album: "Kind of Blue".into(),
+                isrc: "USBJN0920070".into(),
+                mb_recording_id: "mb-rec-1".into(),
+                duration_sec: 562,
+                available: true,
+                ..Default::default()
+            };
+            let qobuz_alb = Album {
+                id: "qobuz:a2".into(),
+                source: SOURCE_QOBUZ.into(),
+                source_type: SOURCE_TYPE_REMOTE.into(),
+                provider: SOURCE_QOBUZ.into(),
+                external_id: "a2".into(),
+                title: "Kind of Blue".into(),
+                artist: "Miles Davis".into(),
+                genre: "Jazz".into(),
+                qobuz_artist_id: 42,
+                mb_artist_id: "mb-art-1".into(),
+                available: true,
+                ..Default::default()
+            };
+            let qobuz_tr = Track {
+                id: "qobuz:t2".into(),
+                album_id: "qobuz:a2".into(),
+                source: SOURCE_QOBUZ.into(),
+                source_type: SOURCE_TYPE_REMOTE.into(),
+                provider: SOURCE_QOBUZ.into(),
+                external_id: "999".into(),
+                title: "Blue in Green".into(),
+                artist: "Miles Davis".into(),
+                album_artist: "Miles Davis".into(),
+                album: "Kind of Blue".into(),
+                genre: "Jazz".into(),
+                isrc: "USBJN0920071".into(),
+                qobuz_track_id: 999,
+                qobuz_artist_id: 42,
+                mb_artist_id: "mb-art-1".into(),
+                duration_sec: 337,
+                available: true,
+                ..Default::default()
+            };
+            cat.store()
+                .upsert_album_with_tracks(&local_alb, std::slice::from_ref(&local_tr))
+                .unwrap();
+            cat.store()
+                .upsert_album_with_tracks(&qobuz_alb, std::slice::from_ref(&qobuz_tr))
+                .unwrap();
+        }
+        // Roll back migration 4 to simulate an existing v3 database with legacy play_events
+        let conn = rusqlite::Connection::open(db).unwrap();
+        conn.execute_batch(
+            "DROP TABLE play_events;
+             DELETE FROM schema_migrations WHERE version = 4;
+             CREATE TABLE play_events (
+                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                 track_id  TEXT NOT NULL,
+                 album_id  TEXT NOT NULL,
+                 provider  TEXT NOT NULL,
+                 played_at INTEGER NOT NULL
+             );
+             INSERT INTO play_events(id, track_id, album_id, provider, played_at) VALUES
+                 (1, 'local:t1', 'local:a1', 'local', 1700001000),
+                 (2, 'qobuz:t2', 'qobuz:a2', 'qobuz', 1700002000),
+                 (3, 'orphan:t3', 'orphan:a3', 'qobuz', 1700003000);",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn migration_4_backfills_legacy_play_events_and_preserves_monotonic_last_played() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("legacy_v3.db");
+        seed_legacy_v3_play_events_db(&db);
+
+        let cat = Catalog::open(&db.to_string_lossy(), vec![]).unwrap();
+        assert_eq!(cat.schema_version().unwrap(), 4);
+
+        let (hist, total) = cat.play_history(10, 0, None, None).unwrap();
+        assert_eq!(total, 3);
+        let by_id = |id: &str| hist.iter().find(|h| h.track_id == id).unwrap();
+
+        let local = by_id("local:t1");
+        assert_eq!(
+            local.qobuz_track_id, None,
+            "local qobuz_track_id 0 must backfill as NULL"
+        );
+        assert_eq!(local.qobuz_artist_id, None);
+        assert_eq!(local.artwork_url, "/art/a1.jpg");
+        assert_eq!(local.genre, "Jazz");
+        assert_eq!(local.isrc, "USBJN0920070");
+        assert_eq!(local.mb_recording_id, "mb-rec-1");
+        assert_eq!(local.mb_artist_id, "mb-art-1");
+        assert_eq!(local.started_at.timestamp(), 1700001000 - 562);
+        assert_eq!(local.listened_sec, 562);
+        assert_eq!(local.outcome, PlayOutcome::Completed);
+        assert_eq!(local.source_context, PlayContext::Manual);
+
+        let qobuz = by_id("qobuz:t2");
+        assert_eq!(qobuz.qobuz_track_id, Some(999));
+        assert_eq!(qobuz.qobuz_artist_id, Some(42));
+
+        let orphan = by_id("orphan:t3");
+        assert_eq!(orphan.started_at.timestamp(), 1700003000);
+        assert_eq!(orphan.outcome, PlayOutcome::Completed);
+
+        // Monotonic last_played_at: recording an older completed event must not regress it
+        let t_new = chrono::DateTime::from_timestamp(1700005000, 0).unwrap();
+        let t_old = chrono::DateTime::from_timestamp(1700000500, 0).unwrap();
+        let tr = cat.store().get_track("local:t1").unwrap().unwrap();
+        cat.record_play_event(&PlayEventRecord {
+            track: tr.clone(),
+            zone_id: String::new(),
+            source_context: PlayContext::Manual,
+            started_at: t_new - chrono::Duration::seconds(500),
+            played_at: t_new,
+            listened_sec: 500,
+            duration_sec: 562,
+            outcome: PlayOutcome::Completed,
+        });
+        cat.record_play_event(&PlayEventRecord {
+            track: tr,
+            zone_id: String::new(),
+            source_context: PlayContext::Manual,
+            started_at: t_old - chrono::Duration::seconds(500),
+            played_at: t_old,
+            listened_sec: 500,
+            duration_sec: 562,
+            outcome: PlayOutcome::Completed,
+        });
+        let updated = cat.store().get_track("local:t1").unwrap().unwrap();
+        assert_eq!(updated.play_count, 2);
+        assert_eq!(updated.last_played_at.unwrap().timestamp(), 1700005000);
+    }
+
+    #[test]
+    fn sonic_store_roundtrip_stats_and_delete_cascade() {
+        let (_dir, cat, t1, _) = seed_history_catalog();
+        let mv = "discogs-effnet-bs64-1";
+        assert_eq!(cat.sonic_stats(mv).unwrap().pending_tracks, 2);
+
+        cat.save_track_sonic(&TrackSonicWrite {
+            track_id: t1.id.clone(),
+            model_version: mv.into(),
+            file_mtime_ns: 12345,
+            emb_uint8: vec![42u8; 1280],
+            emb_min: -1.0,
+            emb_scale: 0.01,
+            heads: Some(TrackSonicHeadsWrite {
+                heads_version: 1,
+                mood_relaxed: Some(0.85),
+                danceability: Some(0.25),
+                ..Default::default()
+            }),
+            tags: vec![SonicTagEntry {
+                kind: "style".into(),
+                tag: "Jazz---Modal".into(),
+                score: 0.91,
+                source: "essentia".into(),
+            }],
+        })
+        .unwrap();
+
+        let stats = cat.sonic_stats(mv).unwrap();
+        assert_eq!(stats.analyzed_tracks, 1);
+        assert_eq!(stats.heads_computed_tracks, 1);
+        assert_eq!(stats.pending_tracks, 1);
+
+        let loaded = cat.load_all_track_sonic(mv).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].track_id, t1.id);
+        assert_eq!(loaded[0].emb_uint8.len(), 1280);
+
+        // Deleting the album cascades tracks -> track_sonic, track_sonic_heads, and entity_tags trigger
+        cat.store().delete_album(&t1.album_id).unwrap();
+        let after = cat.sonic_stats(mv).unwrap();
+        assert_eq!(after.analyzed_tracks, 0);
+        assert_eq!(after.heads_computed_tracks, 0);
+        assert!(cat.load_all_track_sonic(mv).unwrap().is_empty());
     }
 }
