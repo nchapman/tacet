@@ -179,6 +179,80 @@ paths:
                   zoneId: { type: string }
         "404": { $ref: "#/components/responses/ErrorResponse" }
         "409": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/zones/{zoneId}/radio:
+    post:
+      summary: Build a Track, Album, or Artist Radio station and start playback on a zone
+      parameters: [$ref: "#/components/parameters/ZoneId"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, id]
+              properties:
+                kind: { type: string, enum: [track, album, artist] }
+                id: { type: string }
+                limit: { type: integer, minimum: 1, maximum: 50, default: 25 }
+                scope: { type: string, enum: [all, local], default: all }
+      responses:
+        "200":
+          description: Started radio station and updated zone snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [zone, station]
+                properties:
+                  zone: { $ref: "#/components/schemas/ZoneSnapshot" }
+                  station:
+                    type: object
+                    required: [seedKind, seedLabel, trackCount, sourceCounts]
+                    properties:
+                      seedKind: { type: string, enum: [track, album, artist] }
+                      seedLabel: { type: string }
+                      seedTrackId: { type: string }
+                      trackCount: { type: integer }
+                      sourceCounts:
+                        type: object
+                        additionalProperties: { type: integer }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/radio/preview:
+    post:
+      summary: Preview a Track, Album, or Artist Radio station without modifying any zone queue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, id]
+              properties:
+                kind: { type: string, enum: [track, album, artist] }
+                id: { type: string }
+                limit: { type: integer, minimum: 1, maximum: 50, default: 25 }
+                scope: { type: string, enum: [all, local], default: all }
+      responses:
+        "200":
+          description: Generated radio station tracks and source breakdown
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [seedKind, seedLabel, tracks, sourceCounts]
+                properties:
+                  seedKind: { type: string, enum: [track, album, artist] }
+                  seedLabel: { type: string }
+                  seedTrackId: { type: string }
+                  tracks:
+                    type: array
+                    items: { $ref: "#/components/schemas/Track" }
+                  sourceCounts:
+                    type: object
+                    additionalProperties: { type: integer }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
   /api/v1/zones/{zoneId}/queue:
     put:
       summary: Replace zone queue from a source and start playback

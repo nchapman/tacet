@@ -213,3 +213,85 @@ Tested on 35 real tracks from the local library (`discogs-effnet` raw outputs si
 - **Exact mel-spectrogram validation**: Validate the pure-Rust (`rustfft`) Slaney mel frontend against Essentia's reference output to `< 1e-4` error.
 - **Licensing & distribution**: Essentia pretrained weights are **CC BY-NC-SA 4.0** (non-commercial). Download weights on demand into `tacet`'s data directory when the user enables Sonic Analysis rather than bundling them in the binary.
 - **Blended Local + Qobuz UX (Plexamp pattern)**: Keep one unified UI (*Track Radio*, *Artist Radio*, *Album Radio*, *Continue Playing*, *Guest DJs*). Local libraries get full Sonic Analysis + ListenBrainz + offline fallback; Qobuz tracks seamlessly blend Qobuz `/radio/*`, `/dynamic/suggest`, ListenBrainz, and metadata/credits DJ rules — with `prefer_local_tracks()` preferring local copies throughout. Optional future enhancement: passively embed played Qobuz tracks via `tacet`'s audio proxy so frequently played streaming favorites join the same local embedding space over time.
+
+---
+
+## 8. Implemented Radio Engine (`src/radio/`)
+
+Track, Album, and Artist Radio are implemented as a modular, local-first pipeline that blends all available signal sources concurrently and runs a pure, deterministic ranking pass before handing off to `QueueManager::start_radio_queue`.
+
+```text
+  POST /api/v1/zones/{zoneId}/radio  { kind: track | album | artist, id, scope }
+                                      │
+                                      ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ 1. SEED RESOLUTION  (src/radio/seed.rs)                                 │
+  │    Local Catalog first ──▶ Qobuz fallback (if signed in & scope == all) │
+  │    Extracts: seed_track, seed_tracks[], artist, genre, year,            │
+  │              qobuz_artist_id, qobuz_album_id, mb_artist_id, isrc        │
+  └───────────────────────────────────┬─────────────────────────────────────┘
+                                      │
+          ┌───────────────────────────┼───────────────────────────┐
+          │         2. PARALLEL CANDIDATE SOURCES                 │
+          ▼                           ▼                           ▼
+  ┌───────────────────┐     ┌───────────────────┐       ┌───────────────────┐
+  │ Local SonicIndex  │     │ Qobuz (4s cap)    │       │ ListenBrainz (3s) │
+  │ (in-memory ~1ms)  │     │ (scope == all)    │       │ (cached 7d in DB) │
+  │                   │     │                   │       │                   │
+  │ • Track: nearest  │     │ 1. GET /radio/*   │       │ MBID ──▶ similar  │
+  │   to track vec    │     │    (1 fast call)  │       │ artists ──▶ match │
+  │ • Album/Artist:   │     │ 2. POST /dynamic/ │       │ local library     │
+  │   nearest to avg  │     │    suggest        │       │ (+ Qobuz if thin) │
+  │   centroid vec    │     │ 3. Concurrent     │       └─────────┬─────────┘
+  │                   │     │    similar_*      │                 │
+  │   weight: 0.92    │     │   weight: 0.90    │         weight: 0.80
+  └─────────┬─────────┘     └─────────┬─────────┘                 │
+            │                         │                           │
+            │               ┌─────────┴─────────┐                 │
+            │               │ Offline Fallback  │                 │
+            │               │ (local SQLite)    │                 │
+            │               │ • anchor tracks   │                 │
+            │               │ • same artist     │                 │
+            │               │ • same genre/era  │                 │
+            │               │ • top played      │                 │
+            │               │   weight: 0.45    │                 │
+            │               └─────────┬─────────┘                 │
+            └─────────────────────────┼───────────────────────────┘
+                                      ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ 3. RANK & GUARDRAILS  (src/radio/rank.rs)                               │
+  │    • Upgrade remote tracks to local editions (ISRC-first)               │
+  │    • Dedup by track ID, ISRC, and normalized artist+title               │
+  │    • Penalize recent plays (6h track cooldown, 2h artist cooldown)      │
+  │    • Boost frequently completed (+0.10), penalize skipped (-0.35)       │
+  │    • Space artists (max 1 per 4-track window, soft cap 3 per station)   │
+  └───────────────────────────────────┬─────────────────────────────────────┘
+                                      │
+                                      ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ 4. PLAYBACK  (QueueManager::start_radio_queue, PlayContext::Radio)      │
+  │    • Track Radio & seed already playing ──▶ keep playing, swap tail     │
+  │    • Otherwise ──▶ replace queue & play from index 0                    │
+  └─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Mode Behavior
+
+| Stage | **Track Radio** | **Album Radio** | **Artist Radio** |
+| :--- | :--- | :--- | :--- |
+| **Pinned at index 0?** | **Yes** — plays seed first (or continues seamlessly if already active in the zone) | No — starts into the blended station (album tracks act as anchors) | No — starts into the blended station (artist tracks act as anchors) |
+| **Local `SonicIndex`** | Nearest neighbors to the track's 1280-d embedding | Nearest neighbors to the **centroid** of the album's analyzed tracks | Nearest neighbors to the **centroid** of the artist's analyzed tracks |
+| **Qobuz primary** | `GET /radio/track` + `POST /dynamic/suggest` (ISRC-resolved if local) | `GET /radio/album` + `POST /dynamic/suggest` (+ `similar_albums` if thin) | `GET /radio/artist` (+ `similar_artists` if thin) |
+| **ListenBrainz** | Uses track's `mb_artist_id` | Uses album's `mb_artist_id` | Uses artist's `mb_artist_id` |
+| **Offline fallback** | Same artist → same genre/era → top played | Album anchor → same artist → same genre/era → top played | Artist anchor → same artist → same genre/era → top played |
+
+### Module & API Map
+- `src/radio/types.rs` — `RadioSeed`, `RadioScope`, `RadioRequest`, `Candidate`, `CandidateSource`, `RadioStation`, `RadioError`.
+- `src/radio/seed.rs` — seed resolution against local `Catalog` with Qobuz fallback.
+- `src/radio/sources/{sonic,qobuz,listenbrainz,fallback}.rs` — isolated, timeout-bounded candidate generators.
+- `src/radio/rank.rs` — pure, I/O-free dedup, history-signal scoring, and artist spacing.
+- `src/radio/mod.rs` — `RadioEngine` orchestrator (`build_station`).
+- `src/api/handlers_radio.rs` — `POST /api/v1/zones/{zoneId}/radio` (starts playback) and `POST /api/v1/radio/preview` (dry-run station preview).
+- `src/queue/manager/ops.rs` — `set_queue_with_context` and `start_radio_queue` (`PlayContext::Radio`, atomic `op_mu` locking, seamless active-seed continuation with safe full-replace fallback for native queues).
+- `web/src/` — `ZoneClient.startRadio` (`api/client.ts`), `useTacet.startRadio` (`hooks/useTacet.ts`), and **Radio** triggers in `AlbumView.tsx`, `ArtistsView.tsx`, `SongsView.tsx`, and `PlayerBar.tsx`.
+
