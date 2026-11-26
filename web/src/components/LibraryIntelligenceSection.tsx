@@ -52,20 +52,30 @@ export function LibraryIntelligenceSection({ onNotify, onError }: LibraryIntelli
   const queryClient = useQueryClient();
   const [sonicBusy, setSonicBusy] = useState(false);
   const [enrichBusy, setEnrichBusy] = useState(false);
+  // Keep polling briefly after a manual trigger so we catch the background worker
+  // flipping `running = true` even when the POST returns before the task wakes up.
+  const [sonicKickoffUntil, setSonicKickoffUntil] = useState(0);
+  const [enrichKickoffUntil, setEnrichKickoffUntil] = useState(0);
 
   const sonicQuery = useQuery({
     queryKey: queryKeys.sonic.status,
     queryFn: ({ signal }) => tacetClient.getSonicStatus({ signal }),
     refetchInterval: (q) => {
       const d = q.state.data;
-      return d && (d.running || d.downloading) ? 1500 : false;
+      if (d && (d.running || d.downloading)) return 1000;
+      if (Date.now() < sonicKickoffUntil) return 500;
+      return false;
     },
   });
 
   const enrichQuery = useQuery({
     queryKey: queryKeys.enrichment.status,
     queryFn: ({ signal }) => tacetClient.getEnrichmentStatus({ signal }),
-    refetchInterval: (q) => (q.state.data?.running ? 2000 : false),
+    refetchInterval: (q) => {
+      if (q.state.data?.running) return 1000;
+      if (Date.now() < enrichKickoffUntil) return 500;
+      return false;
+    },
   });
 
   const sonic = sonicQuery.data;
@@ -102,6 +112,7 @@ export function LibraryIntelligenceSection({ onNotify, onError }: LibraryIntelli
     try {
       const next = await tacetClient.runSonic(enabled);
       queryClient.setQueryData(queryKeys.sonic.status, next);
+      if (enabled) setSonicKickoffUntil(Date.now() + 8000);
       onNotify?.(
         enabled ? "Sonic Analysis Enabled" : "Sonic Analysis Paused",
         enabled
@@ -122,6 +133,7 @@ export function LibraryIntelligenceSection({ onNotify, onError }: LibraryIntelli
     try {
       const next = await tacetClient.runSonic();
       queryClient.setQueryData(queryKeys.sonic.status, next);
+      setSonicKickoffUntil(Date.now() + 8000);
     } catch (err) {
       onError?.(err instanceof Error ? err.message : String(err));
     } finally {
@@ -134,6 +146,7 @@ export function LibraryIntelligenceSection({ onNotify, onError }: LibraryIntelli
     try {
       const next = await tacetClient.runEnrichment(retryFailed);
       queryClient.setQueryData(queryKeys.enrichment.status, next);
+      setEnrichKickoffUntil(Date.now() + 8000);
       onNotify?.(
         retryFailed ? "Retrying Failed Albums" : "Metadata Enrichment Started",
         "Resolving MusicBrainz & release metadata in the background…",
