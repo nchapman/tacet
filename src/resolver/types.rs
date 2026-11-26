@@ -1,6 +1,15 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::library::EnrichmentStats;
+
+/// Deserializes `Option<i32>` leniently from either JSON integers or floats (e.g. `208.41` -> `208`).
+fn deserialize_opt_i32_rounded<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<f64>::deserialize(deserializer)?;
+    Ok(opt.filter(|v| v.is_finite()).map(|v| v.round() as i32))
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +95,7 @@ pub struct ResolvedAlbumTrack {
     pub title: String,
     #[serde(default)]
     pub artist: String,
+    #[serde(default, deserialize_with = "deserialize_opt_i32_rounded")]
     pub duration_sec: Option<i32>,
     #[serde(default)]
     pub genres: Vec<String>,
@@ -142,6 +152,7 @@ pub struct ResolvedLooseTrack {
     pub title: String,
     #[serde(default)]
     pub artist: String,
+    #[serde(default, deserialize_with = "deserialize_opt_i32_rounded")]
     pub duration_sec: Option<i32>,
     #[serde(default)]
     pub genres: Vec<String>,
@@ -156,4 +167,28 @@ pub struct EnrichmentStatus {
     pub stats: EnrichmentStats,
     pub last_run_at: Option<i64>,
     pub last_error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolved_track_duration_accepts_float_and_int_json() {
+        let alb: ResolvedAlbumTrack = serde_json::from_str(
+            r#"{"index":0,"matched":true,"confidence":0.95,"durationSec":208.41}"#,
+        )
+        .unwrap();
+        assert_eq!(alb.duration_sec, Some(208));
+
+        let loose: ResolvedLooseTrack = serde_json::from_str(
+            r#"{"index":1,"matched":true,"confidence":0.9,"durationSec":208.6}"#,
+        )
+        .unwrap();
+        assert_eq!(loose.duration_sec, Some(209));
+
+        let none: ResolvedAlbumTrack =
+            serde_json::from_str(r#"{"index":2,"matched":false,"durationSec":null}"#).unwrap();
+        assert_eq!(none.duration_sec, None);
+    }
 }
