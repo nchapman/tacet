@@ -557,21 +557,100 @@ pub async fn track_similar_sonic(
     Query(qv): Query<HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
     let (limit, _) = parse_page(&qv, 20, 100);
+    let want = limit as usize;
     let Some(worker) = st.sonic() else {
         return Json(serde_json::json!({ "items": [] }));
     };
-    let matches = worker.index().similar_tracks(&id, limit as usize);
-    let items: Vec<serde_json::Value> = matches
+    let seed = st.catalog.track(&id);
+    let seed_album_id = seed.as_ref().map(|t| t.album_id.as_str()).unwrap_or("");
+    let seed_artist = seed
+        .as_ref()
+        .map(|t| normalized_artist_key(&t.artist, &t.album_artist))
+        .unwrap_or_default();
+
+    let oversample = (want.saturating_mul(15)).max(150);
+    let matches = worker.index().similar_tracks(&id, oversample);
+    let candidates: Vec<(crate::library::Track, f32)> = matches
         .into_iter()
         .filter_map(|(tid, score)| {
             let track = st.catalog.track(&tid)?;
-            Some(serde_json::json!({
+            // Hard rule: never recommend another track from the exact same album.
+            if !seed_album_id.is_empty() && track.album_id == seed_album_id {
+                return None;
+            }
+            Some((track, score))
+        })
+        .collect();
+
+    let selected = diversify_sonic_tracks(candidates, &seed_artist, want);
+    let items: Vec<serde_json::Value> = selected
+        .into_iter()
+        .map(|(track, score)| {
+            serde_json::json!({
                 "track": track,
                 "score": score,
-            }))
+            })
         })
         .collect();
     Json(serde_json::json!({ "items": items }))
+}
+
+fn normalized_artist_key(artist: &str, album_artist: &str) -> String {
+    let raw = if !artist.trim().is_empty() {
+        artist
+    } else {
+        album_artist
+    };
+    raw.trim().to_lowercase()
+}
+
+/// Greedy diversity re-ranking for sonic track matches using soft penalties:
+/// - Seed artist (different album) receives a `-0.12` penalty so other artists
+///   surface first while still allowing strong same-artist matches.
+/// - Each repeated artist already selected receives an additional `-0.10` per
+///   prior pick, gracefully scaling across both tiny and huge libraries.
+///
+/// Returns tracks with their honest raw cosine similarity scores preserved.
+fn diversify_sonic_tracks(
+    mut candidates: Vec<(crate::library::Track, f32)>,
+    seed_artist: &str,
+    limit: usize,
+) -> Vec<(crate::library::Track, f32)> {
+    const SEED_ARTIST_PENALTY: f32 = 0.12;
+    const REPEAT_ARTIST_PENALTY: f32 = 0.10;
+
+    let mut out = Vec::with_capacity(limit.min(candidates.len()));
+    let mut artist_counts: HashMap<String, usize> = HashMap::new();
+
+    while out.len() < limit && !candidates.is_empty() {
+        let mut best_idx = 0usize;
+        let mut best_rank = f32::NEG_INFINITY;
+
+        for (idx, (track, raw_score)) in candidates.iter().enumerate() {
+            let key = normalized_artist_key(&track.artist, &track.album_artist);
+            let mut rank = *raw_score;
+            if !seed_artist.is_empty() && key == seed_artist {
+                rank -= SEED_ARTIST_PENALTY;
+            }
+            if !key.is_empty() {
+                let prior = artist_counts.get(&key).copied().unwrap_or(0);
+                rank -= (prior as f32) * REPEAT_ARTIST_PENALTY;
+            }
+            if rank > best_rank {
+                best_rank = rank;
+                best_idx = idx;
+            }
+        }
+
+        let (track, raw_score) = candidates.swap_remove(best_idx);
+        let key = normalized_artist_key(&track.artist, &track.album_artist);
+        if !key.is_empty() {
+            *artist_counts.entry(key).or_insert(0) += 1;
+        }
+        out.push((track, raw_score));
+    }
+
+    out
 }
 
 pub async fn album_similar_sonic(
@@ -1338,4 +1417,34 @@ pub async fn similar_artists(
         Err(e) => return Err(e.into()),
     };
     Ok(Json(serde_json::json!({ "items": items })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(id: &str, artist: &str) -> crate::library::Track {
+        crate::library::Track {
+            id: id.into(),
+            artist: artist.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn diversify_sonic_tracks_penalizes_seed_and_repeat_artists_while_preserving_raw_scores() {
+        let candidates = vec![
+            (track("s1", "Andy Shauf"), 0.90),
+            (track("a1", "Elliott Smith"), 0.85),
+            (track("a2", "Elliott Smith"), 0.84),
+            (track("b1", "Kevin Morby"), 0.82),
+        ];
+
+        let ranked = diversify_sonic_tracks(candidates, "andy shauf", 4);
+        let ids: Vec<&str> = ranked.iter().map(|(t, _)| t.id.as_str()).collect();
+        // Elliott Smith (0.85) > Kevin Morby (0.82) > Andy Shauf (0.90 - 0.12 = 0.78) > Elliott Smith #2 (0.84 - 0.10 = 0.74)
+        assert_eq!(ids, vec!["a1", "b1", "s1", "a2"]);
+        // Raw cosine similarity scores are preserved verbatim.
+        assert!((ranked[2].1 - 0.90).abs() < 1e-6);
+    }
 }

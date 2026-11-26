@@ -612,14 +612,12 @@ async fn enrichment_endpoints_report_status_and_trigger_worker() {
     assert_eq!(run_resp2.status(), StatusCode::ACCEPTED);
 }
 
-#[tokio::test]
-async fn sonic_endpoints_report_status_enable_and_query_similar_tracks() {
+fn seed_sonic_test_catalog(cat: &Catalog) {
     use crate::library::{
         Album, SOURCE_LOCAL, SOURCE_TYPE_LOCAL, Track, TrackSonicHeadsWrite, TrackSonicWrite,
     };
-    use crate::sonic::{EMBEDDING_DIM, MODEL_VERSION, SonicWorker, quantize_uint8};
+    use crate::sonic::{EMBEDDING_DIM, MODEL_VERSION, quantize_uint8};
 
-    let cat = Catalog::new_in_memory(vec![]);
     let alb = Album {
         id: "local:a1".into(),
         source: SOURCE_LOCAL.into(),
@@ -630,24 +628,32 @@ async fn sonic_endpoints_report_status_enable_and_query_similar_tracks() {
         available: true,
         ..Default::default()
     };
-    let mk_track = |id: &str, title: &str, path: &str| Track {
+    let mk_track = |id: &str, album_id: &str, artist: &str, title: &str| Track {
         id: id.into(),
-        album_id: "local:a1".into(),
+        album_id: album_id.into(),
         source: SOURCE_LOCAL.into(),
         source_type: SOURCE_TYPE_LOCAL.into(),
         provider: SOURCE_LOCAL.into(),
         title: title.into(),
-        artist: "Test Artist".into(),
+        artist: artist.into(),
         album: "Test Album".into(),
-        file_path: path.into(),
+        file_path: format!("/music/{id}.flac"),
         available: true,
         ..Default::default()
     };
     let tracks = [
-        mk_track("local:t1", "Track One", "/music/t1.flac"),
-        mk_track("local:t2", "Track Two", "/music/t2.flac"),
+        mk_track("local:t1", "local:a1", "Test Artist", "Track One"),
+        mk_track("local:t2", "local:a1", "Test Artist", "Track Two"),
     ];
     cat.store().upsert_album_with_tracks(&alb, &tracks).unwrap();
+    let alb2 = Album {
+        id: "local:a2".into(),
+        title: "Other Album".into(),
+        artist: "Other Artist".into(),
+        ..alb.clone()
+    };
+    let t3 = mk_track("local:t3", "local:a2", "Other Artist", "Track Three");
+    cat.store().upsert_album_with_tracks(&alb2, &[t3]).unwrap();
 
     let mut e1 = vec![0.0f32; EMBEDDING_DIM];
     e1[0] = 1.0;
@@ -656,7 +662,8 @@ async fn sonic_endpoints_report_status_enable_and_query_similar_tracks() {
     e2[1] = 0.2;
     let q1 = quantize_uint8(&e1);
     let q2 = quantize_uint8(&e2);
-    for (tid, q) in [("local:t1", q1), ("local:t2", q2)] {
+    let q3 = quantize_uint8(&e2);
+    for (tid, q) in [("local:t1", q1), ("local:t2", q2), ("local:t3", q3)] {
         cat.save_track_sonic(&TrackSonicWrite {
             track_id: tid.into(),
             model_version: MODEL_VERSION.into(),
@@ -673,6 +680,14 @@ async fn sonic_endpoints_report_status_enable_and_query_similar_tracks() {
         })
         .unwrap();
     }
+}
+
+#[tokio::test]
+async fn sonic_endpoints_report_status_enable_and_query_similar_tracks() {
+    use crate::sonic::SonicWorker;
+
+    let cat = Catalog::new_in_memory(vec![]);
+    seed_sonic_test_catalog(&cat);
 
     let mgr = QueueManager::new(Arc::clone(&cat), None, 4320, StreamMode::Relay);
     let state = AppState::new(Arc::clone(&cat), None, mgr, None, String::new());
@@ -687,8 +702,8 @@ async fn sonic_endpoints_report_status_enable_and_query_similar_tracks() {
 
     let st = json_body(send(&app, Method::GET, "/api/v1/library/sonic", "").await).await;
     assert_eq!(st["enabled"], false);
-    assert_eq!(st["indexedTracks"], 2);
-    assert_eq!(st["analyzedTracks"], 2);
+    assert_eq!(st["indexedTracks"], 3);
+    assert_eq!(st["analyzedTracks"], 3);
     assert_eq!(st["pendingTracks"], 0);
 
     // Disabled without ?enable=true returns 409 Conflict.
@@ -705,7 +720,7 @@ async fn sonic_endpoints_report_status_enable_and_query_similar_tracks() {
     .await;
     assert_eq!(run_en.status(), StatusCode::ACCEPTED);
 
-    // Similar tracks query uses RAM index.
+    // Similar tracks query excludes same-album tracks (local:t2) and returns other-album matches.
     let sim = json_body(
         send(
             &app,
@@ -718,7 +733,7 @@ async fn sonic_endpoints_report_status_enable_and_query_similar_tracks() {
     .await;
     let items = sim["items"].as_array().unwrap();
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["track"]["id"], "local:t2");
+    assert_eq!(items[0]["track"]["id"], "local:t3");
     assert!(items[0]["score"].as_f64().unwrap() > 0.9);
 }
 
