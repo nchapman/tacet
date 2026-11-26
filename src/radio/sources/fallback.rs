@@ -86,10 +86,12 @@ pub fn candidates_from_fallback(
         }
     }
 
-    // 4. Broad library fallback so tiny libraries still get a playable station
+    // 4. Broad library fallback (lowest priority) so tiny offline libraries still get a playable station
     if out.len() < limit
         && let Ok((tracks, _)) = catalog.query_tracks(&TrackFilter {
             source_type,
+            sort: "plays".into(),
+            sort_dir: "desc".into(),
             limit: (limit as i32).max(40),
             ..Default::default()
         })
@@ -97,7 +99,7 @@ pub fn candidates_from_fallback(
         for tr in tracks {
             out.push(Candidate {
                 track: tr,
-                score: base * 0.7,
+                score: base * 0.5,
                 source: CandidateSource::LocalFallback,
             });
         }

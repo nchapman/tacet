@@ -3,12 +3,13 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::library::{Album, Track};
+use crate::library::{Album, SOURCE_QOBUZ, SOURCE_TYPE_REMOTE, Track, normalize_isrc};
 
 use super::client::Client;
 use super::types::{
     Artist, DiscoverFeed, DiscoverGenre, DiscoverShelf, DiscoverShelfPage, QAlbum, QArtist,
-    QDiscoverAlbum, QTracksList, QobuzError, Result, convert_discover_albums,
+    QDiscoverAlbum, QDiscoverAudioInfo, QImage, QTracksList, QobuzError, Result,
+    convert_discover_albums, normalize_sample_rate_hz,
 };
 
 const DISCOVER_GENRES_TTL: Duration = Duration::from_secs(24 * 3600);
@@ -396,6 +397,174 @@ impl Client {
             .filter(|qt| qt.id > 0)
             .map(|qt| qt.to_library_track(None))
             .collect())
+    }
+
+    /// Calls Qobuz's dedicated `GET /radio/artist?artist_id=<id>` endpoint (~25 tracks, single request).
+    pub async fn radio_artist(&self, artist_id: i64) -> Result<Vec<Track>> {
+        self.require_auth()?;
+        if artist_id <= 0 {
+            return Err(QobuzError::NotFound);
+        }
+        let aid = artist_id.to_string();
+        self.fetch_radio_endpoint("/radio/artist", &[("artist_id", &aid)])
+            .await
+    }
+
+    /// Calls Qobuz's dedicated `GET /radio/album?album_id=<id>` endpoint (~30 tracks, single request).
+    pub async fn radio_album(&self, album_id: &str) -> Result<Vec<Track>> {
+        self.require_auth()?;
+        let raw_id = album_id
+            .trim()
+            .strip_prefix("qobuz:")
+            .unwrap_or(album_id.trim());
+        if raw_id.is_empty() {
+            return Err(QobuzError::NotFound);
+        }
+        self.fetch_radio_endpoint("/radio/album", &[("album_id", raw_id)])
+            .await
+    }
+
+    /// Calls Qobuz's dedicated `GET /radio/track?track_id=<id>` endpoint (~25-30 tracks, single request).
+    pub async fn radio_track(&self, track_id: i64) -> Result<Vec<Track>> {
+        self.require_auth()?;
+        if track_id <= 0 {
+            return Err(QobuzError::NotFound);
+        }
+        let tid = track_id.to_string();
+        self.fetch_radio_endpoint("/radio/track", &[("track_id", &tid)])
+            .await
+    }
+
+    async fn fetch_radio_endpoint(
+        &self,
+        path: &str,
+        params: &[(&str, &str)],
+    ) -> Result<Vec<Track>> {
+        #[derive(Deserialize)]
+        struct Wrap {
+            #[serde(default)]
+            items: Vec<QRadioTrack>,
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            #[serde(default)]
+            tracks: Option<Wrap>,
+        }
+        let resp: Resp = self
+            .get_cached_json(path, params, DISCOVER_FEED_TTL)
+            .await?;
+        let items = resp.tracks.map(|w| w.items).unwrap_or_default();
+        Ok(items
+            .into_iter()
+            .filter(|t| t.id > 0)
+            .map(QRadioTrack::into_library_track)
+            .collect())
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct QRadioArtist {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    roles: Vec<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct QRadioIdName {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Default, Deserialize)]
+struct QRadioAlbum {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    image: QImage,
+    #[serde(default)]
+    genre: QRadioIdName,
+    #[serde(default)]
+    label: QRadioIdName,
+}
+
+#[derive(Default, Deserialize)]
+struct QRadioTrack {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    isrc: String,
+    #[serde(default)]
+    duration: i32,
+    #[serde(default)]
+    parental_warning: bool,
+    #[serde(default)]
+    audio_info: QDiscoverAudioInfo,
+    #[serde(default)]
+    artists: Vec<QRadioArtist>,
+    #[serde(default)]
+    album: QRadioAlbum,
+}
+
+impl QRadioTrack {
+    fn into_library_track(self) -> Track {
+        let mut title = self.title.trim().to_string();
+        let ver = self.version.trim();
+        if !ver.is_empty() && !title.to_lowercase().contains(&ver.to_lowercase()) {
+            title = format!("{title} ({ver})");
+        }
+        let primary = self
+            .artists
+            .iter()
+            .find(|a| a.roles.iter().any(|r| r == "main-artist"))
+            .or_else(|| self.artists.first());
+        let artist_name = primary
+            .map(|a| a.name.trim().to_string())
+            .unwrap_or_default();
+        let qobuz_artist_id = primary.map_or(0, |a| a.id);
+        let album_id = if self.album.id.is_empty() {
+            String::new()
+        } else {
+            format!("qobuz:{}", self.album.id)
+        };
+        Track {
+            id: format!("qobuz:{}", self.id),
+            source: SOURCE_QOBUZ.into(),
+            source_type: SOURCE_TYPE_REMOTE.into(),
+            provider: SOURCE_QOBUZ.into(),
+            external_id: self.id.to_string(),
+            qobuz_track_id: self.id,
+            qobuz_artist_id,
+            qobuz_genre_id: self.album.genre.id,
+            qobuz_label_id: self.album.label.id,
+            album_id,
+            title,
+            artist: artist_name.clone(),
+            album_artist: artist_name,
+            album: self.album.title.trim().to_string(),
+            genre: self.album.genre.name.trim().to_string(),
+            duration_sec: self.duration,
+            artwork_url: self.album.image.best(),
+            channels: 2,
+            mime: "audio/flac".into(),
+            ext: ".flac".into(),
+            bit_depth: self.audio_info.maximum_bit_depth,
+            sample_rate: normalize_sample_rate_hz(self.audio_info.maximum_sampling_rate),
+            explicit: self.parental_warning,
+            isrc: normalize_isrc(&self.isrc),
+            available: true,
+            ..Default::default()
+        }
     }
 }
 
