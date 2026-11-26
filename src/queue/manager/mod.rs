@@ -930,6 +930,15 @@ fn same_physical_device(a: &RendererInfo, b: &RendererInfo) -> bool {
     if !a.location.is_empty() && a.location == b.location {
         return true;
     }
+    if !a.location.is_empty()
+        && !b.location.is_empty()
+        && let (Ok(ua), Ok(ub)) = (url::Url::parse(&a.location), url::Url::parse(&b.location))
+        && ua.scheme() == ub.scheme()
+        && ua.host() == ub.host()
+        && ua.port_or_known_default() == ub.port_or_known_default()
+    {
+        return true;
+    }
     if !a.host.is_empty() && a.host == b.host {
         let ua = normalized_device_udn(&a.id);
         let ub = normalized_device_udn(&b.id);
