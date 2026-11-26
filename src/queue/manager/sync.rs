@@ -6,9 +6,11 @@ use chrono::Utc;
 use crate::library::Track;
 use crate::upnp::{Controller, DeviceEvent};
 
-use super::listen::{FlushReason, flush_active_listen, sync_active_listen};
+use super::listen::{
+    FlushReason, flush_active_listen, sync_active_listen, tick_active_listen_if_playing,
+};
 use super::{Manager, Zone, ZoneInner, compute_next_index};
-use crate::queue::types::{AudioQuality, PlaybackState, VolumeEvent};
+use crate::queue::types::{AudioQuality, PlaybackState, RepeatMode, VolumeEvent};
 
 struct PreloadTarget {
     next_index: i32,
@@ -34,28 +36,41 @@ impl Manager {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             let ctrl = Arc::clone(&zi.ctrl);
             let prev_state = PlaybackState::normalize(&zi.status.state);
+            let foreign = !ev.track_uri.is_empty() && is_foreign_track_uri(&zi, &ev.track_uri);
             let (vol_changed, mut pb_changed) = apply_event_fields(&mut zi, &ev);
             let new_state = PlaybackState::normalize(&zi.status.state);
+
+            if foreign {
+                recorded_event =
+                    flush_active_listen(&mut zi, &ev.renderer_id, FlushReason::Interrupted);
+            }
 
             let uri = zi.status.track_uri.clone();
             let (transitioned, gapless_ev) =
                 detect_gapless_transition(&mut zi, &ev.renderer_id, &uri);
             if transitioned {
                 pb_changed = true;
-                recorded_event = gapless_ev;
+                if recorded_event.is_none() {
+                    recorded_event = gapless_ev;
+                }
             }
 
             // Ignore GENA initial snapshot (seq == 0 on AVTransport) to avoid spurious advances.
             let is_gena_initial = ev.service == "AVTransport" && ev.seq == 0;
-            if !is_gena_initial
+            let natural_stop = !foreign
+                && !is_gena_initial
                 && !zi.user_stopped
                 && zi.loaded_at.elapsed() > Duration::from_secs(2)
                 && prev_state == PlaybackState::Playing
                 && new_state == PlaybackState::Stopped
-                && ctrl.as_queue_controller().is_none()
-                && zi.last_command_at.elapsed() > Duration::from_secs(3)
-            {
-                need_advance = true;
+                && zi.last_command_at.elapsed() > Duration::from_secs(3);
+            if natural_stop {
+                if ctrl.as_queue_controller().is_none() {
+                    need_advance = true;
+                } else if recorded_event.is_none() {
+                    recorded_event =
+                        flush_active_listen(&mut zi, &ev.renderer_id, FlushReason::NaturalEnd);
+                }
             }
             if let Some(ev_rec) = sync_active_listen(&mut zi, &ev.renderer_id, new_state)
                 && recorded_event.is_none()
@@ -185,42 +200,50 @@ impl Manager {
             let g = self.zones.read().unwrap_or_else(|e| e.into_inner());
             g.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
         };
+        for (_, z) in &snapshot {
+            let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            tick_active_listen_if_playing(&mut zi);
+        }
         let futs = snapshot
             .into_iter()
             .map(|(zone_id, z)| async move { self.poll_one_zone(zone_id, z).await });
         futures_util::future::join_all(futs).await;
     }
 
+    fn poll_controller_if_due(&self, zone_id: &str, z: &Zone) -> Option<Arc<dyn Controller>> {
+        let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let info = zi.ctrl.info();
+        if info.kind == "player" || zi.ctrl.push_connected() {
+            return None;
+        }
+        if info.kind == "cast" && zi.status.state == "STOPPED" {
+            return None;
+        }
+        let has_gena = self
+            .gena
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|g| g.is_active(zone_id));
+        let near_end = zi.status.state == "PLAYING"
+            && zi.status.duration > Duration::ZERO
+            && zi.status.duration.saturating_sub(zi.status.position) <= Duration::from_secs(15);
+        let cadence = match zi.status.state.as_str() {
+            "PLAYING" if near_end => Duration::from_secs(2),
+            "PLAYING" => Duration::from_secs(if has_gena { 15 } else { 3 }),
+            "TRANSITIONING" => Duration::from_secs(if has_gena { 10 } else { 2 }),
+            _ => Duration::from_secs(if has_gena { 60 } else { 10 }),
+        };
+        if zi.last_poll.elapsed() < cadence {
+            return None;
+        }
+        zi.last_poll = Instant::now();
+        Some(Arc::clone(&zi.ctrl))
+    }
+
     async fn poll_one_zone(&self, zone_id: String, z: Arc<Zone>) {
-        let ctrl = {
-            let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-            let info = zi.ctrl.info();
-            if info.kind == "player" || zi.ctrl.push_connected() {
-                return;
-            }
-            if info.kind == "cast" && zi.status.state == "STOPPED" {
-                return;
-            }
-            let has_gena = self
-                .gena
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .is_some_and(|g| g.is_active(&zone_id));
-            let near_end = zi.status.state == "PLAYING"
-                && zi.status.duration > Duration::ZERO
-                && zi.status.duration.saturating_sub(zi.status.position) <= Duration::from_secs(15);
-            let cadence = match zi.status.state.as_str() {
-                "PLAYING" if near_end => Duration::from_secs(2),
-                "PLAYING" => Duration::from_secs(if has_gena { 15 } else { 3 }),
-                "TRANSITIONING" => Duration::from_secs(if has_gena { 10 } else { 2 }),
-                _ => Duration::from_secs(if has_gena { 60 } else { 10 }),
-            };
-            if zi.last_poll.elapsed() < cadence {
-                return;
-            }
-            zi.last_poll = Instant::now();
-            Arc::clone(&zi.ctrl)
+        let Some(ctrl) = self.poll_controller_if_due(&zone_id, &z) else {
+            return;
         };
         let Ok(st) = ctrl.status().await else {
             return;
@@ -235,10 +258,13 @@ impl Manager {
         let (vol_ev, pb_ev) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             let prev_state = PlaybackState::normalize(&zi.status.state);
+            let prev_pos = zi.status.position;
+            let prev_dur = zi.status.duration;
+            let foreign = !st.track_uri.is_empty() && is_foreign_track_uri(&zi, &st.track_uri);
             let (vol_changed, mut pb_changed) = apply_poll_status(&mut zi, &st);
             let new_state = PlaybackState::normalize(&zi.status.state);
 
-            if !st.track_uri.is_empty() && is_foreign_track_uri(&zi, &st.track_uri) {
+            if foreign {
                 recorded_event = flush_active_listen(&mut zi, &zone_id, FlushReason::Interrupted);
             }
 
@@ -250,14 +276,36 @@ impl Manager {
                     recorded_event = gapless_ev;
                 }
             }
-            if !zi.user_stopped
+
+            // Detect native RepeatMode::One loop wraparound on Cast/LinkPlay so each repeat
+            // emits its own play event instead of accumulating into one giant listen.
+            if !foreign
+                && recorded_event.is_none()
+                && ctrl.as_queue_controller().is_some()
+                && zi.repeat == RepeatMode::One
+                && new_state == PlaybackState::Playing
+                && st.has_position
+                && !prev_dur.is_zero()
+                && prev_pos >= prev_dur / 2
+                && st.position < Duration::from_secs(10)
+                && zi.last_command_at.elapsed() > Duration::from_secs(3)
+            {
+                recorded_event = flush_active_listen(&mut zi, &zone_id, FlushReason::NaturalEnd);
+            }
+
+            let natural_stop = !foreign
+                && !zi.user_stopped
                 && zi.loaded_at.elapsed() > Duration::from_secs(2)
                 && prev_state == PlaybackState::Playing
                 && new_state == PlaybackState::Stopped
-                && ctrl.as_queue_controller().is_none()
-                && zi.last_command_at.elapsed() > Duration::from_secs(3)
-            {
-                need_advance = true;
+                && zi.last_command_at.elapsed() > Duration::from_secs(3);
+            if natural_stop {
+                if ctrl.as_queue_controller().is_none() {
+                    need_advance = true;
+                } else if recorded_event.is_none() {
+                    recorded_event =
+                        flush_active_listen(&mut zi, &zone_id, FlushReason::NaturalEnd);
+                }
             }
             if let Some(ev_rec) = sync_active_listen(&mut zi, &zone_id, new_state)
                 && recorded_event.is_none()

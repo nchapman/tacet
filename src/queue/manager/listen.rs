@@ -27,6 +27,7 @@ pub(super) struct ActiveListen {
     pub source_context: PlayContext,
     pub started_at: DateTime<Utc>,
     pub listened_ms: u64,
+    pub duration_sec: i32,
     pub playing_since: Option<Instant>,
     pub flushed: bool,
 }
@@ -39,12 +40,14 @@ impl ActiveListen {
         now_wall: DateTime<Utc>,
         now_mono: Instant,
     ) -> Self {
+        let duration_sec = track.duration_sec.max(0);
         Self {
             item_id,
             track,
             source_context,
             started_at: now_wall,
             listened_ms: 0,
+            duration_sec,
             playing_since: Some(now_mono),
             flushed: false,
         }
@@ -68,7 +71,6 @@ impl ActiveListen {
         &mut self,
         zone_id: &str,
         reason: FlushReason,
-        duration_hint_sec: i32,
         now_wall: DateTime<Utc>,
         now_mono: Instant,
     ) -> Option<PlayEventRecord> {
@@ -78,11 +80,7 @@ impl ActiveListen {
         self.tick(false, now_mono);
         self.flushed = true;
 
-        let duration_sec = if duration_hint_sec > 0 {
-            duration_hint_sec
-        } else {
-            self.track.duration_sec.max(0)
-        };
+        let duration_sec = self.duration_sec.max(0);
         let listened_sec = (self.listened_ms / 1000) as i32;
         let outcome = classify_outcome(listened_sec, duration_sec, reason)?;
 
@@ -100,10 +98,9 @@ impl ActiveListen {
 }
 
 /// Classifies a finalized listen using ListenBrainz/Last.fm completion thresholds:
-/// - `Completed`: listened >= min(duration / 2, 240s) (min 5s, or min 2s for tracks < 10s),
-///   or natural end with >= 5s listened.
+/// - `Completed`: listened >= min(duration / 2, 240s) (min 5s, or min 2s for tracks < 10s).
 /// - `Skipped`: explicit user skip after >= 2s listened.
-/// - `Partial`: non-skip interruption after >= 5s listened.
+/// - `Partial`: non-skip interruption or short natural end after >= 5s listened.
 /// - `None`: accidental bounce (< 2s) or unplayed load.
 pub(super) fn classify_outcome(
     listened_sec: i32,
@@ -118,7 +115,7 @@ pub(super) fn classify_outcome(
         30
     };
 
-    if listened_sec >= threshold || (reason == FlushReason::NaturalEnd && listened_sec >= 5) {
+    if listened_sec >= threshold {
         Some(PlayOutcome::Completed)
     } else if reason == FlushReason::UserSkip && listened_sec >= 2 {
         Some(PlayOutcome::Skipped)
@@ -135,9 +132,18 @@ pub(super) fn flush_active_listen(
     zone_id: &str,
     reason: FlushReason,
 ) -> Option<PlayEventRecord> {
-    let dur_hint = zi.status.duration.as_secs() as i32;
     let mut active = zi.active_listen.take()?;
-    active.finalize(zone_id, reason, dur_hint, Utc::now(), Instant::now())
+    active.finalize(zone_id, reason, Utc::now(), Instant::now())
+}
+
+/// Keeps `active_listen` ticking smoothly on the 2-second poll timer for all zones (including
+/// GENA-enabled UPnP renderers with 15s poll cadence and backgrounded browser players).
+pub(super) fn tick_active_listen_if_playing(zi: &mut ZoneInner) {
+    if PlaybackState::normalize(&zi.status.state) == PlaybackState::Playing
+        && let Some(active) = zi.active_listen.as_mut()
+    {
+        active.tick(true, Instant::now());
+    }
 }
 
 /// Synchronizes `zi.active_listen` with the current queue item and transport state.
@@ -167,10 +173,17 @@ pub(super) fn sync_active_listen(
         )
     };
 
-    // If we're already tracking this exact queue item, just tick the accumulator.
+    // If we're already tracking this exact queue item, tick the accumulator and
+    // lazily learn duration from the renderer if track metadata lacked it.
     if let Some(active) = zi.active_listen.as_mut()
         && active.item_id == item_id
     {
+        if active.duration_sec <= 0 {
+            let status_dur = zi.status.duration.as_secs() as i32;
+            if status_dur > 0 {
+                active.duration_sec = status_dur;
+            }
+        }
         active.tick(is_playing, now_mono);
         return None;
     }
@@ -184,9 +197,14 @@ pub(super) fn sync_active_listen(
         } else {
             PlayContext::Manual
         });
-        zi.active_listen = Some(ActiveListen::start(
-            item_id, item_track, ctx, now_wall, now_mono,
-        ));
+        let mut active = ActiveListen::start(item_id, item_track, ctx, now_wall, now_mono);
+        if active.duration_sec <= 0 {
+            let status_dur = zi.status.duration.as_secs() as i32;
+            if status_dur > 0 {
+                active.duration_sec = status_dur;
+            }
+        }
+        zi.active_listen = Some(active);
     }
 
     flushed
@@ -240,10 +258,10 @@ mod tests {
             Some(PlayOutcome::Completed)
         );
 
-        // Natural end with >= 5s counts as completed (e.g. shorter actual file)
+        // Short natural end (e.g. seeked to last 10s or external Cast skip) must NOT count as Completed
         assert_eq!(
             classify_outcome(10, 180, FlushReason::NaturalEnd),
-            Some(PlayOutcome::Completed)
+            Some(PlayOutcome::Partial)
         );
         assert_eq!(classify_outcome(3, 180, FlushReason::NaturalEnd), None);
     }
@@ -275,13 +293,13 @@ mod tests {
             .finalize(
                 "zone-1",
                 FlushReason::UserSkip,
-                200,
                 now_wall + chrono::Duration::seconds(92),
                 t0 + Duration::from_secs(92),
             )
             .expect("should emit skipped event");
         assert_eq!(rec.outcome, PlayOutcome::Skipped);
         assert_eq!(rec.listened_sec, 17);
+        assert_eq!(rec.duration_sec, 200);
         assert_eq!(rec.source_context, PlayContext::Radio);
         assert_eq!(rec.zone_id, "zone-1");
 
@@ -291,7 +309,6 @@ mod tests {
                 .finalize(
                     "zone-1",
                     FlushReason::NaturalEnd,
-                    200,
                     now_wall + chrono::Duration::seconds(95),
                     t0 + Duration::from_secs(95),
                 )

@@ -10,7 +10,7 @@ pub use probe::{AudioProps, probe_audio};
 pub use scanner::Catalog;
 pub use store::{
     AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, ListeningStats, PlayContext,
-    PlayEventRecord, PlayHistoryEntry, PlayOutcome, SonicStats, SonicTagEntry,
+    PlayEventRecord, PlayHistoryEntry, PlayOutcome, RecentCooldowns, SonicStats, SonicTagEntry,
     StoredSonicEmbedding, TopArtistEntry, TrackEnrichmentPatch, TrackFeedback,
     TrackSonicHeadsWrite, TrackSonicWrite,
 };
@@ -736,6 +736,18 @@ mod tests {
                 .unwrap()
                 .contains_key("qobuz artist")
         );
+
+        let cooldowns = cat.recent_cooldowns(since).unwrap();
+        let alt_local = Track {
+            id: "local:other".into(),
+            isrc: "USABC2400001".into(),
+            ..Default::default()
+        };
+        assert!(
+            cooldowns.contains_track(&alt_local),
+            "cross-provider ISRC match should trigger cooldown"
+        );
+        assert!(cooldowns.qobuz_track_ids.contains(&555));
 
         let fb = cat.track_feedback_since(since).unwrap();
         let t1_fb = fb.get("local:t1").unwrap();

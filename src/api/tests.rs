@@ -774,7 +774,7 @@ async fn history_and_stats_endpoints_filter_and_validate() {
         send(
             &app,
             Method::GET,
-            "/api/v1/library/history?outcome=skipped&zone_id=studio",
+            "/api/v1/library/history?outcome=skipped&zoneId=studio",
             "",
         )
         .await,

@@ -20,8 +20,8 @@ use super::types::{LibraryError, ProviderSyncStatus, Result, Track};
 
 pub use enrichment::{AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, TrackEnrichmentPatch};
 pub use history::{
-    ListeningStats, PlayContext, PlayEventRecord, PlayHistoryEntry, PlayOutcome, TopArtistEntry,
-    TrackFeedback,
+    ListeningStats, PlayContext, PlayEventRecord, PlayHistoryEntry, PlayOutcome, RecentCooldowns,
+    TopArtistEntry, TrackFeedback,
 };
 pub use query::build_fts_query;
 pub use sonic::{

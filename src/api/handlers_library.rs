@@ -352,7 +352,8 @@ pub async fn library_history(
         None => None,
     };
     let zone_id = qv
-        .get("zone_id")
+        .get("zoneId")
+        .or_else(|| qv.get("zone_id"))
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
     let (items, total) = st.catalog.play_history(limit, offset, outcome, zone_id)?;

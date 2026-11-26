@@ -36,7 +36,7 @@ impl Manager {
 
         let (ctrl, q_ev, flushed) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-            let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::UserSkip);
+            let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::Interrupted);
             zi.original_queue = items.clone();
             zi.queue = items;
             zi.current_index = start;
@@ -395,7 +395,7 @@ impl Manager {
         let _op = z.op_mu.lock().await;
         let (ctrl, prev_len, q_ev, pb_ev, flushed) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-            let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::UserSkip);
+            let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::Interrupted);
             let prev_len = zi.queue.len();
             zi.queue.clear();
             zi.original_queue.clear();
@@ -528,10 +528,14 @@ impl Manager {
     }
 
     pub(super) fn record_play_event_async(&self, event: PlayEventRecord) {
-        let cat = Arc::clone(&self.catalog);
-        tokio::task::spawn_blocking(move || {
-            cat.record_play_event(&event);
-        });
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let cat = Arc::clone(&self.catalog);
+            tokio::task::spawn_blocking(move || {
+                cat.record_play_event(&event);
+            });
+        } else {
+            self.catalog.record_play_event(&event);
+        }
     }
 
     pub async fn play(&self, zone_id: &str) -> Result<ZoneSnapshot> {
@@ -623,7 +627,7 @@ impl Manager {
             .map_err(|e| QueueError::Renderer(e.to_string()))?;
         let (pb, flushed) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
-            let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::UserSkip);
+            let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::Interrupted);
             zi.user_stopped = true;
             zi.status.state = "STOPPED".into();
             zi.status.position = Duration::ZERO;
@@ -700,7 +704,7 @@ impl Manager {
                 } else {
                     0
                 };
-                let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::UserSkip);
+                let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::Interrupted);
                 zi.current_index = prev;
                 zi.next_preloaded = false;
                 zi.next_uri.clear();

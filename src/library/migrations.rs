@@ -268,30 +268,34 @@ END;
         name: "listening_history_v2",
         sql: r#"
 CREATE TABLE play_events_v4 (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    track_id       TEXT NOT NULL,
-    album_id       TEXT NOT NULL DEFAULT '',
-    provider       TEXT NOT NULL DEFAULT '',
-    title          TEXT NOT NULL DEFAULT '',
-    artist         TEXT NOT NULL DEFAULT '',
-    album_artist   TEXT NOT NULL DEFAULT '',
-    album          TEXT NOT NULL DEFAULT '',
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id        TEXT NOT NULL,
+    album_id        TEXT NOT NULL DEFAULT '',
+    provider        TEXT NOT NULL DEFAULT '',
+    title           TEXT NOT NULL DEFAULT '',
+    artist          TEXT NOT NULL DEFAULT '',
+    album_artist    TEXT NOT NULL DEFAULT '',
+    album           TEXT NOT NULL DEFAULT '',
+    genre           TEXT NOT NULL DEFAULT '',
     isrc            TEXT NOT NULL DEFAULT '',
     mb_recording_id TEXT NOT NULL DEFAULT '',
+    mb_artist_id    TEXT NOT NULL DEFAULT '',
     qobuz_track_id  INTEGER,
-    artwork_url    TEXT NOT NULL DEFAULT '',
-    zone_id        TEXT NOT NULL DEFAULT '',
-    source_context TEXT NOT NULL DEFAULT 'manual',
-    started_at     INTEGER NOT NULL,
-    played_at      INTEGER NOT NULL,
-    listened_sec   INTEGER NOT NULL DEFAULT 0,
-    duration_sec   INTEGER NOT NULL DEFAULT 0,
-    outcome        TEXT NOT NULL DEFAULT 'completed'
+    qobuz_artist_id INTEGER,
+    artwork_url     TEXT NOT NULL DEFAULT '',
+    zone_id         TEXT NOT NULL DEFAULT '',
+    source_context  TEXT NOT NULL DEFAULT 'manual',
+    started_at      INTEGER NOT NULL,
+    played_at       INTEGER NOT NULL,
+    listened_sec    INTEGER NOT NULL DEFAULT 0,
+    duration_sec    INTEGER NOT NULL DEFAULT 0,
+    outcome         TEXT NOT NULL DEFAULT 'completed'
 );
 
 INSERT INTO play_events_v4 (
     id, track_id, album_id, provider,
-    title, artist, album_artist, album, isrc, mb_recording_id, qobuz_track_id, artwork_url,
+    title, artist, album_artist, album, genre, isrc,
+    mb_recording_id, mb_artist_id, qobuz_track_id, qobuz_artist_id, artwork_url,
     zone_id, source_context, started_at, played_at, listened_sec, duration_sec, outcome
 )
 SELECT
@@ -302,11 +306,14 @@ SELECT
     COALESCE(t.title, ''),
     COALESCE(t.artist, ''),
     COALESCE(t.album_artist, ''),
-    COALESCE(t.album, a.title, ''),
+    COALESCE(NULLIF(t.album, ''), a.title, ''),
+    COALESCE(NULLIF(t.genre, ''), a.genre, ''),
     COALESCE(t.isrc, ''),
     COALESCE(t.mb_recording_id, ''),
-    t.qobuz_track_id,
-    COALESCE(a.artwork_url, ''),
+    COALESCE(NULLIF(t.mb_artist_id, ''), a.mb_artist_id, ''),
+    NULLIF(t.qobuz_track_id, 0),
+    NULLIF(COALESCE(NULLIF(t.qobuz_artist_id, 0), a.qobuz_artist_id, 0), 0),
+    COALESCE(NULLIF(t.artwork_url, ''), a.artwork_url, ''),
     '',
     'manual',
     CASE
@@ -326,7 +333,9 @@ DROP TABLE play_events;
 ALTER TABLE play_events_v4 RENAME TO play_events;
 
 CREATE INDEX IF NOT EXISTS idx_play_events_recent
-    ON play_events(played_at DESC, outcome);
+    ON play_events(played_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_play_events_outcome_recent
+    ON play_events(outcome, played_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_play_events_album
     ON play_events(album_id, played_at DESC);
 CREATE INDEX IF NOT EXISTS idx_play_events_track

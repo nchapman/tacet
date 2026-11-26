@@ -12,8 +12,8 @@ use tokio::sync::Notify;
 
 use super::store::{
     AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, LibraryStore, ListeningStats,
-    PlayEventRecord, PlayHistoryEntry, PlayOutcome, SonicStats, StoredSonicEmbedding,
-    TrackFeedback, TrackSonicWrite,
+    PlayEventRecord, PlayHistoryEntry, PlayOutcome, RecentCooldowns, SonicStats,
+    StoredSonicEmbedding, TrackFeedback, TrackSonicWrite,
 };
 use super::types::{
     Album, AlbumFilter, ArtistSummary, FacetFilter, GenreSummary, HeavyRotationAlbum, LibraryError,
@@ -292,6 +292,10 @@ impl Catalog {
 
     pub fn listening_stats(&self, days: i32, top_limit: i32) -> Result<ListeningStats> {
         self.store.listening_stats(days, top_limit)
+    }
+
+    pub fn recent_cooldowns(&self, since_unix: i64) -> Result<RecentCooldowns> {
+        self.store.recent_cooldowns(since_unix)
     }
 
     pub fn recent_played_track_ids(&self, since_unix: i64) -> Result<HashSet<String>> {

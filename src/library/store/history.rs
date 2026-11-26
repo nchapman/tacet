@@ -99,11 +99,17 @@ pub struct PlayHistoryEntry {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub album: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub genre: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub isrc: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub mb_recording_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mb_artist_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qobuz_track_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qobuz_artist_id: Option<i64>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub artwork_url: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -114,6 +120,35 @@ pub struct PlayHistoryEntry {
     pub listened_sec: i32,
     pub duration_sec: i32,
     pub outcome: PlayOutcome,
+}
+
+/// Cross-provider cooldown sets built from recent `play_events`.
+/// Used by Radio & Autoplay to avoid repeating the same recording across local + Qobuz.
+#[derive(Debug, Clone, Default)]
+pub struct RecentCooldowns {
+    pub track_ids: HashSet<String>,
+    pub isrcs: HashSet<String>,
+    pub mb_recording_ids: HashSet<String>,
+    pub qobuz_track_ids: HashSet<i64>,
+    /// Lowercased artist name -> most recent `played_at` unix timestamp.
+    pub artists: HashMap<String, i64>,
+}
+
+impl RecentCooldowns {
+    pub fn contains_track(&self, track: &Track) -> bool {
+        if self.track_ids.contains(&track.id) {
+            return true;
+        }
+        if !track.isrc.is_empty() && self.isrcs.contains(&track.isrc) {
+            return true;
+        }
+        if !track.mb_recording_id.is_empty()
+            && self.mb_recording_ids.contains(&track.mb_recording_id)
+        {
+            return true;
+        }
+        track.qobuz_track_id > 0 && self.qobuz_track_ids.contains(&track.qobuz_track_id)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -149,9 +184,12 @@ struct TrackSnapshot {
     artist: String,
     album_artist: String,
     album: String,
+    genre: String,
     isrc: String,
     mb_recording_id: String,
+    mb_artist_id: String,
     qobuz_track_id: Option<i64>,
+    qobuz_artist_id: Option<i64>,
     artwork_url: String,
     duration_sec: i32,
 }
@@ -167,9 +205,12 @@ fn resolve_track_snapshot(
         artist: track.artist.clone(),
         album_artist: track.album_artist.clone(),
         album: track.album.clone(),
+        genre: track.genre.clone(),
         isrc: track.isrc.clone(),
         mb_recording_id: track.mb_recording_id.clone(),
+        mb_artist_id: track.mb_artist_id.clone(),
         qobuz_track_id: (track.qobuz_track_id > 0).then_some(track.qobuz_track_id),
+        qobuz_artist_id: (track.qobuz_artist_id > 0).then_some(track.qobuz_artist_id),
         artwork_url: track.artwork_url.clone(),
         duration_sec: if duration_override > 0 {
             duration_override
@@ -180,7 +221,8 @@ fn resolve_track_snapshot(
 
     if let Some(db) = tx
         .query_row(
-            "SELECT album_id, title, artist, album_artist, album, isrc, mb_recording_id, qobuz_track_id, duration_sec
+            "SELECT album_id, title, artist, album_artist, album, genre, isrc,
+                    mb_recording_id, mb_artist_id, qobuz_track_id, qobuz_artist_id, duration_sec
              FROM tracks WHERE id = ?1",
             params![track.id],
             |r| {
@@ -190,11 +232,14 @@ fn resolve_track_snapshot(
                     artist: r.get(2)?,
                     album_artist: r.get(3)?,
                     album: r.get(4)?,
-                    isrc: r.get(5)?,
-                    mb_recording_id: r.get(6)?,
-                    qobuz_track_id: r.get::<_, Option<i64>>(7)?.filter(|&v| v > 0),
+                    genre: r.get(5)?,
+                    isrc: r.get(6)?,
+                    mb_recording_id: r.get(7)?,
+                    mb_artist_id: r.get(8)?,
+                    qobuz_track_id: r.get::<_, Option<i64>>(9)?.filter(|&v| v > 0),
+                    qobuz_artist_id: r.get::<_, Option<i64>>(10)?.filter(|&v| v > 0),
                     artwork_url: String::new(),
-                    duration_sec: r.get(8)?,
+                    duration_sec: r.get(11)?,
                 })
             },
         )
@@ -205,9 +250,12 @@ fn resolve_track_snapshot(
         snap.artist = non_empty_or(&snap.artist, &db.artist);
         snap.album_artist = non_empty_or(&snap.album_artist, &db.album_artist);
         snap.album = non_empty_or(&snap.album, &db.album);
+        snap.genre = non_empty_or(&snap.genre, &db.genre);
         snap.isrc = non_empty_or(&snap.isrc, &db.isrc);
         snap.mb_recording_id = non_empty_or(&snap.mb_recording_id, &db.mb_recording_id);
+        snap.mb_artist_id = non_empty_or(&snap.mb_artist_id, &db.mb_artist_id);
         snap.qobuz_track_id = snap.qobuz_track_id.or(db.qobuz_track_id);
+        snap.qobuz_artist_id = snap.qobuz_artist_id.or(db.qobuz_artist_id);
         if snap.duration_sec <= 0 {
             snap.duration_sec = db.duration_sec.max(0);
         }
@@ -251,7 +299,10 @@ impl LibraryStore {
 
         if event.outcome == PlayOutcome::Completed {
             tx.execute(
-                "UPDATE tracks SET play_count = play_count + 1, last_played_at = ?1 WHERE id = ?2",
+                "UPDATE tracks
+                 SET play_count = play_count + 1,
+                     last_played_at = MAX(last_played_at, ?1)
+                 WHERE id = ?2",
                 params![played_unix, track.id],
             )?;
         }
@@ -259,12 +310,14 @@ impl LibraryStore {
         tx.execute(
             "INSERT INTO play_events (
                 track_id, album_id, provider,
-                title, artist, album_artist, album, isrc, mb_recording_id, qobuz_track_id, artwork_url,
+                title, artist, album_artist, album, genre, isrc,
+                mb_recording_id, mb_artist_id, qobuz_track_id, qobuz_artist_id, artwork_url,
                 zone_id, source_context, started_at, played_at, listened_sec, duration_sec, outcome
              ) VALUES (
                 ?1, ?2, ?3,
-                ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                ?12, ?13, ?14, ?15, ?16, ?17, ?18
+                ?4, ?5, ?6, ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13, ?14,
+                ?15, ?16, ?17, ?18, ?19, ?20, ?21
              )",
             params![
                 track.id,
@@ -274,9 +327,12 @@ impl LibraryStore {
                 snap.artist,
                 snap.album_artist,
                 snap.album,
+                snap.genre,
                 snap.isrc,
                 snap.mb_recording_id,
+                snap.mb_artist_id,
                 snap.qobuz_track_id,
+                snap.qobuz_artist_id,
                 snap.artwork_url,
                 event.zone_id,
                 event.source_context.as_str(),
@@ -413,36 +469,55 @@ impl LibraryStore {
         if offset < 0 {
             offset = 0;
         }
-        let outcome_str = outcome.map(|o| o.as_str()).unwrap_or("");
-        let zone_str = zone_id.map(str::trim).unwrap_or("");
+        let outcome_val = outcome.map(|o| o.as_str());
+        let zone_val = zone_id.map(str::trim).filter(|s| !s.is_empty());
 
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let conn = inner.conn.as_ref().ok_or(LibraryError::NotFound)?;
 
+        let mut conds: Vec<&'static str> = Vec::new();
+        let mut filter_params: Vec<rusqlite::types::Value> = Vec::new();
+        if let Some(o) = outcome_val {
+            conds.push("outcome = ?");
+            filter_params.push(rusqlite::types::Value::Text(o.to_string()));
+        }
+        if let Some(z) = zone_val {
+            conds.push("zone_id = ?");
+            filter_params.push(rusqlite::types::Value::Text(z.to_string()));
+        }
+        let where_clause = if conds.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conds.join(" AND "))
+        };
+
+        let count_sql = format!("SELECT COUNT(*) FROM play_events {where_clause}");
         let total: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM play_events
-             WHERE (?1 = '' OR outcome = ?1)
-               AND (?2 = '' OR zone_id = ?2)",
-            params![outcome_str, zone_str],
+            &count_sql,
+            rusqlite::params_from_iter(filter_params.iter()),
             |r| r.get(0),
         )?;
 
-        let mut stmt = conn.prepare(
+        let query_sql = format!(
             "SELECT id, track_id, album_id, provider,
-                    title, artist, album_artist, album, isrc, mb_recording_id, qobuz_track_id, artwork_url,
+                    title, artist, album_artist, album, genre, isrc,
+                    mb_recording_id, mb_artist_id, qobuz_track_id, qobuz_artist_id, artwork_url,
                     zone_id, source_context, started_at, played_at, listened_sec, duration_sec, outcome
              FROM play_events
-             WHERE (?1 = '' OR outcome = ?1)
-               AND (?2 = '' OR zone_id = ?2)
+             {where_clause}
              ORDER BY played_at DESC, id DESC
-             LIMIT ?3 OFFSET ?4",
-        )?;
+             LIMIT ? OFFSET ?"
+        );
+        let mut query_params = filter_params;
+        query_params.push(rusqlite::types::Value::Integer(i64::from(limit)));
+        query_params.push(rusqlite::types::Value::Integer(i64::from(offset)));
 
-        let rows = stmt.query_map(params![outcome_str, zone_str, limit, offset], |r| {
-            let ctx_raw: String = r.get(13)?;
-            let started_unix: i64 = r.get(14)?;
-            let played_unix: i64 = r.get(15)?;
-            let out_raw: String = r.get(18)?;
+        let mut stmt = conn.prepare(&query_sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(query_params.iter()), |r| {
+            let ctx_raw: String = r.get(16)?;
+            let started_unix: i64 = r.get(17)?;
+            let played_unix: i64 = r.get(18)?;
+            let out_raw: String = r.get(21)?;
             Ok(PlayHistoryEntry {
                 id: r.get(0)?,
                 track_id: r.get(1)?,
@@ -452,16 +527,19 @@ impl LibraryStore {
                 artist: r.get(5)?,
                 album_artist: r.get(6)?,
                 album: r.get(7)?,
-                isrc: r.get(8)?,
-                mb_recording_id: r.get(9)?,
-                qobuz_track_id: r.get(10)?,
-                artwork_url: r.get(11)?,
-                zone_id: r.get(12)?,
+                genre: r.get(8)?,
+                isrc: r.get(9)?,
+                mb_recording_id: r.get(10)?,
+                mb_artist_id: r.get(11)?,
+                qobuz_track_id: r.get::<_, Option<i64>>(12)?.filter(|&v| v > 0),
+                qobuz_artist_id: r.get::<_, Option<i64>>(13)?.filter(|&v| v > 0),
+                artwork_url: r.get(14)?,
+                zone_id: r.get(15)?,
                 source_context: PlayContext::parse(&ctx_raw).unwrap_or(PlayContext::Manual),
                 started_at: unix_to_dt(started_unix).unwrap_or_else(Utc::now),
                 played_at: unix_to_dt(played_unix).unwrap_or_else(Utc::now),
-                listened_sec: r.get(16)?,
-                duration_sec: r.get(17)?,
+                listened_sec: r.get(19)?,
+                duration_sec: r.get(20)?,
                 outcome: PlayOutcome::parse(&out_raw).unwrap_or(PlayOutcome::Completed),
             })
         })?;
@@ -532,6 +610,52 @@ impl LibraryStore {
             total_listened_sec,
             top_artists,
         })
+    }
+
+    /// Cross-provider cooldown sets (track IDs, ISRCs, MB recording IDs, Qobuz IDs, and artists)
+    /// for all plays/skips since `since_unix`.
+    pub fn recent_cooldowns(&self, since_unix: i64) -> Result<RecentCooldowns> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = inner.conn.as_ref().ok_or(LibraryError::NotFound)?;
+        let mut stmt = conn.prepare(
+            "SELECT track_id, isrc, mb_recording_id, qobuz_track_id, artist, played_at
+             FROM play_events
+             WHERE played_at >= ?1",
+        )?;
+        let rows = stmt.query_map(params![since_unix], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
+            ))
+        })?;
+        let mut out = RecentCooldowns::default();
+        for row in rows {
+            let (tid, isrc, mbid, qid, artist, played_at) = row?;
+            if !tid.is_empty() {
+                out.track_ids.insert(tid);
+            }
+            if !isrc.is_empty() {
+                out.isrcs.insert(isrc);
+            }
+            if !mbid.is_empty() {
+                out.mb_recording_ids.insert(mbid);
+            }
+            if let Some(q) = qid.filter(|&v| v > 0) {
+                out.qobuz_track_ids.insert(q);
+            }
+            if !artist.is_empty() {
+                let key = artist.to_lowercase();
+                out.artists
+                    .entry(key)
+                    .and_modify(|ts| *ts = (*ts).max(played_at))
+                    .or_insert(played_at);
+            }
+        }
+        Ok(out)
     }
 
     /// Track IDs played or skipped since `since_unix` (used for Radio/Autoplay cooldowns).
