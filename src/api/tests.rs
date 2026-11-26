@@ -721,3 +721,81 @@ async fn sonic_endpoints_report_status_enable_and_query_similar_tracks() {
     assert_eq!(items[0]["track"]["id"], "local:t2");
     assert!(items[0]["score"].as_f64().unwrap() > 0.9);
 }
+
+#[tokio::test]
+async fn history_and_stats_endpoints_filter_and_validate() {
+    let cat = Catalog::open(":memory:", vec![]).unwrap();
+    let mgr = QueueManager::new(Arc::clone(&cat), None, 4320, StreamMode::Relay);
+    let state = AppState::new(Arc::clone(&cat), None, mgr, None, String::new());
+    let now = chrono::Utc::now();
+    let tr = crate::library::Track {
+        id: "qobuz:777".into(),
+        album_id: "qobuz:alb777".into(),
+        source: "qobuz".into(),
+        provider: "qobuz".into(),
+        title: "Midnight City".into(),
+        artist: "M83".into(),
+        album: "Hurry Up, We're Dreaming".into(),
+        duration_sec: 243,
+        ..Default::default()
+    };
+    state
+        .catalog
+        .record_play_event(&crate::library::PlayEventRecord {
+            track: tr.clone(),
+            zone_id: "studio".into(),
+            source_context: crate::library::PlayContext::Manual,
+            started_at: now - chrono::Duration::seconds(243),
+            played_at: now,
+            listened_sec: 240,
+            duration_sec: 243,
+            outcome: crate::library::PlayOutcome::Completed,
+        });
+    state
+        .catalog
+        .record_play_event(&crate::library::PlayEventRecord {
+            track: tr,
+            zone_id: "studio".into(),
+            source_context: crate::library::PlayContext::Radio,
+            started_at: now - chrono::Duration::seconds(10),
+            played_at: now,
+            listened_sec: 10,
+            duration_sec: 243,
+            outcome: crate::library::PlayOutcome::Skipped,
+        });
+
+    let app = build_router(state);
+
+    let all = json_body(send(&app, Method::GET, "/api/v1/library/history", "").await).await;
+    assert_eq!(all["total"], 2);
+    assert_eq!(all["items"].as_array().unwrap().len(), 2);
+
+    let skipped = json_body(
+        send(
+            &app,
+            Method::GET,
+            "/api/v1/library/history?outcome=skipped&zone_id=studio",
+            "",
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(skipped["total"], 1);
+    assert_eq!(skipped["items"][0]["outcome"], "skipped");
+    assert_eq!(skipped["items"][0]["sourceContext"], "radio");
+
+    let bad = send(
+        &app,
+        Method::GET,
+        "/api/v1/library/history?outcome=bogus",
+        "",
+    )
+    .await;
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+    let stats = json_body(send(&app, Method::GET, "/api/v1/library/stats?days=30", "").await).await;
+    assert_eq!(stats["totalPlays"], 1);
+    assert_eq!(stats["totalSkips"], 1);
+    assert_eq!(stats["totalListenedSec"], 250);
+    assert_eq!(stats["topArtists"][0]["artist"], "M83");
+}

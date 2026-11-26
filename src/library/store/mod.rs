@@ -1,4 +1,5 @@
 mod enrichment;
+mod history;
 mod ingest;
 mod prefs;
 mod query;
@@ -18,6 +19,10 @@ use super::migrations::run_migrations;
 use super::types::{LibraryError, ProviderSyncStatus, Result, Track};
 
 pub use enrichment::{AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, TrackEnrichmentPatch};
+pub use history::{
+    ListeningStats, PlayContext, PlayEventRecord, PlayHistoryEntry, PlayOutcome, TopArtistEntry,
+    TrackFeedback,
+};
 pub use query::build_fts_query;
 pub use sonic::{
     SonicStats, SonicTagEntry, StoredSonicEmbedding, TrackSonicHeadsWrite, TrackSonicWrite,

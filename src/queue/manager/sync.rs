@@ -6,6 +6,7 @@ use chrono::Utc;
 use crate::library::Track;
 use crate::upnp::{Controller, DeviceEvent};
 
+use super::listen::{FlushReason, flush_active_listen, sync_active_listen};
 use super::{Manager, Zone, ZoneInner, compute_next_index};
 use crate::queue::types::{AudioQuality, PlaybackState, VolumeEvent};
 
@@ -26,7 +27,7 @@ impl Manager {
 
         let mut need_advance = false;
         let need_preload;
-        let mut recorded_track = None;
+        let mut recorded_event = None;
         let advance_rev: u64;
 
         let (ctrl, vol_ev, pb_ev) = {
@@ -37,9 +38,11 @@ impl Manager {
             let new_state = PlaybackState::normalize(&zi.status.state);
 
             let uri = zi.status.track_uri.clone();
-            if let Some(tr) = detect_gapless_transition(&mut zi, &uri) {
+            let (transitioned, gapless_ev) =
+                detect_gapless_transition(&mut zi, &ev.renderer_id, &uri);
+            if transitioned {
                 pb_changed = true;
-                recorded_track = Some(tr);
+                recorded_event = gapless_ev;
             }
 
             // Ignore GENA initial snapshot (seq == 0 on AVTransport) to avoid spurious advances.
@@ -54,8 +57,10 @@ impl Manager {
             {
                 need_advance = true;
             }
-            if recorded_track.is_none() {
-                recorded_track = maybe_record_play(&mut zi, new_state);
+            if let Some(ev_rec) = sync_active_listen(&mut zi, &ev.renderer_id, new_state)
+                && recorded_event.is_none()
+            {
+                recorded_event = Some(ev_rec);
             }
 
             if vol_changed || pb_changed {
@@ -74,8 +79,8 @@ impl Manager {
             (ctrl, ve, pe)
         };
 
-        if let Some(tr) = recorded_track {
-            self.record_play_async(tr);
+        if let Some(rec) = recorded_event {
+            self.record_play_event_async(rec);
         }
         if let Some(ve) = vol_ev {
             self.emit("zone.volume", &ev.renderer_id, &ve);
@@ -141,13 +146,17 @@ impl Manager {
 
     async fn advance_if_unchanged(&self, zone_id: &str, z: &Zone, expected_rev: u64) {
         let _op = z.op_mu.lock().await;
-        let next_idx = {
-            let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let (next_idx, flushed) = {
+            let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             if zi.revision != expected_rev {
                 return;
             }
-            compute_next_index(&zi)
+            let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::NaturalEnd);
+            (compute_next_index(&zi), flushed)
         };
+        if let Some(rec) = flushed {
+            self.record_play_event_async(rec);
+        }
         if let Some(ni) = next_idx
             && let Err(e) = self.play_index_locked(zone_id, z, ni as usize).await
         {
@@ -220,18 +229,26 @@ impl Manager {
 
         let mut need_advance = false;
         let need_preload;
-        let mut recorded_track = None;
+        let mut recorded_event = None;
         let advance_rev: u64;
 
         let (vol_ev, pb_ev) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             let prev_state = PlaybackState::normalize(&zi.status.state);
-            let new_state = PlaybackState::normalize(&st.state);
             let (vol_changed, mut pb_changed) = apply_poll_status(&mut zi, &st);
+            let new_state = PlaybackState::normalize(&zi.status.state);
 
-            if let Some(tr) = detect_gapless_transition(&mut zi, &st.track_uri) {
+            if !st.track_uri.is_empty() && is_foreign_track_uri(&zi, &st.track_uri) {
+                recorded_event = flush_active_listen(&mut zi, &zone_id, FlushReason::Interrupted);
+            }
+
+            let (transitioned, gapless_ev) =
+                detect_gapless_transition(&mut zi, &zone_id, &st.track_uri);
+            if transitioned {
                 pb_changed = true;
-                recorded_track = Some(tr);
+                if recorded_event.is_none() {
+                    recorded_event = gapless_ev;
+                }
             }
             if !zi.user_stopped
                 && zi.loaded_at.elapsed() > Duration::from_secs(2)
@@ -242,8 +259,10 @@ impl Manager {
             {
                 need_advance = true;
             }
-            if recorded_track.is_none() {
-                recorded_track = maybe_record_play(&mut zi, new_state);
+            if let Some(ev_rec) = sync_active_listen(&mut zi, &zone_id, new_state)
+                && recorded_event.is_none()
+            {
+                recorded_event = Some(ev_rec);
             }
 
             if vol_changed || pb_changed {
@@ -262,8 +281,8 @@ impl Manager {
             (ve, pe)
         };
 
-        if let Some(tr) = recorded_track {
-            self.record_play_async(tr);
+        if let Some(rec) = recorded_event {
+            self.record_play_event_async(rec);
         }
         if let Some(ve) = vol_ev {
             self.emit("zone.volume", &zone_id, &ve);
@@ -328,31 +347,6 @@ fn is_foreign_track_uri(zi: &ZoneInner, uri: &str) -> bool {
     !uri.contains("/media/local/") && !uri.contains("/media/qobuz/")
 }
 
-fn maybe_record_play(zi: &mut ZoneInner, state: PlaybackState) -> Option<Track> {
-    if state != PlaybackState::Playing || zi.current_index < 0 {
-        return None;
-    }
-    let item = zi.queue.get(zi.current_index as usize)?;
-    if zi.last_played_item_id == item.item_id {
-        return None;
-    }
-    let dur_secs = if !zi.status.duration.is_zero() {
-        zi.status.duration.as_secs()
-    } else {
-        item.track.duration_sec.max(0) as u64
-    };
-    let threshold = if dur_secs > 0 {
-        (dur_secs / 2).clamp(5, 30)
-    } else {
-        5
-    };
-    if zi.status.position.as_secs() < threshold {
-        return None;
-    }
-    zi.last_played_item_id = item.item_id.clone();
-    Some(item.track.clone())
-}
-
 fn apply_poll_status(zi: &mut ZoneInner, st: &crate::upnp::TransportStatus) -> (bool, bool) {
     let mut vol_changed = false;
     let mut pb_changed = false;
@@ -400,13 +394,18 @@ fn apply_poll_status(zi: &mut ZoneInner, st: &crate::upnp::TransportStatus) -> (
     (vol_changed, pb_changed)
 }
 
-fn detect_gapless_transition(zi: &mut ZoneInner, track_uri: &str) -> Option<Track> {
+fn detect_gapless_transition(
+    zi: &mut ZoneInner,
+    zone_id: &str,
+    track_uri: &str,
+) -> (bool, Option<crate::library::PlayEventRecord>) {
     if zi.next_preloaded
         && !track_uri.is_empty()
         && track_uri == zi.next_uri
         && zi.next_index >= 0
         && (zi.next_index as usize) < zi.queue.len()
     {
+        let flushed = flush_active_listen(zi, zone_id, FlushReason::NaturalEnd);
         zi.current_index = zi.next_index;
         zi.current_uri = zi.next_uri.clone();
         zi.next_preloaded = false;
@@ -417,10 +416,9 @@ fn detect_gapless_transition(zi: &mut ZoneInner, track_uri: &str) -> Option<Trac
         zi.status.duration = Duration::from_secs(tr.duration_sec.max(0) as u64);
         zi.loaded_at = Instant::now();
         zi.position_updated_at = Utc::now();
-        zi.last_played_item_id.clear();
-        return Some(tr);
+        return (true, flushed);
     }
-    None
+    (false, None)
 }
 
 /// Optimistically marks `next_preloaded` under lock so rapid position ticks cannot spawn

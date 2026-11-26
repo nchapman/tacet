@@ -1,3 +1,4 @@
+mod listen;
 mod ops;
 mod sync;
 
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex as AsyncMutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
-use crate::library::{Catalog, SOURCE_LOCAL, SOURCE_QOBUZ, Track};
+use crate::library::{Catalog, PlayContext, PlayEventRecord, SOURCE_LOCAL, SOURCE_QOBUZ, Track};
 use crate::media::detect_transcoder;
 use crate::qobuz::Client as QobuzClient;
 use crate::upnp::{Controller, GenaClient, MediaItem, RendererInfo, TransportStatus};
@@ -42,7 +43,7 @@ pub(super) struct ZoneInner {
     pub(super) set_next_unsupported: bool,
     pub(super) user_stopped: bool,
     pub(super) loaded_at: Instant,
-    pub(super) last_played_item_id: String,
+    active_listen: Option<listen::ActiveListen>,
     pub(super) last_command_at: Instant,
     pub(super) last_poll: Instant,
 }
@@ -257,12 +258,29 @@ impl Manager {
         }
     }
 
+    fn flush_all_active_listens(&self) {
+        let records: Vec<PlayEventRecord> = {
+            let g = self.zones.read().unwrap_or_else(|e| e.into_inner());
+            g.iter()
+                .filter_map(|(zone_id, z)| {
+                    let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+                    listen::flush_active_listen(&mut zi, zone_id, listen::FlushReason::Interrupted)
+                })
+                .collect()
+        };
+        for rec in records {
+            self.catalog.record_play_event(&rec);
+        }
+    }
+
     pub fn close(&self) {
+        self.flush_all_active_listens();
         self.persist_zone_queues();
         self.stop.cancel();
     }
 
     pub async fn close_async(&self) {
+        self.flush_all_active_listens();
         self.persist_zone_queues();
         self.stop.cancel();
         let ctrls: Vec<Arc<dyn Controller>> = {
@@ -389,7 +407,7 @@ impl Manager {
                         set_next_unsupported: !info.supports_set_next,
                         user_stopped: false,
                         loaded_at: Instant::now() - Duration::from_secs(60),
-                        last_played_item_id: String::new(),
+                        active_listen: None,
                         last_command_at: Instant::now() - Duration::from_secs(60),
                         last_poll: Instant::now() - Duration::from_secs(60),
                     }),
@@ -423,7 +441,15 @@ impl Manager {
             .unwrap_or_else(|e| e.into_inner())
             .remove(zone_id);
         if let Some(zone) = removed {
-            let ctrl = Arc::clone(&zone.inner.lock().unwrap_or_else(|e| e.into_inner()).ctrl);
+            let (ctrl, flushed) = {
+                let mut zi = zone.inner.lock().unwrap_or_else(|e| e.into_inner());
+                let flushed =
+                    listen::flush_active_listen(&mut zi, zone_id, listen::FlushReason::Interrupted);
+                (Arc::clone(&zi.ctrl), flushed)
+            };
+            if let Some(rec) = flushed {
+                self.record_play_event_async(rec);
+            }
             if tokio::runtime::Handle::try_current().is_ok() {
                 tokio::spawn(async move {
                     ctrl.close_session().await;
@@ -608,11 +634,20 @@ impl Manager {
     }
 
     pub(super) fn wrap_tracks(&self, tracks: Vec<Track>) -> Vec<Item> {
+        self.wrap_tracks_with_context(tracks, None)
+    }
+
+    pub(super) fn wrap_tracks_with_context(
+        &self,
+        tracks: Vec<Track>,
+        source_context: Option<PlayContext>,
+    ) -> Vec<Item> {
         tracks
             .into_iter()
             .map(|track| Item {
                 item_id: format!("qi-{}", self.item_seq.fetch_add(1, Ordering::Relaxed) + 1),
                 track,
+                source_context,
             })
             .collect()
     }

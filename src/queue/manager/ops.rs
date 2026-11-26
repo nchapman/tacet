@@ -4,9 +4,10 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use rand::seq::SliceRandom;
 
-use crate::library::{SOURCE_LOCAL, Track};
+use crate::library::{PlayEventRecord, SOURCE_LOCAL, Track};
 use crate::upnp::Controller;
 
+use super::listen::{FlushReason, flush_active_listen, sync_active_listen};
 use super::{Manager, Zone, current_item_pair};
 use crate::queue::types::{
     AudioQuality, Item, PlaybackState, QueueError, RepeatMode, Result, VolumeEvent, ZoneSnapshot,
@@ -33,8 +34,9 @@ impl Manager {
             start_index.clamp(0, items.len() as i32 - 1)
         };
 
-        let (ctrl, q_ev) = {
+        let (ctrl, q_ev, flushed) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::UserSkip);
             zi.original_queue = items.clone();
             zi.queue = items;
             zi.current_index = start;
@@ -43,8 +45,11 @@ impl Manager {
             zi.next_index = -1;
             zi.revision += 1;
             let q_ev = Self::make_items_event(zone_id, &zi);
-            (Arc::clone(&zi.ctrl), q_ev)
+            (Arc::clone(&zi.ctrl), q_ev, flushed)
         };
+        if let Some(rec) = flushed {
+            self.record_play_event_async(rec);
+        }
         self.emit("zone.queue", zone_id, &q_ev);
         self.persist_zone_queues();
 
@@ -251,15 +256,20 @@ impl Manager {
         z: &Zone,
         index: usize,
     ) -> Result<ZoneSnapshot> {
-        let (ctrl, removed_current, q_ev) = {
+        let (ctrl, removed_current, q_ev, flushed) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             if index >= zi.queue.len() {
                 return Err(QueueError::InvalidIndex);
             }
-            let removed = zi.queue.remove(index);
-            zi.original_queue.retain(|it| it.item_id != removed.item_id);
             let idx_i32 = index as i32;
             let removed_current = idx_i32 == zi.current_index;
+            let flushed = if removed_current {
+                flush_active_listen(&mut zi, zone_id, FlushReason::UserSkip)
+            } else {
+                None
+            };
+            let removed = zi.queue.remove(index);
+            zi.original_queue.retain(|it| it.item_id != removed.item_id);
             if zi.queue.is_empty() {
                 zi.current_index = -1;
             } else if idx_i32 < zi.current_index {
@@ -272,8 +282,11 @@ impl Manager {
             zi.next_index = -1;
             zi.revision += 1;
             let q_ev = Self::make_items_event(zone_id, &zi);
-            (Arc::clone(&zi.ctrl), removed_current, q_ev)
+            (Arc::clone(&zi.ctrl), removed_current, q_ev, flushed)
         };
+        if let Some(rec) = flushed {
+            self.record_play_event_async(rec);
+        }
         self.emit("zone.queue", zone_id, &q_ev);
         self.persist_zone_queues();
 
@@ -380,8 +393,9 @@ impl Manager {
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
-        let (ctrl, prev_len, q_ev, pb_ev) = {
+        let (ctrl, prev_len, q_ev, pb_ev, flushed) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::UserSkip);
             let prev_len = zi.queue.len();
             zi.queue.clear();
             zi.original_queue.clear();
@@ -402,8 +416,12 @@ impl Manager {
                 prev_len,
                 Self::make_items_event(zone_id, &zi),
                 self.make_playback_event(zone_id, &zi),
+                flushed,
             )
         };
+        if let Some(rec) = flushed {
+            self.record_play_event_async(rec);
+        }
         self.emit("zone.queue", zone_id, &q_ev);
         self.emit("zone.playback", zone_id, &pb_ev);
         self.persist_zone_queues();
@@ -445,18 +463,22 @@ impl Manager {
         z: &Zone,
         index: usize,
     ) -> Result<ZoneSnapshot> {
-        let ctrl = {
+        let (ctrl, flushed) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             if index >= zi.queue.len() {
                 return Err(QueueError::InvalidIndex);
             }
+            let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::UserSkip);
             zi.current_index = index as i32;
             zi.next_preloaded = false;
             zi.next_uri.clear();
             zi.next_index = -1;
             zi.revision += 1;
-            Arc::clone(&zi.ctrl)
+            (Arc::clone(&zi.ctrl), flushed)
         };
+        if let Some(rec) = flushed {
+            self.record_play_event_async(rec);
+        }
 
         self.jump_or_start_locked(zone_id, z, &ctrl, index).await?;
         Ok(self.snapshot_zone(zone_id, z))
@@ -471,7 +493,7 @@ impl Manager {
     ) -> Result<()> {
         if let Some(qc) = ctrl.as_queue_controller() {
             if qc.play_index(index).await.is_ok() {
-                let (tr, pb_ev) = {
+                let (flushed, pb_ev) = {
                     let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
                     let tr = zi.queue.get(index).map(|it| it.track.clone());
                     let now = Instant::now();
@@ -490,10 +512,11 @@ impl Manager {
                     zi.position_updated_at = Utc::now();
                     zi.last_command_at = now;
                     zi.revision += 1;
-                    (tr, self.make_playback_event(zone_id, &zi))
+                    let flushed = sync_active_listen(&mut zi, zone_id, PlaybackState::Playing);
+                    (flushed, self.make_playback_event(zone_id, &zi))
                 };
-                if let Some(tr) = tr {
-                    self.record_play_async(tr);
+                if let Some(rec) = flushed {
+                    self.record_play_event_async(rec);
                 }
                 self.emit("zone.playback", zone_id, &pb_ev);
                 return Ok(());
@@ -504,10 +527,10 @@ impl Manager {
         self.start_current_locked(zone_id, z, ctrl, false).await
     }
 
-    pub(super) fn record_play_async(&self, track: Track) {
+    pub(super) fn record_play_event_async(&self, event: PlayEventRecord) {
         let cat = Arc::clone(&self.catalog);
         tokio::task::spawn_blocking(move || {
-            cat.record_play(&track);
+            cat.record_play_event(&event);
         });
     }
 
@@ -537,15 +560,19 @@ impl Manager {
             ctrl.play()
                 .await
                 .map_err(|e| QueueError::Renderer(e.to_string()))?;
-            let pb = {
+            let (pb, flushed) = {
                 let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
                 zi.user_stopped = false;
                 zi.status.state = "PLAYING".into();
                 zi.position_updated_at = Utc::now();
                 zi.last_command_at = Instant::now();
                 zi.revision += 1;
-                self.make_playback_event(zone_id, &zi)
+                let flushed = sync_active_listen(&mut zi, zone_id, PlaybackState::Playing);
+                (self.make_playback_event(zone_id, &zi), flushed)
             };
+            if let Some(rec) = flushed {
+                self.record_play_event_async(rec);
+            }
             self.emit("zone.playback", zone_id, &pb);
         }
         Ok(self.snapshot_zone(zone_id, &z))
@@ -578,6 +605,7 @@ impl Manager {
             zi.position_updated_at = Utc::now();
             zi.last_command_at = Instant::now();
             zi.revision += 1;
+            let _ = sync_active_listen(&mut zi, zone_id, PlaybackState::Paused);
             self.make_playback_event(zone_id, &zi)
         };
         self.emit("zone.playback", zone_id, &pb);
@@ -593,16 +621,20 @@ impl Manager {
         ctrl.stop()
             .await
             .map_err(|e| QueueError::Renderer(e.to_string()))?;
-        let pb = {
+        let (pb, flushed) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::UserSkip);
             zi.user_stopped = true;
             zi.status.state = "STOPPED".into();
             zi.status.position = Duration::ZERO;
             zi.position_updated_at = Utc::now();
             zi.last_command_at = Instant::now();
             zi.revision += 1;
-            self.make_playback_event(zone_id, &zi)
+            (self.make_playback_event(zone_id, &zi), flushed)
         };
+        if let Some(rec) = flushed {
+            self.record_play_event_async(rec);
+        }
         self.emit("zone.playback", zone_id, &pb);
         Ok(self.snapshot_zone(zone_id, &z))
     }
@@ -612,7 +644,7 @@ impl Manager {
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
-        let (ctrl, next_idx) = {
+        let (ctrl, next_idx, flushed) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             if zi.queue.is_empty() {
                 return Err(QueueError::EmptyQueue);
@@ -627,13 +659,17 @@ impl Manager {
             } else {
                 return Err(QueueError::EndOfQueue);
             };
+            let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::UserSkip);
             zi.current_index = next_idx;
             zi.next_preloaded = false;
             zi.next_uri.clear();
             zi.next_index = -1;
             zi.revision += 1;
-            (Arc::clone(&zi.ctrl), next_idx)
+            (Arc::clone(&zi.ctrl), next_idx, flushed)
         };
+        if let Some(rec) = flushed {
+            self.record_play_event_async(rec);
+        }
         if next_idx >= 0 {
             self.jump_or_start_locked(zone_id, &z, &ctrl, next_idx as usize)
                 .await?;
@@ -647,14 +683,14 @@ impl Manager {
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
 
-        let (ctrl, restart_only, target_idx) = {
+        let (ctrl, restart_only, target_idx, flushed) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             if zi.queue.is_empty() {
                 return Err(QueueError::EmptyQueue);
             }
             let can_seek = is_stream_seekable(&zi);
             if zi.status.position > Duration::from_secs(5) && can_seek {
-                (Arc::clone(&zi.ctrl), true, zi.current_index)
+                (Arc::clone(&zi.ctrl), true, zi.current_index, None)
             } else {
                 let len = zi.queue.len() as i32;
                 let prev = if zi.current_index > 0 {
@@ -664,14 +700,18 @@ impl Manager {
                 } else {
                     0
                 };
+                let flushed = flush_active_listen(&mut zi, zone_id, FlushReason::UserSkip);
                 zi.current_index = prev;
                 zi.next_preloaded = false;
                 zi.next_uri.clear();
                 zi.next_index = -1;
                 zi.revision += 1;
-                (Arc::clone(&zi.ctrl), false, prev)
+                (Arc::clone(&zi.ctrl), false, prev, flushed)
             }
         };
+        if let Some(rec) = flushed {
+            self.record_play_event_async(rec);
+        }
 
         if restart_only {
             if ctrl.seek(Duration::ZERO).await.is_ok() {
@@ -1050,7 +1090,7 @@ impl Manager {
         eff_q: AudioQuality,
         clear_preloaded: bool,
     ) {
-        let pb = {
+        let (pb, flushed) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             zi.current_uri = media.url.clone();
             zi.active_quality = Some(eff_q);
@@ -1067,11 +1107,13 @@ impl Manager {
                 zi.next_index = -1;
             }
             zi.revision += 1;
-            if zi.last_played_item_id == cur_item.item_id {
-                zi.last_played_item_id.clear();
-            }
-            self.make_playback_event(zone_id, &zi)
+            let _ = cur_item;
+            let flushed = sync_active_listen(&mut zi, zone_id, PlaybackState::Playing);
+            (self.make_playback_event(zone_id, &zi), flushed)
         };
+        if let Some(rec) = flushed {
+            self.record_play_event_async(rec);
+        }
         self.emit("zone.playback", zone_id, &pb);
     }
 }

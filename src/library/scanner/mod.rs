@@ -1,7 +1,7 @@
 mod local;
 mod remote;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -11,8 +11,9 @@ use serde::de::DeserializeOwned;
 use tokio::sync::Notify;
 
 use super::store::{
-    AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, LibraryStore, SonicStats,
-    StoredSonicEmbedding, TrackSonicWrite,
+    AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, LibraryStore, ListeningStats,
+    PlayEventRecord, PlayHistoryEntry, PlayOutcome, SonicStats, StoredSonicEmbedding,
+    TrackFeedback, TrackSonicWrite,
 };
 use super::types::{
     Album, AlbumFilter, ArtistSummary, FacetFilter, GenreSummary, HeavyRotationAlbum, LibraryError,
@@ -264,8 +265,45 @@ impl Catalog {
         }
     }
 
+    pub fn record_play_event(&self, event: &PlayEventRecord) {
+        if let Err(e) = self.store.record_play_event(event) {
+            tracing::warn!(
+                track_id = %event.track.id,
+                outcome = event.outcome.as_str(),
+                error = %e,
+                "library record play event failed"
+            );
+        }
+    }
+
     pub fn heavy_rotation(&self, days: i32, limit: i32) -> Result<Vec<HeavyRotationAlbum>> {
         self.store.heavy_rotation(days, limit)
+    }
+
+    pub fn play_history(
+        &self,
+        limit: i32,
+        offset: i32,
+        outcome: Option<PlayOutcome>,
+        zone_id: Option<&str>,
+    ) -> Result<(Vec<PlayHistoryEntry>, i64)> {
+        self.store.play_history(limit, offset, outcome, zone_id)
+    }
+
+    pub fn listening_stats(&self, days: i32, top_limit: i32) -> Result<ListeningStats> {
+        self.store.listening_stats(days, top_limit)
+    }
+
+    pub fn recent_played_track_ids(&self, since_unix: i64) -> Result<HashSet<String>> {
+        self.store.recent_played_track_ids(since_unix)
+    }
+
+    pub fn recent_played_artists(&self, since_unix: i64) -> Result<HashMap<String, i64>> {
+        self.store.recent_played_artists(since_unix)
+    }
+
+    pub fn track_feedback_since(&self, since_unix: i64) -> Result<HashMap<String, TrackFeedback>> {
+        self.store.track_feedback_since(since_unix)
     }
 
     pub fn unified_search(&self, query: &str, limit: i32) -> Result<UnifiedSearchResult> {

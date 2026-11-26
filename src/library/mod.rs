@@ -9,8 +9,10 @@ pub use autoscan::{AutoScanConfig, AutoScanner};
 pub use probe::{AudioProps, probe_audio};
 pub use scanner::Catalog;
 pub use store::{
-    AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, SonicStats, SonicTagEntry,
-    StoredSonicEmbedding, TrackEnrichmentPatch, TrackSonicHeadsWrite, TrackSonicWrite,
+    AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, ListeningStats, PlayContext,
+    PlayEventRecord, PlayHistoryEntry, PlayOutcome, SonicStats, SonicTagEntry,
+    StoredSonicEmbedding, TopArtistEntry, TrackEnrichmentPatch, TrackFeedback,
+    TrackSonicHeadsWrite, TrackSonicWrite,
 };
 pub use types::*;
 
@@ -35,7 +37,7 @@ mod tests {
     #[test]
     fn store_prefs_credentials_and_search() {
         let cat = Catalog::new_in_memory(vec![]);
-        assert_eq!(cat.schema_version().unwrap(), 3);
+        assert_eq!(cat.schema_version().unwrap(), 4);
 
         cat.set_pref(PREF_STREAM_MODE, "direct").unwrap();
         assert_eq!(
@@ -516,5 +518,232 @@ mod tests {
         assert_eq!(matched[0].id, "local:t1");
         assert!(matched[0].in_library);
         assert_eq!(matched[0].artwork_url, "https://static.qobuz.com/cover.jpg");
+    }
+
+    fn seed_history_catalog() -> (tempfile::TempDir, std::sync::Arc<Catalog>, Track, Track) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("lib.db");
+        let cat = Catalog::open(&db.to_string_lossy(), vec![]).unwrap();
+        let a1 = Album {
+            id: "local:a1".into(),
+            source: SOURCE_LOCAL.into(),
+            source_type: SOURCE_TYPE_LOCAL.into(),
+            provider: SOURCE_LOCAL.into(),
+            external_id: "local:a1".into(),
+            title: "Intentional Album".into(),
+            artist: "Artist One".into(),
+            available: true,
+            ..Default::default()
+        };
+        let t1 = Track {
+            id: "local:t1".into(),
+            album_id: "local:a1".into(),
+            source: SOURCE_LOCAL.into(),
+            source_type: SOURCE_TYPE_LOCAL.into(),
+            provider: SOURCE_LOCAL.into(),
+            title: "Track One".into(),
+            artist: "Artist One".into(),
+            duration_sec: 200,
+            available: true,
+            ..Default::default()
+        };
+        let a2 = Album {
+            id: "local:a2".into(),
+            source: SOURCE_LOCAL.into(),
+            source_type: SOURCE_TYPE_LOCAL.into(),
+            provider: SOURCE_LOCAL.into(),
+            external_id: "local:a2".into(),
+            title: "Autoplay Album".into(),
+            artist: "Artist Two".into(),
+            available: true,
+            ..Default::default()
+        };
+        let t2 = Track {
+            id: "local:t2".into(),
+            album_id: "local:a2".into(),
+            source: SOURCE_LOCAL.into(),
+            source_type: SOURCE_TYPE_LOCAL.into(),
+            provider: SOURCE_LOCAL.into(),
+            title: "Track Two".into(),
+            artist: "Artist Two".into(),
+            duration_sec: 200,
+            available: true,
+            ..Default::default()
+        };
+        cat.store()
+            .upsert_album_with_tracks(&a1, std::slice::from_ref(&t1))
+            .unwrap();
+        cat.store()
+            .upsert_album_with_tracks(&a2, std::slice::from_ref(&t2))
+            .unwrap();
+        (dir, cat, t1, t2)
+    }
+
+    fn record_test_event(
+        cat: &Catalog,
+        track: &Track,
+        zone: &str,
+        ctx: PlayContext,
+        sec: i32,
+        outcome: PlayOutcome,
+    ) {
+        let now = chrono::Utc::now();
+        cat.record_play_event(&PlayEventRecord {
+            track: track.clone(),
+            zone_id: zone.into(),
+            source_context: ctx,
+            started_at: now - chrono::Duration::seconds(i64::from(sec)),
+            played_at: now,
+            listened_sec: sec,
+            duration_sec: track.duration_sec,
+            outcome,
+        });
+    }
+
+    #[test]
+    fn listening_history_outcomes_and_heavy_rotation_weighting() {
+        let (_dir, cat, t1, t2) = seed_history_catalog();
+
+        // 1 intentional play on a1 (100 * 1.0 = 100), plus skipped & partial (must not bump play_count)
+        record_test_event(
+            &cat,
+            &t1,
+            "living-room",
+            PlayContext::Manual,
+            195,
+            PlayOutcome::Completed,
+        );
+        record_test_event(
+            &cat,
+            &t1,
+            "living-room",
+            PlayContext::Radio,
+            12,
+            PlayOutcome::Skipped,
+        );
+        record_test_event(
+            &cat,
+            &t1,
+            "living-room",
+            PlayContext::Manual,
+            40,
+            PlayOutcome::Partial,
+        );
+        // 2 passive autoplay plays on a2 (2 * 100 * 0.25 = 50 < 100)
+        record_test_event(
+            &cat,
+            &t2,
+            "kitchen",
+            PlayContext::Autoplay,
+            180,
+            PlayOutcome::Completed,
+        );
+        record_test_event(
+            &cat,
+            &t2,
+            "kitchen",
+            PlayContext::Autoplay,
+            180,
+            PlayOutcome::Completed,
+        );
+
+        assert_eq!(
+            cat.store()
+                .get_track("local:t1")
+                .unwrap()
+                .unwrap()
+                .play_count,
+            1
+        );
+        assert_eq!(
+            cat.store()
+                .get_track("local:t2")
+                .unwrap()
+                .unwrap()
+                .play_count,
+            2
+        );
+
+        let hr = cat.heavy_rotation(30, 10).unwrap();
+        assert_eq!(hr.len(), 2);
+        assert_eq!(hr[0].album.id, "local:a1");
+        assert_eq!(hr[1].album.id, "local:a2");
+    }
+
+    #[test]
+    fn listening_history_snapshots_cooldowns_and_stats() {
+        let (_dir, cat, t1, _) = seed_history_catalog();
+        let qobuz_tr = Track {
+            id: "qobuz:555".into(),
+            album_id: "qobuz:alb555".into(),
+            source: SOURCE_QOBUZ.into(),
+            source_type: SOURCE_TYPE_REMOTE.into(),
+            provider: SOURCE_QOBUZ.into(),
+            title: "Streamed Gem".into(),
+            artist: "Qobuz Artist".into(),
+            album: "Streamed Album".into(),
+            isrc: "USABC2400001".into(),
+            qobuz_track_id: 555,
+            duration_sec: 240,
+            ..Default::default()
+        };
+
+        record_test_event(
+            &cat,
+            &t1,
+            "living-room",
+            PlayContext::Manual,
+            195,
+            PlayOutcome::Completed,
+        );
+        record_test_event(
+            &cat,
+            &t1,
+            "living-room",
+            PlayContext::Radio,
+            12,
+            PlayOutcome::Skipped,
+        );
+        record_test_event(
+            &cat,
+            &qobuz_tr,
+            "living-room",
+            PlayContext::Radio,
+            230,
+            PlayOutcome::Completed,
+        );
+
+        let (all_hist, total) = cat.play_history(50, 0, None, None).unwrap();
+        assert_eq!(total, 3);
+        assert!(all_hist.iter().any(|h| h.track_id == "qobuz:555"
+            && h.title == "Streamed Gem"
+            && h.isrc == "USABC2400001"));
+
+        let (skips, skip_total) = cat
+            .play_history(50, 0, Some(PlayOutcome::Skipped), Some("living-room"))
+            .unwrap();
+        assert_eq!(skip_total, 1);
+        assert_eq!(
+            (skips[0].track_id.as_str(), skips[0].listened_sec),
+            ("local:t1", 12)
+        );
+
+        let since = chrono::Utc::now().timestamp() - 3600;
+        let recent_ids = cat.recent_played_track_ids(since).unwrap();
+        assert!(recent_ids.contains("local:t1") && recent_ids.contains("qobuz:555"));
+        assert!(
+            cat.recent_played_artists(since)
+                .unwrap()
+                .contains_key("qobuz artist")
+        );
+
+        let fb = cat.track_feedback_since(since).unwrap();
+        let t1_fb = fb.get("local:t1").unwrap();
+        assert_eq!((t1_fb.completions, t1_fb.skips), (1, 1));
+
+        let stats = cat.listening_stats(30, 10).unwrap();
+        assert_eq!((stats.total_plays, stats.total_skips), (2, 1));
+        assert_eq!(stats.total_listened_sec, 195 + 12 + 230);
+        assert!(stats.top_artists.iter().any(|a| a.artist == "Qobuz Artist"));
     }
 }

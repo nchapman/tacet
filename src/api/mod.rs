@@ -407,6 +407,14 @@ fn library_routes() -> Router<Arc<AppState>> {
             get(handlers_library::heavy_rotation),
         )
         .route(
+            "/api/v1/library/history",
+            get(handlers_library::library_history),
+        )
+        .route(
+            "/api/v1/library/stats",
+            get(handlers_library::library_stats),
+        )
+        .route(
             "/api/v1/library/search",
             get(handlers_library::library_search),
         )

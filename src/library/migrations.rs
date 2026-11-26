@@ -263,6 +263,84 @@ BEGIN
 END;
 "#,
     },
+    Migration {
+        version: 4,
+        name: "listening_history_v2",
+        sql: r#"
+CREATE TABLE play_events_v4 (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id       TEXT NOT NULL,
+    album_id       TEXT NOT NULL DEFAULT '',
+    provider       TEXT NOT NULL DEFAULT '',
+    title          TEXT NOT NULL DEFAULT '',
+    artist         TEXT NOT NULL DEFAULT '',
+    album_artist   TEXT NOT NULL DEFAULT '',
+    album          TEXT NOT NULL DEFAULT '',
+    isrc            TEXT NOT NULL DEFAULT '',
+    mb_recording_id TEXT NOT NULL DEFAULT '',
+    qobuz_track_id  INTEGER,
+    artwork_url    TEXT NOT NULL DEFAULT '',
+    zone_id        TEXT NOT NULL DEFAULT '',
+    source_context TEXT NOT NULL DEFAULT 'manual',
+    started_at     INTEGER NOT NULL,
+    played_at      INTEGER NOT NULL,
+    listened_sec   INTEGER NOT NULL DEFAULT 0,
+    duration_sec   INTEGER NOT NULL DEFAULT 0,
+    outcome        TEXT NOT NULL DEFAULT 'completed'
+);
+
+INSERT INTO play_events_v4 (
+    id, track_id, album_id, provider,
+    title, artist, album_artist, album, isrc, mb_recording_id, qobuz_track_id, artwork_url,
+    zone_id, source_context, started_at, played_at, listened_sec, duration_sec, outcome
+)
+SELECT
+    pe.id,
+    pe.track_id,
+    pe.album_id,
+    pe.provider,
+    COALESCE(t.title, ''),
+    COALESCE(t.artist, ''),
+    COALESCE(t.album_artist, ''),
+    COALESCE(t.album, a.title, ''),
+    COALESCE(t.isrc, ''),
+    COALESCE(t.mb_recording_id, ''),
+    t.qobuz_track_id,
+    COALESCE(a.artwork_url, ''),
+    '',
+    'manual',
+    CASE
+        WHEN COALESCE(t.duration_sec, 0) > 0 AND pe.played_at > t.duration_sec
+            THEN pe.played_at - t.duration_sec
+        ELSE pe.played_at
+    END,
+    pe.played_at,
+    COALESCE(t.duration_sec, 0),
+    COALESCE(t.duration_sec, 0),
+    'completed'
+FROM play_events pe
+LEFT JOIN tracks t ON t.id = pe.track_id
+LEFT JOIN albums a ON a.id = pe.album_id;
+
+DROP TABLE play_events;
+ALTER TABLE play_events_v4 RENAME TO play_events;
+
+CREATE INDEX IF NOT EXISTS idx_play_events_recent
+    ON play_events(played_at DESC, outcome);
+CREATE INDEX IF NOT EXISTS idx_play_events_album
+    ON play_events(album_id, played_at DESC);
+CREATE INDEX IF NOT EXISTS idx_play_events_track
+    ON play_events(track_id, played_at DESC);
+CREATE INDEX IF NOT EXISTS idx_play_events_artist
+    ON play_events(artist COLLATE NOCASE, played_at DESC);
+CREATE INDEX IF NOT EXISTS idx_play_events_isrc
+    ON play_events(isrc, played_at DESC)
+    WHERE isrc != '';
+CREATE INDEX IF NOT EXISTS idx_play_events_mbid
+    ON play_events(mb_recording_id, played_at DESC)
+    WHERE mb_recording_id != '';
+"#,
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {

@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::library::Track;
+use crate::library::{PlayContext, Track};
 use crate::upnp::RendererInfo;
 
 #[derive(Debug, Error)]
@@ -306,6 +306,8 @@ pub fn resolve_track_quality(
 pub struct Item {
     pub item_id: String,
     pub track: Track,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_context: Option<PlayContext>,
 }
 
 #[derive(Debug, Clone, Serialize)]

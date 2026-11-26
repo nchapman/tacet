@@ -327,6 +327,61 @@ pub async fn heavy_rotation(
     Ok(Json(serde_json::json!({ "days": days, "items": items })))
 }
 
+pub async fn library_history(
+    State(st): State<Arc<AppState>>,
+    Query(qv): Query<HashMap<String, String>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let limit = qv
+        .get("limit")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(50)
+        .clamp(1, 200);
+    let offset = qv
+        .get("offset")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0)
+        .max(0);
+    let outcome = match qv
+        .get("outcome")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => Some(crate::library::PlayOutcome::parse(raw).ok_or_else(|| {
+            ApiError::bad_request("outcome must be one of: completed, skipped, partial")
+        })?),
+        None => None,
+    };
+    let zone_id = qv
+        .get("zone_id")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let (items, total) = st.catalog.play_history(limit, offset, outcome, zone_id)?;
+    Ok(Json(serde_json::json!({
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    })))
+}
+
+pub async fn library_stats(
+    State(st): State<Arc<AppState>>,
+    Query(qv): Query<HashMap<String, String>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let days = qv
+        .get("days")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(90)
+        .clamp(1, 3650);
+    let limit = qv
+        .get("limit")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(20)
+        .clamp(1, 100);
+    let stats = st.catalog.listening_stats(days, limit)?;
+    Ok(Json(serde_json::to_value(stats).unwrap_or_default()))
+}
+
 pub async fn library_search(
     State(st): State<Arc<AppState>>,
     Query(qv): Query<HashMap<String, String>>,
