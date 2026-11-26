@@ -504,3 +504,26 @@ export interface StartRadioResponse {
   zone: ZoneSnapshot;
   station: RadioStationSummary;
 }
+
+export interface RadioPreviewResponse {
+  seedKind: RadioSeedKind;
+  seedLabel: string;
+  seedTrackId?: string;
+  tracks: Track[];
+  sourceCounts: Record<string, number>;
+}
+
+export interface SonicSimilarTrackItem {
+  track: Track;
+  score: number;
+}
+
+export interface SonicSimilarAlbumItem {
+  album: Album;
+  score: number;
+}
+
+export interface SonicSimilarArtistItem {
+  artist: ArtistSummary;
+  score: number;
+}

@@ -1,7 +1,8 @@
 import { ListMusic, Play, Trash2, X } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import { fmtCount, fmtDuration } from "@/api/format";
-import type { QueueItem } from "@/api/types";
+import type { QueueItem, QueuePosition, QueueSource } from "@/api/types";
+import { QueueRelatedTab } from "@/components/QueueRelatedTab";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -14,9 +15,12 @@ interface QueueContentProps {
   onJump: (itemId: string) => void;
   onRemove: (itemId: string) => void;
   onClear: () => void;
+  onAdd?: (source: QueueSource, position?: QueuePosition) => void;
   onOpenArtist?: (artist: string) => void;
   onClose?: () => void;
 }
+
+type QueueTab = "up-next" | "related";
 
 export function QueueContent({
   items,
@@ -24,9 +28,11 @@ export function QueueContent({
   onJump,
   onRemove,
   onClear,
+  onAdd,
   onOpenArtist,
   onClose,
 }: QueueContentProps) {
+  const [tab, setTab] = useState<QueueTab>("up-next");
   const currentIdx = items.findIndex((it) => it.itemId === currentItemId);
   const current = currentIdx >= 0 ? items[currentIdx] : undefined;
   const upNext = currentIdx >= 0 ? items.slice(currentIdx + 1) : items;
@@ -34,38 +40,73 @@ export function QueueContent({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-3.5 shrink-0">
-        <div className="flex items-center gap-2">
-          <ListMusic className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold tracking-tight">Queue</h2>
-          {items.length > 0 && (
-            <span className="rounded-full bg-white/[0.07] px-2 py-0.5 text-[11px] font-mono text-muted-foreground">
-              {fmtCount(items.length)}
-            </span>
-          )}
+      <div className="border-b border-white/[0.06] shrink-0">
+        <div className="flex items-center justify-between px-4 pt-3 pb-2">
+          <div className="flex items-center gap-2">
+            <ListMusic className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold tracking-tight">Queue</h2>
+            {items.length > 0 && (
+              <span className="rounded-full bg-white/[0.07] px-2 py-0.5 text-[11px] font-mono text-muted-foreground">
+                {fmtCount(items.length)}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1">
+            {tab === "up-next" && items.length > 0 && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                onClick={onClear}
+              >
+                Clear
+              </Button>
+            )}
+            {onClose && (
+              <Button type="button" variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close queue">
+                <X className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-1">
-          {items.length > 0 && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-              onClick={onClear}
-            >
-              Clear
-            </Button>
-          )}
-          {onClose && (
-            <Button type="button" variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close queue">
-              <X className="h-4 w-4" />
-            </Button>
-          )}
+
+        <div role="tablist" aria-label="Queue sections" className="grid grid-cols-2 px-2">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "up-next"}
+            onClick={() => setTab("up-next")}
+            className={cn(
+              "border-b-2 py-2 text-[11px] font-semibold uppercase tracking-wider transition-colors cursor-pointer",
+              tab === "up-next"
+                ? "border-white text-white"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            Up Next
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "related"}
+            onClick={() => setTab("related")}
+            className={cn(
+              "border-b-2 py-2 text-[11px] font-semibold uppercase tracking-wider transition-colors cursor-pointer",
+              tab === "related"
+                ? "border-white text-white"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            Related
+          </button>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-5">
-        {items.length === 0 ? (
+        {tab === "related" ? (
+          <QueueRelatedTab currentTrack={current?.track} onAdd={onAdd} onOpenArtist={onOpenArtist} />
+        ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <ListMusic className="h-8 w-8 text-white/20 mb-3" />
             <p className="text-sm font-medium text-foreground/80">Queue is empty</p>

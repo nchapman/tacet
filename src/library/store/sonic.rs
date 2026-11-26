@@ -228,4 +228,29 @@ impl LibraryStore {
         )?;
         Ok(stats)
     }
+
+    /// Returns `(track_id, album_id, artist)` for every available track that has a stored
+    /// sonic embedding for `model_version`, used to compute album/artist centroids in `SonicIndex`.
+    pub fn sonic_track_groups(&self, model_version: &str) -> Result<Vec<(String, String, String)>> {
+        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = guard.conn.as_ref().ok_or(LibraryError::NotFound)?;
+        let mut stmt = conn.prepare(
+            "SELECT t.id, t.album_id, COALESCE(NULLIF(t.album_artist, ''), t.artist)
+             FROM track_sonic s
+             JOIN tracks t ON t.id = s.track_id
+             WHERE t.available = 1 AND s.model_version = ?1",
+        )?;
+        let rows = stmt.query_map(params![model_version], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
 }

@@ -605,6 +605,7 @@ export function App() {
           onJump={handleJumpItem}
           onRemove={handleRemoveItem}
           onClear={handleClearQueue}
+          onAdd={handleAdd}
           onOpenArtist={openArtist}
         />
       </div>
@@ -663,6 +664,7 @@ export function App() {
         onJump={(itemId) => void tacet.jumpItem(itemId)}
         onRemove={(itemId) => void tacet.removeItem(itemId)}
         onClear={() => void tacet.clearQueue()}
+        onAdd={handleAdd}
         onOpenArtist={(artist) => {
           setQueueOpen(false);
           openArtist(artist);

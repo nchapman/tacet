@@ -53,6 +53,7 @@ interface ArtistDetailSnapshot {
   albums: Album[];
   remoteDetail: QobuzArtistDetail | null;
   remoteOnlyAlbums: Album[];
+  sonicSimilarArtists: ArtistSummary[];
   similarArtists: QobuzArtistDetail["similarArtists"];
   heroArt?: string;
 }
@@ -233,6 +234,17 @@ export function ArtistsView({
         .slice(0, 10),
     [inlineSimilar, similarArtistsQuery.data?.items, similarArtistId],
   );
+  const sonicSimilarArtistsQuery = useQuery({
+    queryKey: queryKeys.sonic.similarArtists(effectiveArtist, 10),
+    queryFn: ({ signal }) => tacetClient.getSonicSimilarArtists(effectiveArtist, 10, { signal }),
+    enabled: Boolean(effectiveArtist),
+    staleTime: QOBUZ_ARTIST_STALE_TIME_MS,
+    gcTime: QOBUZ_ARTIST_GC_TIME_MS,
+  });
+  const sonicSimilarArtists = useMemo(
+    () => (sonicSimilarArtistsQuery.data?.items ?? []).map((it) => it.artist).slice(0, 10),
+    [sonicSimilarArtistsQuery.data?.items],
+  );
 
   // Deduplicate Qobuz albums already present in the library section above.
   const remoteOnlyAlbums = useMemo(() => {
@@ -294,10 +306,11 @@ export function ArtistsView({
       albums,
       remoteDetail,
       remoteOnlyAlbums,
+      sonicSimilarArtists,
       similarArtists,
       heroArt,
     });
-  }, [canRevealTarget, effectiveArtist, currentSummary, albums, remoteDetail, remoteOnlyAlbums, similarArtists, heroArt]);
+  }, [canRevealTarget, effectiveArtist, currentSummary, albums, remoteDetail, remoteOnlyAlbums, sonicSimilarArtists, similarArtists, heroArt]);
 
   useEffect(() => {
     if (!mobileDetailOpen && !initialArtist) {
@@ -319,6 +332,7 @@ export function ArtistsView({
           albums,
           remoteDetail,
           remoteOnlyAlbums,
+          sonicSimilarArtists,
           similarArtists,
           heroArt,
         };
@@ -587,11 +601,33 @@ export function ArtistsView({
                 <p className="mt-8 text-sm text-muted-foreground">No albums found for {view.artist}.</p>
               )}
 
-              {/* Contextual Similar Artists */}
-              {(view.similarArtists?.length ?? 0) > 0 && (
-                <section aria-label="Similar Artists" className="mt-10 border-t border-white/[0.08] pt-6 space-y-4">
+              {/* Sonically Similar Artists (local embedding centroids) */}
+              {view.sonicSimilarArtists.length > 0 && (
+                <section
+                  aria-label="Sonically Similar Artists"
+                  className="mt-10 border-t border-white/[0.08] pt-6 space-y-4"
+                >
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Similar Artists
+                    Sonically Similar Artists
+                  </h3>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+                    {view.sonicSimilarArtists.map((sim) => (
+                      <SimilarArtistCard
+                        key={sim.name}
+                        name={sim.name}
+                        artworkUrl={sim.artworkUrl}
+                        onSelect={onSelectArtist}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Contextual Related Artists */}
+              {(view.similarArtists?.length ?? 0) > 0 && (
+                <section aria-label="Related Artists" className="mt-10 border-t border-white/[0.08] pt-6 space-y-4">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Related Artists
                   </h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
                     {view.similarArtists!.map((sim) => (
@@ -791,7 +827,7 @@ const SimilarArtistCard = memo(function SimilarArtistCard({
   artworkUrl,
   onSelect,
 }: {
-  id: number;
+  id?: number;
   name: string;
   artworkUrl?: string;
   onSelect?: (artistName: string, qobuzArtistId?: number) => void;

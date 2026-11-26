@@ -128,21 +128,48 @@ impl SonicIndex {
     /// Useful for Album Radio and Artist Radio sonic queries.
     pub fn centroid_for_tracks(&self, track_ids: &[String]) -> Option<Int8UnitVec> {
         let guard = self.inner.read().unwrap_or_else(|e| e.into_inner());
-        let mut sum = [0.0f32; super::quantize::EMBEDDING_DIM];
-        let mut count = 0usize;
-        for id in track_ids {
-            if let Some(&idx) = guard.positions.get(id) {
-                let v = &guard.entries[idx].1;
-                for (dst, &q) in sum.iter_mut().zip(v.data.iter()) {
-                    *dst += f32::from(q) * v.scale;
-                }
-                count += 1;
+        centroid_in_guard(&guard, track_ids)
+    }
+
+    /// Ranks candidate groups (e.g. albums or artists) by cosine similarity between their
+    /// mean track embedding centroid and `seed_key`'s centroid.
+    pub fn similar_groups<K>(
+        &self,
+        seed_key: &K,
+        groups: impl IntoIterator<Item = (K, Vec<String>)>,
+        limit: usize,
+    ) -> Vec<(K, f32)>
+    where
+        K: Eq + std::hash::Hash + Clone + Ord,
+    {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let guard = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let mut seed_centroid: Option<Int8UnitVec> = None;
+        let mut others: Vec<(K, Vec<String>)> = Vec::new();
+
+        for (key, track_ids) in groups {
+            if &key == seed_key {
+                seed_centroid = centroid_in_guard(&guard, &track_ids);
+            } else {
+                others.push((key, track_ids));
             }
         }
-        if count == 0 {
-            return None;
-        }
-        Int8UnitVec::from_raw_f32(&sum)
+        let Some(seed) = seed_centroid else {
+            return Vec::new();
+        };
+
+        let mut scored: Vec<(K, f32)> = others
+            .into_iter()
+            .filter_map(|(key, track_ids)| {
+                let c = centroid_in_guard(&guard, &track_ids)?;
+                Some((key, seed.cosine_similarity(&c)))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        scored.truncate(limit);
+        scored
     }
 
     /// Computes a smooth multi-step path ("Sonic Adventure") from `start_id` to `end_id`
@@ -198,6 +225,24 @@ impl SonicIndex {
         path.push(end_id.to_string());
         path
     }
+}
+
+fn centroid_in_guard(guard: &IndexInner, track_ids: &[String]) -> Option<Int8UnitVec> {
+    let mut sum = [0.0f32; super::quantize::EMBEDDING_DIM];
+    let mut count = 0usize;
+    for id in track_ids {
+        if let Some(&idx) = guard.positions.get(id) {
+            let v = &guard.entries[idx].1;
+            for (dst, &q) in sum.iter_mut().zip(v.data.iter()) {
+                *dst += f32::from(q) * v.scale;
+            }
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    Int8UnitVec::from_raw_f32(&sum)
 }
 
 #[cfg(test)]
@@ -261,5 +306,26 @@ mod tests {
         assert_eq!(neighbors[0].0, "t_mid");
         assert!(neighbors[0].1 > 0.95);
         assert!(idx.centroid_for_tracks(&["missing".into()]).is_none());
+    }
+
+    #[test]
+    fn similar_groups_ranks_closer_centroid_above_orthogonal() {
+        let idx = SonicIndex::new();
+        idx.upsert_track("a1".into(), basis_vec(0));
+        idx.upsert_track("a2".into(), blend_vec(0, 1, 0.1));
+        idx.upsert_track("b1".into(), blend_vec(0, 1, 0.25));
+        idx.upsert_track("c1".into(), basis_vec(5));
+
+        let groups = vec![
+            ("seed".to_string(), vec!["a1".into(), "a2".into()]),
+            ("close".to_string(), vec!["b1".into()]),
+            ("far".to_string(), vec!["c1".into()]),
+        ];
+
+        let res = idx.similar_groups(&"seed".to_string(), groups, 2);
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0].0, "close");
+        assert!(res[0].1 > res[1].1);
+        assert_eq!(res[1].0, "far");
     }
 }

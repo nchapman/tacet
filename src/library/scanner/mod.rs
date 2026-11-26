@@ -546,6 +546,10 @@ impl Catalog {
         self.store.get_sonic_stats(model_version)
     }
 
+    pub fn sonic_track_groups(&self, model_version: &str) -> Result<Vec<(String, String, String)>> {
+        self.store.sonic_track_groups(model_version)
+    }
+
     pub fn cover_art_by_hash(&self, hash: &str) -> Option<(Vec<u8>, String)> {
         let h = hash.trim();
         if h.is_empty() {

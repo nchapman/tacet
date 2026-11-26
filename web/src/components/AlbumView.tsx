@@ -100,7 +100,18 @@ export function AlbumView({
     staleTime: QOBUZ_ALBUM_STALE_TIME_MS,
     gcTime: QOBUZ_ALBUM_GC_TIME_MS,
   });
-  const similarAlbums = (similarQuery.data?.items ?? [])
+  const sonicSimilarQuery = useQuery({
+    queryKey: queryKeys.sonic.similarAlbums(album.id, 6),
+    queryFn: ({ signal }) => tacetClient.getSonicSimilarAlbums(album.id, 6, { signal }),
+    enabled: Boolean(album.id),
+    staleTime: QOBUZ_ALBUM_STALE_TIME_MS,
+    gcTime: QOBUZ_ALBUM_GC_TIME_MS,
+  });
+  const sonicSimilarAlbums = (sonicSimilarQuery.data?.items ?? [])
+    .map((it) => it.album)
+    .filter((a) => a.id !== album.id)
+    .slice(0, 6);
+  const relatedAlbums = (similarQuery.data?.items ?? [])
     .filter((a) => a.id !== album.id)
     .slice(0, 6);
   const [busyLibrary, setBusyLibrary] = useState(false);
@@ -594,12 +605,33 @@ export function AlbumView({
           )}
         </div>
 
-        {/* Contextual "More Like This" recommendations */}
-        {similarAlbums.length > 0 && (
-          <section aria-label="More Like This" className="mt-12 border-t border-white/[0.08] pt-8 space-y-4">
-            <h2 className="text-base font-semibold tracking-tight text-white">More Like This</h2>
+        {/* Sonically Similar Albums (local embedding centroids) */}
+        {sonicSimilarAlbums.length > 0 && (
+          <section
+            aria-label="Sonically Similar Albums"
+            className="mt-12 border-t border-white/[0.08] pt-8 space-y-4"
+          >
+            <h2 className="text-base font-semibold tracking-tight text-white">Sonically Similar Albums</h2>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-x-4 gap-y-6">
-              {similarAlbums.map((sim) => (
+              {sonicSimilarAlbums.map((sim) => (
+                <AlbumCard
+                  key={sim.id}
+                  album={sim}
+                  showInLibraryBadge
+                  onOpen={(a) => onOpenAlbum(a.id)}
+                  onPlay={onPlay}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Contextual Related Albums */}
+        {relatedAlbums.length > 0 && (
+          <section aria-label="Related Albums" className="mt-12 border-t border-white/[0.08] pt-8 space-y-4">
+            <h2 className="text-base font-semibold tracking-tight text-white">Related Albums</h2>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-x-4 gap-y-6">
+              {relatedAlbums.map((sim) => (
                 <AlbumCard
                   key={sim.id}
                   album={sim}

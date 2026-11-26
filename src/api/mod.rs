@@ -467,6 +467,27 @@ fn library_routes() -> Router<Arc<AppState>> {
             post(handlers_library::library_rescan),
         )
         .route("/api/v1/library/sync", post(handlers_library::library_sync))
+        .merge(intelligence_routes())
+        .route(
+            "/api/v1/library/remote/albums",
+            post(handlers_library::add_remote_album),
+        )
+        .route(
+            "/api/v1/library/remote/albums/{id}",
+            delete(handlers_library::remove_remote_album),
+        )
+        .route(
+            "/api/v1/library/remote/tracks",
+            post(handlers_library::add_remote_track),
+        )
+        .route(
+            "/api/v1/library/remote/tracks/{id}",
+            delete(handlers_library::remove_remote_track),
+        )
+}
+
+fn intelligence_routes() -> Router<Arc<AppState>> {
+    Router::new()
         .route(
             "/api/v1/library/enrichment",
             get(handlers_library::library_enrichment_status),
@@ -488,20 +509,12 @@ fn library_routes() -> Router<Arc<AppState>> {
             get(handlers_library::track_similar_sonic),
         )
         .route(
-            "/api/v1/library/remote/albums",
-            post(handlers_library::add_remote_album),
+            "/api/v1/albums/{id}/similar-sonic",
+            get(handlers_library::album_similar_sonic),
         )
         .route(
-            "/api/v1/library/remote/albums/{id}",
-            delete(handlers_library::remove_remote_album),
-        )
-        .route(
-            "/api/v1/library/remote/tracks",
-            post(handlers_library::add_remote_track),
-        )
-        .route(
-            "/api/v1/library/remote/tracks/{id}",
-            delete(handlers_library::remove_remote_track),
+            "/api/v1/artists/similar-sonic",
+            get(handlers_library::artist_similar_sonic),
         )
 }
 

@@ -142,6 +142,16 @@ export const queryKeys = {
     similarAlbums: (albumId: string) => ["discover", "similar-albums", albumId] as const,
     similarArtists: (artistId: number) => ["discover", "similar-artists", artistId] as const,
   },
+  sonic: {
+    all: ["sonic"] as const,
+    similarTracks: (trackId: string, limit = 5) => ["sonic", "similar-tracks", trackId, limit] as const,
+    similarAlbums: (albumId: string, limit = 12) => ["sonic", "similar-albums", albumId, limit] as const,
+    similarArtists: (artistName: string, limit = 12) =>
+      ["sonic", "similar-artists", artistName.toLowerCase(), limit] as const,
+  },
+  radio: {
+    preview: (kind: string, id: string, limit = 25) => ["radio", "preview", kind, id, limit] as const,
+  },
   albums: ["album"] as const,
   album: (albumId: string) => ["album", albumId] as const,
 };

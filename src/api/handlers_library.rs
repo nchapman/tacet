@@ -574,6 +574,127 @@ pub async fn track_similar_sonic(
     Json(serde_json::json!({ "items": items }))
 }
 
+pub async fn album_similar_sonic(
+    State(st): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(qv): Query<HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let (limit, _) = parse_page(&qv, 12, 50);
+    let Some(worker) = st.sonic() else {
+        return Json(serde_json::json!({ "items": [] }));
+    };
+    let rows = match st.catalog.sonic_track_groups(crate::sonic::MODEL_VERSION) {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(error = %err, "sonic_track_groups failed for album similarity");
+            return Json(serde_json::json!({ "items": [] }));
+        }
+    };
+    let mut by_album: HashMap<String, Vec<String>> = HashMap::new();
+    for (tid, album_id, _) in rows {
+        if !album_id.is_empty() {
+            by_album.entry(album_id).or_default().push(tid);
+        }
+    }
+    let matches = worker.index().similar_groups(&id, by_album, limit as usize);
+    let items: Vec<serde_json::Value> = matches
+        .into_iter()
+        .filter_map(|(album_id, score)| {
+            let album = st.catalog.album(&album_id)?;
+            Some(serde_json::json!({
+                "album": album,
+                "score": score,
+            }))
+        })
+        .collect();
+    Json(serde_json::json!({ "items": items }))
+}
+
+pub async fn artist_similar_sonic(
+    State(st): State<Arc<AppState>>,
+    Query(qv): Query<HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let (limit, _) = parse_page(&qv, 12, 50);
+    let name = qv.get("name").map(String::as_str).unwrap_or("");
+    let Some(worker) = st.sonic() else {
+        return Json(serde_json::json!({ "items": [] }));
+    };
+    let seed_norm = name.trim().to_lowercase();
+    if seed_norm.is_empty() {
+        return Json(serde_json::json!({ "items": [] }));
+    }
+    let rows = match st.catalog.sonic_track_groups(crate::sonic::MODEL_VERSION) {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(error = %err, "sonic_track_groups failed for artist similarity");
+            return Json(serde_json::json!({ "items": [] }));
+        }
+    };
+    let mut by_artist: HashMap<String, Vec<String>> = HashMap::new();
+    let mut display_names: HashMap<String, String> = HashMap::new();
+    let mut sample_album: HashMap<String, String> = HashMap::new();
+    for (tid, album_id, artist) in rows {
+        let trimmed = artist.trim();
+        let norm = trimmed.to_lowercase();
+        if !norm.is_empty() {
+            by_artist.entry(norm.clone()).or_default().push(tid);
+            display_names
+                .entry(norm.clone())
+                .or_insert_with(|| trimmed.to_string());
+            if !album_id.is_empty() {
+                sample_album.entry(norm).or_insert(album_id);
+            }
+        }
+    }
+    let matches = worker
+        .index()
+        .similar_groups(&seed_norm, by_artist, limit as usize);
+    let items: Vec<serde_json::Value> = matches
+        .into_iter()
+        .filter_map(|(norm_name, score)| {
+            let display = display_names.get(&norm_name)?;
+            let artist = resolve_artist_summary(
+                &st.catalog,
+                display,
+                &norm_name,
+                sample_album.get(&norm_name),
+            );
+            Some(serde_json::json!({
+                "artist": artist,
+                "score": score,
+            }))
+        })
+        .collect();
+    Json(serde_json::json!({ "items": items }))
+}
+
+fn resolve_artist_summary(
+    catalog: &crate::library::Catalog,
+    display_name: &str,
+    norm_name: &str,
+    fallback_album_id: Option<&String>,
+) -> crate::library::ArtistSummary {
+    if let Ok((found, _)) = catalog.list_artists(&FacetFilter {
+        query: display_name.to_string(),
+        limit: 25,
+        ..Default::default()
+    }) && let Some(exact) = found
+        .into_iter()
+        .find(|a| a.name.trim().to_lowercase() == norm_name)
+    {
+        return exact;
+    }
+    let artwork_url = fallback_album_id
+        .and_then(|aid| catalog.album(aid))
+        .map(|a| a.artwork_url)
+        .unwrap_or_default();
+    crate::library::ArtistSummary {
+        name: display_name.to_string(),
+        artwork_url,
+        ..Default::default()
+    }
+}
+
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SyncReq {

@@ -29,10 +29,14 @@ import type {
   QueueEvent,
   QueuePosition,
   QueueSource,
+  RadioPreviewResponse,
   RegisterPlayerRequest,
   ServerInfo,
   Settings,
   SnapshotEvent,
+  SonicSimilarAlbumItem,
+  SonicSimilarArtistItem,
+  SonicSimilarTrackItem,
   StartRadioRequest,
   StartRadioResponse,
   StreamMode,
@@ -756,6 +760,34 @@ export class TacetClient {
 
   getSimilarArtists(artistId: number, limit = 12, opts?: RequestOptions): Promise<{ items: QobuzArtist[] }> {
     return this.request(`/api/v1/artists/${encodeURIComponent(String(artistId))}/similar`, {}, { limit }, opts);
+  }
+
+  getSonicSimilarTracks(
+    trackId: string,
+    limit = 5,
+    opts?: RequestOptions,
+  ): Promise<{ items: SonicSimilarTrackItem[] }> {
+    return this.request(`/api/v1/tracks/${encodeURIComponent(trackId)}/similar-sonic`, {}, { limit }, opts);
+  }
+
+  getSonicSimilarAlbums(
+    albumId: string,
+    limit = 12,
+    opts?: RequestOptions,
+  ): Promise<{ items: SonicSimilarAlbumItem[] }> {
+    return this.request(`/api/v1/albums/${encodeURIComponent(albumId)}/similar-sonic`, {}, { limit }, opts);
+  }
+
+  getSonicSimilarArtists(
+    artistName: string,
+    limit = 12,
+    opts?: RequestOptions,
+  ): Promise<{ items: SonicSimilarArtistItem[] }> {
+    return this.request("/api/v1/artists/similar-sonic", {}, { name: artistName, limit }, opts);
+  }
+
+  previewRadio(req: StartRadioRequest, opts?: RequestOptions): Promise<RadioPreviewResponse> {
+    return this.request("/api/v1/radio/preview", { method: "POST", body: JSON.stringify(req) }, undefined, opts);
   }
 }
 
