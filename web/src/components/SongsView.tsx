@@ -1,5 +1,5 @@
 import { keepPreviousData, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ListPlus, Play, Radio, SkipForward } from "lucide-react";
+import { ListPlus, Loader2, Play, Radio, SkipForward } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
@@ -33,6 +33,7 @@ interface SongsViewProps {
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
   onStartRadio?: (kind: RadioSeedKind, id: string) => void;
+  radioLoadingKey?: string | null;
 }
 
 function trackPageQueryOptions(genre: string, sort: TrackSort, dir: "asc" | "desc", page: number) {
@@ -71,6 +72,7 @@ export const SongsView = memo(function SongsView({
   onPlay,
   onAdd,
   onStartRadio,
+  radioLoadingKey,
 }: SongsViewProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -255,6 +257,7 @@ export const SongsView = memo(function SongsView({
                       onPlay={onPlay}
                       onAdd={onAdd}
                       onStartRadio={onStartRadio}
+                      radioLoadingKey={radioLoadingKey}
                     />
                   );
                 })}
@@ -275,6 +278,7 @@ interface SongRowProps {
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
   onStartRadio?: (kind: RadioSeedKind, id: string) => void;
+  radioLoadingKey?: string | null;
 }
 
 const SongRow = memo(function SongRow({
@@ -285,6 +289,7 @@ const SongRow = memo(function SongRow({
   onPlay,
   onAdd,
   onStartRadio,
+  radioLoadingKey,
 }: SongRowProps) {
   const qual = fmtQuality(tr);
   const artistPrefetch = useArtistHoverPrefetch(tr.artist);
@@ -360,17 +365,28 @@ const SongRow = memo(function SongRow({
 
       {/* Actions */}
       <div className="flex items-center justify-end gap-0.5">
-        {onStartRadio && (
-          <button
-            type="button"
-            title="Start Radio"
-            aria-label={`Start Radio from ${tr.title}`}
-            onClick={() => onStartRadio("track", tr.id)}
-            className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer md:opacity-0 md:group-hover:opacity-100"
-          >
-            <Radio className="h-3.5 w-3.5" />
-          </button>
-        )}
+        {onStartRadio && (() => {
+          const trackRadioSpinning = radioLoadingKey === `track:${tr.id}`;
+          return (
+            <button
+              type="button"
+              disabled={Boolean(radioLoadingKey)}
+              title="Start Radio"
+              aria-label={`Start Radio from ${tr.title}`}
+              onClick={() => onStartRadio("track", tr.id)}
+              className={cn(
+                "rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer disabled:cursor-default",
+                trackRadioSpinning ? "opacity-100 text-foreground" : "md:opacity-0 md:group-hover:opacity-100",
+              )}
+            >
+              {trackRadioSpinning ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Radio className="h-3.5 w-3.5" />
+              )}
+            </button>
+          );
+        })()}
         <button
           type="button"
           title="Play Next"

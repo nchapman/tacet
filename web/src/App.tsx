@@ -468,6 +468,7 @@ export function App() {
                   onTogglePlayPause={handleTogglePlayPause}
                   onAdd={handleAdd}
                   onStartRadio={handleStartRadio}
+                  radioLoadingKey={tacet.radioLoadingKey}
                 />
               }
             />
@@ -485,6 +486,7 @@ export function App() {
                   onTogglePlayPause={handleTogglePlayPause}
                   onAdd={handleAdd}
                   onStartRadio={handleStartRadio}
+                  radioLoadingKey={tacet.radioLoadingKey}
                 />
               }
             />
@@ -500,6 +502,7 @@ export function App() {
                   onPlay={handlePlay}
                   onAdd={handleAdd}
                   onStartRadio={handleStartRadio}
+                  radioLoadingKey={tacet.radioLoadingKey}
                 />
               }
             />
@@ -515,6 +518,7 @@ export function App() {
                   onPlay={handlePlay}
                   onAdd={handleAdd}
                   onStartRadio={handleStartRadio}
+                  radioLoadingKey={tacet.radioLoadingKey}
                 />
               }
             />
@@ -528,6 +532,7 @@ export function App() {
                   onPlay={handlePlay}
                   onAdd={handleAdd}
                   onStartRadio={handleStartRadio}
+                  radioLoadingKey={tacet.radioLoadingKey}
                 />
               }
             />
@@ -613,6 +618,7 @@ export function App() {
           onOpenAlbum={handleOpenAlbumId}
           onOpenArtist={openArtist}
           onStartRadio={handleStartRadio}
+          radioLoadingKey={tacet.radioLoadingKey}
         />
 
         {/* Mobile Bottom Navigation Bar */}
@@ -737,6 +743,7 @@ function ArtistsRoute({
   onPlay,
   onAdd,
   onStartRadio,
+  radioLoadingKey,
 }: {
   qobuzStatus: ReturnType<typeof useTacet>["qobuzStatus"];
   onSelectArtist: (artistName: string) => void;
@@ -746,6 +753,7 @@ function ArtistsRoute({
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
   onStartRadio: (kind: RadioSeedKind, id: string) => void;
+  radioLoadingKey?: string | null;
 }) {
   const { artistName } = useParams<{ artistName?: string }>();
   const [searchParams] = useSearchParams();
@@ -765,6 +773,7 @@ function ArtistsRoute({
       onPlay={onPlay}
       onAdd={onAdd}
       onStartRadio={onStartRadio}
+      radioLoadingKey={radioLoadingKey}
     />
   );
 }
@@ -780,6 +789,7 @@ function AlbumRoute({
   onTogglePlayPause,
   onAdd,
   onStartRadio,
+  radioLoadingKey,
 }: {
   qobuzConnected: boolean;
   currentTrackId?: string;
@@ -791,6 +801,7 @@ function AlbumRoute({
   onTogglePlayPause?: () => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
   onStartRadio: (kind: RadioSeedKind, id: string) => void;
+  radioLoadingKey?: string | null;
 }) {
   const { albumKey } = useParams<{ albumKey: string }>();
   const albumId = albumKey ? decodeAlbumKey(albumKey) : undefined;
@@ -881,6 +892,7 @@ function AlbumRoute({
       onTogglePlayPause={onTogglePlayPause}
       onAdd={onAdd}
       onStartRadio={onStartRadio}
+      radioLoadingKey={radioLoadingKey}
     />
   );
 }

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Award, Check, Clock3, FileText, Layers, ListPlus, Pause, Play, Plus, Radio, SkipForward, Sparkles, Users } from "lucide-react";
+import { ArrowLeft, Award, Check, Clock3, FileText, Layers, ListPlus, Loader2, Pause, Play, Plus, Radio, SkipForward, Sparkles, Users } from "lucide-react";
 import { useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtCount, fmtDuration, fmtQuality } from "@/api/format";
@@ -33,6 +33,7 @@ interface AlbumViewProps {
   onTogglePlayPause?: () => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
   onStartRadio?: (kind: RadioSeedKind, id: string) => void;
+  radioLoadingKey?: string | null;
 }
 
 function sourceLabel(provider?: string, source?: string): string {
@@ -86,6 +87,7 @@ export function AlbumView({
   onTogglePlayPause,
   onAdd,
   onStartRadio,
+  radioLoadingKey,
 }: AlbumViewProps) {
   const queryClient = useQueryClient();
   const artistHoverPrefetch = useArtistHoverPrefetch(album.artist);
@@ -275,10 +277,15 @@ export function AlbumView({
                 <Button
                   type="button"
                   variant="secondary"
+                  disabled={Boolean(radioLoadingKey)}
                   className="rounded-full h-10 px-4"
                   onClick={() => onStartRadio("album", album.id)}
                 >
-                  <Radio className="h-4 w-4" />
+                  {radioLoadingKey === `album:${album.id}` ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Radio className="h-4 w-4" />
+                  )}
                   Radio
                 </Button>
               )}
@@ -507,17 +514,28 @@ export function AlbumView({
                         <Plus className="h-3.5 w-3.5" />
                       </button>
                     )}
-                    {onStartRadio && (
-                      <button
-                        type="button"
-                        title="Start Radio"
-                        aria-label={`Start Radio from ${tr.title}`}
-                        onClick={() => onStartRadio("track", tr.id)}
-                        className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer sm:opacity-0 sm:group-hover:opacity-100"
-                      >
-                        <Radio className="h-3.5 w-3.5" />
-                      </button>
-                    )}
+                    {onStartRadio && (() => {
+                      const trackRadioSpinning = radioLoadingKey === `track:${tr.id}`;
+                      return (
+                        <button
+                          type="button"
+                          disabled={Boolean(radioLoadingKey)}
+                          title="Start Radio"
+                          aria-label={`Start Radio from ${tr.title}`}
+                          onClick={() => onStartRadio("track", tr.id)}
+                          className={cn(
+                            "rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer disabled:cursor-default",
+                            trackRadioSpinning ? "opacity-100 text-foreground" : "sm:opacity-0 sm:group-hover:opacity-100",
+                          )}
+                        >
+                          {trackRadioSpinning ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Radio className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      );
+                    })()}
                     <button
                       type="button"
                       title="Play Next"

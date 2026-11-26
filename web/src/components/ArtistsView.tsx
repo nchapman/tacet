@@ -67,6 +67,7 @@ interface ArtistsViewProps {
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
   onStartRadio?: (kind: RadioSeedKind, id: string) => void;
+  radioLoadingKey?: string | null;
 }
 
 function normTitle(s: string): string {
@@ -96,6 +97,7 @@ export function ArtistsView({
   onPlay,
   onAdd,
   onStartRadio,
+  radioLoadingKey,
 }: ArtistsViewProps) {
   const queryClient = useQueryClient();
   const [selectedArtist, setSelectedArtist] = useState(initialArtist ?? "");
@@ -442,23 +444,27 @@ export function ArtistsView({
                     )}
                   </p>
                 </div>
-                {onStartRadio && (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    className="rounded-full h-9 px-4 shrink-0"
-                    onClick={() =>
-                      onStartRadio(
-                        "artist",
-                        view.remoteDetail?.artist.id ? String(view.remoteDetail.artist.id) : view.artist,
-                      )
-                    }
-                  >
-                    <Radio className="h-4 w-4" />
-                    Radio
-                  </Button>
-                )}
+                {onStartRadio && (() => {
+                  const artistRadioId = view.remoteDetail?.artist.id ? String(view.remoteDetail.artist.id) : view.artist;
+                  const artistRadioSpinning = radioLoadingKey === `artist:${artistRadioId}`;
+                  return (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      disabled={Boolean(radioLoadingKey)}
+                      className="rounded-full h-9 px-4 shrink-0"
+                      onClick={() => onStartRadio("artist", artistRadioId)}
+                    >
+                      {artistRadioSpinning ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Radio className="h-4 w-4" />
+                      )}
+                      Radio
+                    </Button>
+                  );
+                })()}
               </div>
 
               <SmoothReveal open={Boolean(view.remoteDetail?.artist.biography)}>
@@ -501,6 +507,7 @@ export function ArtistsView({
                             onPlay={onPlay}
                             onAdd={onAdd}
                             onStartRadio={onStartRadio}
+                            radioLoadingKey={radioLoadingKey}
                           />
                         ))}
                       </div>
@@ -540,6 +547,7 @@ export function ArtistsView({
                         onPlay={onPlay}
                         onAdd={onAdd}
                         onStartRadio={onStartRadio}
+                        radioLoadingKey={radioLoadingKey}
                       />
                     ))
                   )}
@@ -579,6 +587,7 @@ export function ArtistsView({
                           onPlay={onPlay}
                           onAdd={onAdd}
                           onStartRadio={onStartRadio}
+                          radioLoadingKey={radioLoadingKey}
                         />
                       ))}
                     </div>
@@ -629,12 +638,14 @@ function StackedAlbumCard({
   onPlay,
   onAdd,
   onStartRadio,
+  radioLoadingKey,
 }: {
   album: Album;
   onOpenAlbum: (album: Album) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
   onStartRadio?: (kind: RadioSeedKind, id: string) => void;
+  radioLoadingKey?: string | null;
 }) {
   const hoverPrefetch = useAlbumHoverPrefetch(alb);
   const qLabel = fmtAlbumQuality(alb);
@@ -732,13 +743,18 @@ function StackedAlbumCard({
               type="button"
               variant="secondary"
               size="sm"
+              disabled={Boolean(radioLoadingKey)}
               className="rounded-full h-8 px-3.5"
               onClick={(e) => {
                 e.stopPropagation();
                 onStartRadio("album", alb.id);
               }}
             >
-              <Radio className="h-3.5 w-3.5" />
+              {radioLoadingKey === `album:${alb.id}` ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Radio className="h-3.5 w-3.5" />
+              )}
               Radio
             </Button>
           )}
@@ -831,6 +847,7 @@ const PopularTrackRow = memo(function PopularTrackRow({
   onPlay,
   onAdd,
   onStartRadio,
+  radioLoadingKey,
 }: {
   track: Track;
   index: number;
@@ -839,6 +856,7 @@ const PopularTrackRow = memo(function PopularTrackRow({
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
   onStartRadio?: (kind: RadioSeedKind, id: string) => void;
+  radioLoadingKey?: string | null;
 }) {
   const albumPrefetch = useAlbumHoverPrefetch(tr.albumId);
 
@@ -882,23 +900,42 @@ const PopularTrackRow = memo(function PopularTrackRow({
       </div>
       <div className="flex items-center justify-end shrink-0">
         {tr.durationSec > 0 && (
-          <span className="hidden sm:inline group-hover:hidden group-focus-within:hidden pr-1 font-mono text-xs tabular-nums text-muted-foreground/80">
+          <span
+            className={cn(
+              "hidden pr-1 font-mono text-xs tabular-nums text-muted-foreground/80",
+              radioLoadingKey === `track:${tr.id}`
+                ? "sm:hidden"
+                : "sm:inline group-hover:hidden group-focus-within:hidden",
+            )}
+          >
             {fmtDuration(tr.durationSec)}
           </span>
         )}
-        <div className="flex sm:hidden sm:group-hover:flex sm:group-focus-within:flex items-center gap-0.5">
+        <div
+          className={cn(
+            "flex items-center gap-0.5",
+            radioLoadingKey === `track:${tr.id}`
+              ? "sm:flex"
+              : "sm:hidden sm:group-hover:flex sm:group-focus-within:flex",
+          )}
+        >
           {onStartRadio && (
             <button
               type="button"
+              disabled={Boolean(radioLoadingKey)}
               title="Start Radio"
               aria-label={`Start Radio from ${tr.title}`}
               onClick={(e) => {
                 e.stopPropagation();
                 onStartRadio("track", tr.id);
               }}
-              className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground cursor-pointer"
+              className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground cursor-pointer disabled:cursor-default"
             >
-              <Radio className="h-3.5 w-3.5" />
+              {radioLoadingKey === `track:${tr.id}` ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-foreground" />
+              ) : (
+                <Radio className="h-3.5 w-3.5" />
+              )}
             </button>
           )}
           <button

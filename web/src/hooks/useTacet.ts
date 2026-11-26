@@ -88,7 +88,8 @@ export function useTacet(options?: UseTacetOptions | string | null) {
   const [connection, setConnection] = useState<ConnectionStatus>("connecting");
   const [error, setError] = useState<string>("");
   const [discovering, setDiscovering] = useState(false);
-  const [radioLoading, setRadioLoading] = useState(false);
+  const [radioLoadingKey, setRadioLoadingKey] = useState<string | null>(null);
+  const radioLoadingKeyRef = useRef<string | null>(null);
 
   const activeZoneIdRef = useRef(selectedZoneId);
   const clockOffsetMsRef = useRef(0);
@@ -344,14 +345,18 @@ export function useTacet(options?: UseTacetOptions | string | null) {
         setError("No UPnP renderer selected or discovered");
         return undefined;
       }
-      setRadioLoading(true);
+      if (radioLoadingKeyRef.current) return undefined;
+      const key = `${kind}:${id}`;
+      radioLoadingKeyRef.current = key;
+      setRadioLoadingKey(key);
       try {
         return await runAction(
           () => tacetClient.zone(activeZoneId).startRadio({ kind, id }),
           (res) => upsertZone(res.zone),
         );
       } finally {
-        setRadioLoading(false);
+        radioLoadingKeyRef.current = null;
+        setRadioLoadingKey(null);
       }
     },
     [activeZoneId, runAction, upsertZone],
@@ -447,7 +452,7 @@ export function useTacet(options?: UseTacetOptions | string | null) {
     error,
     clearError,
     discovering,
-    radioLoading,
+    radioLoadingKey,
     selectZone,
     replaceSelectedZoneIfMatches,
     discoverZones,

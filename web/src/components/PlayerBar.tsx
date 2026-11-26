@@ -59,6 +59,7 @@ interface PlayerBarProps {
   onOpenAlbum?: (albumId: string) => void;
   onOpenArtist?: (artist: string) => void;
   onStartRadio?: (kind: RadioSeedKind, id: string) => void;
+  radioLoadingKey?: string | null;
 }
 
 export const PlayerBar = memo(function PlayerBar({
@@ -87,6 +88,7 @@ export const PlayerBar = memo(function PlayerBar({
   onOpenAlbum,
   onOpenArtist,
   onStartRadio,
+  radioLoadingKey,
 }: PlayerBarProps) {
   const [scrubPos, setScrubPos] = useState<number | null>(null);
   const [volDraft, setVolDraft] = useState<number | null>(null);
@@ -426,11 +428,16 @@ export const PlayerBar = memo(function PlayerBar({
               type="button"
               variant="ghost"
               size="icon-sm"
+              disabled={Boolean(radioLoadingKey)}
               onClick={() => onStartRadio("track", track.id)}
               title="Start Track Radio"
               aria-label={`Start Radio from ${track.title}`}
             >
-              <Radio className="h-4 w-4" />
+              {radioLoadingKey === `track:${track.id}` ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Radio className="h-4 w-4" />
+              )}
             </Button>
           )}
 
