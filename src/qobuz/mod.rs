@@ -4,6 +4,7 @@ pub mod discover;
 pub mod types;
 
 pub use client::{Client, Config, sign_file_url};
+pub use discover::DynamicSuggestSeed;
 pub use types::*;
 
 #[cfg(test)]

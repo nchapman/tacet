@@ -7,6 +7,7 @@ import type {
   QobuzStatus,
   QueuePosition,
   QueueSource,
+  RadioSeedKind,
   RepeatMode,
   Settings,
   StreamMode,
@@ -87,6 +88,7 @@ export function useTacet(options?: UseTacetOptions | string | null) {
   const [connection, setConnection] = useState<ConnectionStatus>("connecting");
   const [error, setError] = useState<string>("");
   const [discovering, setDiscovering] = useState(false);
+  const [radioLoading, setRadioLoading] = useState(false);
 
   const activeZoneIdRef = useRef(selectedZoneId);
   const clockOffsetMsRef = useRef(0);
@@ -336,6 +338,25 @@ export function useTacet(options?: UseTacetOptions | string | null) {
     [activeZoneId, runAction, upsertZone],
   );
 
+  const startRadio = useCallback(
+    async (kind: RadioSeedKind, id: string) => {
+      if (!activeZoneId) {
+        setError("No UPnP renderer selected or discovered");
+        return undefined;
+      }
+      setRadioLoading(true);
+      try {
+        return await runAction(
+          () => tacetClient.zone(activeZoneId).startRadio({ kind, id }),
+          (res) => upsertZone(res.zone),
+        );
+      } finally {
+        setRadioLoading(false);
+      }
+    },
+    [activeZoneId, runAction, upsertZone],
+  );
+
   const jumpItem = useCallback(
     (itemId: string) => {
       if (!activeZoneId) return Promise.resolve(undefined);
@@ -426,6 +447,7 @@ export function useTacet(options?: UseTacetOptions | string | null) {
     error,
     clearError,
     discovering,
+    radioLoading,
     selectZone,
     replaceSelectedZoneIfMatches,
     discoverZones,
@@ -435,6 +457,7 @@ export function useTacet(options?: UseTacetOptions | string | null) {
     setLibraryAutoScan,
     playSource,
     addSource,
+    startRadio,
     jumpItem,
     removeItem,
     clearQueue,

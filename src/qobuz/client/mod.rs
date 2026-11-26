@@ -654,6 +654,69 @@ impl Client {
         decode_qobuz_json(&body)
     }
 
+    pub(crate) async fn post_json<B: serde::Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let token = self
+            .inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .auth_token
+            .clone();
+        if token.is_empty() {
+            return Err(QobuzError::Unauthenticated);
+        }
+        self.wait_for_cooldown().await?;
+        let app_id = self.app_id();
+        let url = format!("{}{}", self.base_url, path);
+        let _permit = self
+            .req_sem
+            .acquire()
+            .await
+            .map_err(|_| QobuzError::Other("semaphore closed".into()))?;
+
+        let mut req = self
+            .http
+            .post(&url)
+            .json(body)
+            .header("User-Agent", "Mozilla/5.0")
+            .header("X-User-Auth-Token", &token);
+        if !app_id.is_empty() {
+            req = req.header("X-App-Id", &app_id);
+        }
+        let resp = req.send().await?;
+        let status = resp.status().as_u16();
+        if status == 429 {
+            let ra = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            self.note_rate_limit(ra);
+            return Err(QobuzError::RateLimited);
+        }
+        if status == 401 {
+            return Err(QobuzError::Unauthenticated);
+        }
+        if status == 404 {
+            return Err(QobuzError::NotFound);
+        }
+        let resp_bytes = resp.bytes().await?;
+        if !(200..300).contains(&status) {
+            return Err(QobuzError::Api {
+                status,
+                body: String::from_utf8_lossy(&resp_bytes)
+                    .chars()
+                    .take(200)
+                    .collect(),
+            });
+        }
+        self.consecutive_429.store(0, Ordering::Relaxed);
+        decode_qobuz_json(&resp_bytes)
+    }
+
     pub(crate) async fn fetch_text(&self, target_url: &str) -> Result<String> {
         let resp = self
             .http

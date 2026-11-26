@@ -1,5 +1,5 @@
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, SkipForward, Sparkles } from "lucide-react";
+import { ArrowLeft, ChevronRight, ListPlus, Loader2, Play, Radio, SkipForward, Sparkles } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtCount, fmtDuration, isHiRes } from "@/api/format";
@@ -10,6 +10,7 @@ import type {
   QobuzStatus,
   QueuePosition,
   QueueSource,
+  RadioSeedKind,
   Track,
 } from "@/api/types";
 import { AlbumArt, isArtworkLoaded, markArtworkLoaded, resolveArtworkSrc } from "@/components/ui/artwork";
@@ -65,6 +66,7 @@ interface ArtistsViewProps {
   onOpenAlbumId?: (albumId: string) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
+  onStartRadio?: (kind: RadioSeedKind, id: string) => void;
 }
 
 function normTitle(s: string): string {
@@ -93,6 +95,7 @@ export function ArtistsView({
   onOpenAlbumId,
   onPlay,
   onAdd,
+  onStartRadio,
 }: ArtistsViewProps) {
   const queryClient = useQueryClient();
   const [selectedArtist, setSelectedArtist] = useState(initialArtist ?? "");
@@ -419,7 +422,7 @@ export function ArtistsView({
                   alt={view.artist}
                   className="h-16 w-16 sm:h-20 sm:w-20 shrink-0 rounded-full shadow-xl ring-1 ring-white/15"
                 />
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                     Artist
                   </div>
@@ -439,6 +442,23 @@ export function ArtistsView({
                     )}
                   </p>
                 </div>
+                {onStartRadio && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="rounded-full h-9 px-4 shrink-0"
+                    onClick={() =>
+                      onStartRadio(
+                        "artist",
+                        view.remoteDetail?.artist.id ? String(view.remoteDetail.artist.id) : view.artist,
+                      )
+                    }
+                  >
+                    <Radio className="h-4 w-4" />
+                    Radio
+                  </Button>
+                )}
               </div>
 
               <SmoothReveal open={Boolean(view.remoteDetail?.artist.biography)}>
@@ -480,6 +500,7 @@ export function ArtistsView({
                             onOpenAlbumId={onOpenAlbumId}
                             onPlay={onPlay}
                             onAdd={onAdd}
+                            onStartRadio={onStartRadio}
                           />
                         ))}
                       </div>
@@ -518,6 +539,7 @@ export function ArtistsView({
                         onOpenAlbum={onOpenAlbum}
                         onPlay={onPlay}
                         onAdd={onAdd}
+                        onStartRadio={onStartRadio}
                       />
                     ))
                   )}
@@ -556,6 +578,7 @@ export function ArtistsView({
                           onOpenAlbum={onOpenAlbum}
                           onPlay={onPlay}
                           onAdd={onAdd}
+                          onStartRadio={onStartRadio}
                         />
                       ))}
                     </div>
@@ -605,11 +628,13 @@ function StackedAlbumCard({
   onOpenAlbum,
   onPlay,
   onAdd,
+  onStartRadio,
 }: {
   album: Album;
   onOpenAlbum: (album: Album) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
+  onStartRadio?: (kind: RadioSeedKind, id: string) => void;
 }) {
   const hoverPrefetch = useAlbumHoverPrefetch(alb);
   const qLabel = fmtAlbumQuality(alb);
@@ -702,6 +727,21 @@ function StackedAlbumCard({
             <ListPlus className="h-3.5 w-3.5" />
             Queue
           </Button>
+          {onStartRadio && (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="rounded-full h-8 px-3.5"
+              onClick={(e) => {
+                e.stopPropagation();
+                onStartRadio("album", alb.id);
+              }}
+            >
+              <Radio className="h-3.5 w-3.5" />
+              Radio
+            </Button>
+          )}
         </div>
       </div>
     </div>
@@ -790,6 +830,7 @@ const PopularTrackRow = memo(function PopularTrackRow({
   onOpenAlbumId,
   onPlay,
   onAdd,
+  onStartRadio,
 }: {
   track: Track;
   index: number;
@@ -797,6 +838,7 @@ const PopularTrackRow = memo(function PopularTrackRow({
   onOpenAlbumId?: (albumId: string) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
+  onStartRadio?: (kind: RadioSeedKind, id: string) => void;
 }) {
   const albumPrefetch = useAlbumHoverPrefetch(tr.albumId);
 
@@ -845,6 +887,20 @@ const PopularTrackRow = memo(function PopularTrackRow({
           </span>
         )}
         <div className="flex sm:hidden sm:group-hover:flex sm:group-focus-within:flex items-center gap-0.5">
+          {onStartRadio && (
+            <button
+              type="button"
+              title="Start Radio"
+              aria-label={`Start Radio from ${tr.title}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onStartRadio("track", tr.id);
+              }}
+              className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground cursor-pointer"
+            >
+              <Radio className="h-3.5 w-3.5" />
+            </button>
+          )}
           <button
             type="button"
             title="Play Next"

@@ -6,6 +6,7 @@ import {
   Maximize2,
   Pause,
   Play,
+  Radio,
   Repeat,
   Repeat1,
   Shuffle,
@@ -20,7 +21,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { fmtCount, fmtDuration, fmtOutputQuality, rendererLossyCodec } from "@/api/format";
 import { type PlaybackClockState, syncPlaybackClock, tickPlaybackClock } from "@/lib/playbackClock";
-import type { AudioQuality, RepeatMode, StreamMode, TransportAction, ZoneSnapshot } from "@/api/types";
+import type { AudioQuality, RadioSeedKind, RepeatMode, StreamMode, TransportAction, ZoneSnapshot } from "@/api/types";
 import { DeviceList } from "@/components/DevicePicker";
 import { NowPlayingOverlay } from "@/components/NowPlayingOverlay";
 import { SignalPathPopover } from "@/components/SignalPathPopover";
@@ -57,6 +58,7 @@ interface PlayerBarProps {
   onJumpItem?: (itemId: string) => void;
   onOpenAlbum?: (albumId: string) => void;
   onOpenArtist?: (artist: string) => void;
+  onStartRadio?: (kind: RadioSeedKind, id: string) => void;
 }
 
 export const PlayerBar = memo(function PlayerBar({
@@ -84,6 +86,7 @@ export const PlayerBar = memo(function PlayerBar({
   onJumpItem,
   onOpenAlbum,
   onOpenArtist,
+  onStartRadio,
 }: PlayerBarProps) {
   const [scrubPos, setScrubPos] = useState<number | null>(null);
   const [volDraft, setVolDraft] = useState<number | null>(null);
@@ -417,6 +420,19 @@ export const PlayerBar = memo(function PlayerBar({
               />
             </PopoverContent>
           </Popover>
+
+          {onStartRadio && track?.id && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => onStartRadio("track", track.id)}
+              title="Start Track Radio"
+              aria-label={`Start Radio from ${track.title}`}
+            >
+              <Radio className="h-4 w-4" />
+            </Button>
+          )}
 
           <Button
             type="button"

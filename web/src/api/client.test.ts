@@ -217,4 +217,27 @@ describe("TacetClient v1", () => {
     expect(fetchMock.mock.calls[4][0]).toBe("http://localhost:8080/api/v1/library/albums/local%3Aabc/primary");
     expect(fetchMock.mock.calls[5][0]).toBe("http://localhost:8080/api/v1/library/sync?provider=qobuz&wait=true");
   });
+
+  it("starts zone radio with track, album, or artist seed", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          zone: { zoneId: "player:web", queue: [], currentIndex: 0 },
+          station: { seedKind: "track", seedLabel: "So What", trackCount: 25, sourceCounts: { sonic: 24 } },
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = new TacetClient({ fetchImpl: fetchMock });
+
+    const res = await client.zone("player:web").startRadio({ kind: "track", id: "local:t1", scope: "local" });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/zones/player%3Aweb/radio");
+    expect(fetchMock.mock.calls[0][1]?.method).toBe("POST");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      kind: "track",
+      id: "local:t1",
+      scope: "local",
+    });
+    expect(res.station.trackCount).toBe(25);
+  });
 });

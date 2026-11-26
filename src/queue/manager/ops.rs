@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use rand::seq::SliceRandom;
 
-use crate::library::{PlayEventRecord, SOURCE_LOCAL, Track};
+use crate::library::{PlayContext, PlayEventRecord, SOURCE_LOCAL, Track};
 use crate::upnp::Controller;
 
 use super::listen::{FlushReason, flush_active_listen, sync_active_listen};
@@ -22,12 +22,43 @@ impl Manager {
         start_index: i32,
         autoplay: bool,
     ) -> Result<ZoneSnapshot> {
+        self.set_queue_with_context(zone_id, tracks, start_index, autoplay, None)
+            .await
+    }
+
+    pub async fn set_queue_with_context(
+        &self,
+        zone_id: &str,
+        tracks: Vec<Track>,
+        start_index: i32,
+        autoplay: bool,
+        source_context: Option<PlayContext>,
+    ) -> Result<ZoneSnapshot> {
         let z = self
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
+        self.set_queue_with_context_locked(
+            zone_id,
+            &z,
+            tracks,
+            start_index,
+            autoplay,
+            source_context,
+        )
+        .await
+    }
 
-        let items = self.wrap_tracks(tracks);
+    async fn set_queue_with_context_locked(
+        &self,
+        zone_id: &str,
+        z: &Arc<Zone>,
+        tracks: Vec<Track>,
+        start_index: i32,
+        autoplay: bool,
+        source_context: Option<PlayContext>,
+    ) -> Result<ZoneSnapshot> {
+        let items = self.wrap_tracks_with_context(tracks, source_context);
         let start = if items.is_empty() {
             -1
         } else {
@@ -54,7 +85,7 @@ impl Manager {
         self.persist_zone_queues();
 
         if start >= 0 && autoplay {
-            self.start_current_locked(zone_id, &z, &ctrl, true).await?;
+            self.start_current_locked(zone_id, z, &ctrl, true).await?;
         } else if start < 0 {
             let _ = ctrl.stop().await;
             let pb = {
@@ -68,6 +99,124 @@ impl Manager {
             self.emit("zone.playback", zone_id, &pb);
         }
 
+        Ok(self.snapshot_zone(zone_id, z))
+    }
+
+    async fn sync_native_radio_tail(
+        &self,
+        ctrl: &Arc<dyn Controller>,
+        cur_idx: usize,
+        old_len: usize,
+        tail_items: &[Item],
+        requested_q: AudioQuality,
+    ) -> bool {
+        let Some(qc) = ctrl.as_queue_controller() else {
+            return true;
+        };
+        let mut media_items = Vec::with_capacity(tail_items.len());
+        for item in tail_items {
+            match self.build_media_item(&item.track, ctrl, requested_q).await {
+                Ok((mi, _)) => media_items.push(mi),
+                Err(_) => return false,
+            }
+        }
+        if old_len > cur_idx + 1 && qc.remove_queue_range(cur_idx + 1, old_len).await.is_err() {
+            return false;
+        }
+        if !media_items.is_empty() && qc.append_queue(&media_items).await.is_err() {
+            return false;
+        }
+        true
+    }
+
+    /// Starts a radio station on `zone_id`.
+    /// If `seed_track_id` matches the currently active (PLAYING/PAUSED) track in the zone,
+    /// keeps that track playing seamlessly and replaces the upcoming queue with the rest of
+    /// the station; otherwise replaces the queue starting at index 0 and begins playback.
+    pub async fn start_radio_queue(
+        &self,
+        zone_id: &str,
+        seed_track_id: Option<&str>,
+        tracks: Vec<Track>,
+        source_context: PlayContext,
+    ) -> Result<ZoneSnapshot> {
+        let z = self
+            .get_zone(zone_id)
+            .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
+
+        let was_paused = {
+            let _op = z.op_mu.lock().await;
+            let match_info = seed_track_id.and_then(|sid| {
+                let zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+                let cur = usize::try_from(zi.current_index).ok()?;
+                let active_state = zi.status.state == "PLAYING" || zi.status.state == "PAUSED";
+                let it = zi.queue.get(cur)?;
+                if active_state && it.track.id == sid {
+                    Some((
+                        cur,
+                        zi.queue.len(),
+                        zi.status.state == "PAUSED",
+                        Arc::clone(&zi.ctrl),
+                        zi.audio_quality,
+                    ))
+                } else {
+                    None
+                }
+            });
+
+            let Some((cur_idx, old_len, paused, ctrl, requested_q)) = match_info else {
+                return self
+                    .set_queue_with_context_locked(
+                        zone_id,
+                        &z,
+                        tracks,
+                        0,
+                        true,
+                        Some(source_context),
+                    )
+                    .await;
+            };
+
+            let sid = seed_track_id.unwrap_or_default();
+            let tail_tracks: Vec<Track> =
+                tracks.iter().skip_while(|t| t.id == sid).cloned().collect();
+            let tail_items = self.wrap_tracks_with_context(tail_tracks, Some(source_context));
+
+            if !self
+                .sync_native_radio_tail(&ctrl, cur_idx, old_len, &tail_items, requested_q)
+                .await
+            {
+                return self
+                    .set_queue_with_context_locked(
+                        zone_id,
+                        &z,
+                        tracks,
+                        0,
+                        true,
+                        Some(source_context),
+                    )
+                    .await;
+            }
+
+            let q_ev = {
+                let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
+                zi.queue.truncate(cur_idx + 1);
+                zi.queue.extend(tail_items);
+                zi.original_queue = zi.queue.clone();
+                zi.next_preloaded = false;
+                zi.next_uri.clear();
+                zi.next_index = -1;
+                zi.revision += 1;
+                Self::make_items_event(zone_id, &zi)
+            };
+            self.emit("zone.queue", zone_id, &q_ev);
+            self.persist_zone_queues();
+            paused
+        };
+
+        if was_paused {
+            let _ = self.play(zone_id).await;
+        }
         Ok(self.snapshot_zone(zone_id, &z))
     }
 

@@ -481,3 +481,26 @@ export interface DiscoverShelfPage {
   nextOffset?: number;
   limit: number;
 }
+
+export type RadioSeedKind = "track" | "album" | "artist";
+export type RadioScope = "all" | "local";
+
+export interface StartRadioRequest {
+  kind: RadioSeedKind;
+  id: string;
+  limit?: number;
+  scope?: RadioScope;
+}
+
+export interface RadioStationSummary {
+  seedKind: RadioSeedKind;
+  seedLabel: string;
+  seedTrackId?: string;
+  trackCount: number;
+  sourceCounts: Record<string, number>;
+}
+
+export interface StartRadioResponse {
+  zone: ZoneSnapshot;
+  station: RadioStationSummary;
+}

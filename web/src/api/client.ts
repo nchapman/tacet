@@ -33,6 +33,8 @@ import type {
   ServerInfo,
   Settings,
   SnapshotEvent,
+  StartRadioRequest,
+  StartRadioResponse,
   StreamMode,
   Track,
   TransportAction,
@@ -115,6 +117,15 @@ export class ZoneClient {
     return this.client.request(
       this.zonePath("/queue"),
       { method: "PUT", body: JSON.stringify({ source, startIndex }) },
+      undefined,
+      opts,
+    );
+  }
+
+  startRadio(req: StartRadioRequest, opts?: RequestOptions): Promise<StartRadioResponse> {
+    return this.client.request(
+      this.zonePath("/radio"),
+      { method: "POST", body: JSON.stringify(req) },
       undefined,
       opts,
     );

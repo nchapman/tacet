@@ -1,9 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Award, Check, Clock3, FileText, Layers, ListPlus, Pause, Play, Plus, SkipForward, Sparkles, Users } from "lucide-react";
+import { ArrowLeft, Award, Check, Clock3, FileText, Layers, ListPlus, Pause, Play, Plus, Radio, SkipForward, Sparkles, Users } from "lucide-react";
 import { useState } from "react";
 import { tacetClient } from "@/api/client";
 import { fmtAlbumQuality, fmtCount, fmtDuration, fmtQuality } from "@/api/format";
-import type { Album, AlbumVersion, QueuePosition, QueueSource } from "@/api/types";
+import type { Album, AlbumVersion, QueuePosition, QueueSource, RadioSeedKind } from "@/api/types";
 import { AlbumCard } from "@/components/AlbumCard";
 import { AlbumArt } from "@/components/ui/artwork";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,7 @@ interface AlbumViewProps {
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onTogglePlayPause?: () => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
+  onStartRadio?: (kind: RadioSeedKind, id: string) => void;
 }
 
 function sourceLabel(provider?: string, source?: string): string {
@@ -84,6 +85,7 @@ export function AlbumView({
   onPlay,
   onTogglePlayPause,
   onAdd,
+  onStartRadio,
 }: AlbumViewProps) {
   const queryClient = useQueryClient();
   const artistHoverPrefetch = useArtistHoverPrefetch(album.artist);
@@ -269,6 +271,17 @@ export function AlbumView({
                 <ListPlus className="h-4 w-4" />
                 Queue
               </Button>
+              {onStartRadio && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="rounded-full h-10 px-4"
+                  onClick={() => onStartRadio("album", album.id)}
+                >
+                  <Radio className="h-4 w-4" />
+                  Radio
+                </Button>
+              )}
               {isRemote && (
                 <Button
                   type="button"
@@ -492,6 +505,17 @@ export function AlbumView({
                         className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer sm:opacity-0 sm:group-hover:opacity-100"
                       >
                         <Plus className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    {onStartRadio && (
+                      <button
+                        type="button"
+                        title="Start Radio"
+                        aria-label={`Start Radio from ${tr.title}`}
+                        onClick={() => onStartRadio("track", tr.id)}
+                        className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer sm:opacity-0 sm:group-hover:opacity-100"
+                      >
+                        <Radio className="h-3.5 w-3.5" />
                       </button>
                     )}
                     <button

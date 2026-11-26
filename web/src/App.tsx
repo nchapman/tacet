@@ -10,7 +10,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router";
-import type { Album, QueueItem, QueuePosition, QueueSource } from "@/api/types";
+import type { Album, QueueItem, QueuePosition, QueueSource, RadioSeedKind } from "@/api/types";
 import { AlbumView } from "@/components/AlbumView";
 import { AlbumsView } from "@/components/AlbumsView";
 import { ArtistsView } from "@/components/ArtistsView";
@@ -254,6 +254,12 @@ export function App() {
     },
     [tacet.addSource],
   );
+  const handleStartRadio = useCallback(
+    (kind: RadioSeedKind, id: string) => {
+      void tacet.startRadio(kind, id);
+    },
+    [tacet.startRadio],
+  );
   const handleJumpItem = useCallback(
     (itemId: string) => {
       void tacet.jumpItem(itemId);
@@ -461,6 +467,7 @@ export function App() {
                   onPlay={handlePlay}
                   onTogglePlayPause={handleTogglePlayPause}
                   onAdd={handleAdd}
+                  onStartRadio={handleStartRadio}
                 />
               }
             />
@@ -477,6 +484,7 @@ export function App() {
                   onPlay={handlePlay}
                   onTogglePlayPause={handleTogglePlayPause}
                   onAdd={handleAdd}
+                  onStartRadio={handleStartRadio}
                 />
               }
             />
@@ -491,6 +499,7 @@ export function App() {
                   onOpenAlbumId={handleOpenAlbumId}
                   onPlay={handlePlay}
                   onAdd={handleAdd}
+                  onStartRadio={handleStartRadio}
                 />
               }
             />
@@ -505,6 +514,7 @@ export function App() {
                   onOpenAlbumId={handleOpenAlbumId}
                   onPlay={handlePlay}
                   onAdd={handleAdd}
+                  onStartRadio={handleStartRadio}
                 />
               }
             />
@@ -517,6 +527,7 @@ export function App() {
                   onOpenArtist={openArtist}
                   onPlay={handlePlay}
                   onAdd={handleAdd}
+                  onStartRadio={handleStartRadio}
                 />
               }
             />
@@ -601,6 +612,7 @@ export function App() {
           onJumpItem={handleJumpItem}
           onOpenAlbum={handleOpenAlbumId}
           onOpenArtist={openArtist}
+          onStartRadio={handleStartRadio}
         />
 
         {/* Mobile Bottom Navigation Bar */}
@@ -724,6 +736,7 @@ function ArtistsRoute({
   onOpenAlbumId,
   onPlay,
   onAdd,
+  onStartRadio,
 }: {
   qobuzStatus: ReturnType<typeof useTacet>["qobuzStatus"];
   onSelectArtist: (artistName: string) => void;
@@ -732,6 +745,7 @@ function ArtistsRoute({
   onOpenAlbumId: (albumId: string) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
+  onStartRadio: (kind: RadioSeedKind, id: string) => void;
 }) {
   const { artistName } = useParams<{ artistName?: string }>();
   const [searchParams] = useSearchParams();
@@ -750,6 +764,7 @@ function ArtistsRoute({
       onOpenAlbumId={onOpenAlbumId}
       onPlay={onPlay}
       onAdd={onAdd}
+      onStartRadio={onStartRadio}
     />
   );
 }
@@ -764,6 +779,7 @@ function AlbumRoute({
   onPlay,
   onTogglePlayPause,
   onAdd,
+  onStartRadio,
 }: {
   qobuzConnected: boolean;
   currentTrackId?: string;
@@ -774,6 +790,7 @@ function AlbumRoute({
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onTogglePlayPause?: () => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
+  onStartRadio: (kind: RadioSeedKind, id: string) => void;
 }) {
   const { albumKey } = useParams<{ albumKey: string }>();
   const albumId = albumKey ? decodeAlbumKey(albumKey) : undefined;
@@ -863,6 +880,7 @@ function AlbumRoute({
       onPlay={onPlay}
       onTogglePlayPause={onTogglePlayPause}
       onAdd={onAdd}
+      onStartRadio={onStartRadio}
     />
   );
 }

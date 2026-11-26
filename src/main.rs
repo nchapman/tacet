@@ -158,6 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Arc::clone(&gena)),
         cli.cors_origin,
     );
+    state.set_cache(Arc::clone(&app_cache));
     if !cli.public_url.trim().is_empty() {
         state.set_public_url(cli.public_url.trim());
     }

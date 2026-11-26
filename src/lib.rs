@@ -7,6 +7,7 @@ pub mod media;
 pub mod player;
 pub mod qobuz;
 pub mod queue;
+pub mod radio;
 pub mod resolver;
 pub mod singleflight;
 pub mod sonic;

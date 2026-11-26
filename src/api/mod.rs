@@ -1,5 +1,6 @@
 pub mod errors;
 pub mod handlers_library;
+pub mod handlers_radio;
 pub mod handlers_zones;
 #[cfg(test)]
 mod tests;
@@ -20,6 +21,7 @@ use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use crate::cache::Cache;
 use crate::library::{
     AutoScanConfig, AutoScanner, Catalog, PREF_LIBRARY_SCAN_INTERVAL_MIN,
     PREF_LIBRARY_WATCH_ENABLED, PREF_QOBUZ_MAX_QUALITY, PREF_STREAM_MODE,
@@ -28,8 +30,9 @@ use crate::media::{MediaHandler, detect_transcoder};
 use crate::player::Registry as PlayerRegistry;
 use crate::qobuz::{Client as QobuzClient, FORMAT_FLAC_192, quality_label};
 use crate::queue::{Manager as QueueManager, StreamMode};
+use crate::radio::RadioEngine;
 use crate::resolver::EnrichmentWorker;
-use crate::sonic::SonicWorker;
+use crate::sonic::{SonicIndex, SonicWorker};
 use crate::upnp::GenaClient;
 
 use self::errors::{ApiError, ApiResult, parse_strict_json};
@@ -54,9 +57,11 @@ pub struct Settings {
 
 pub struct AppState {
     pub catalog: Arc<Catalog>,
+    pub cache: RwLock<Option<Arc<Cache>>>,
     pub auto_scanner: RwLock<Option<Arc<AutoScanner>>>,
     pub enrichment: RwLock<Option<Arc<EnrichmentWorker>>>,
     pub sonic: RwLock<Option<Arc<SonicWorker>>>,
+    pub radio: RwLock<Arc<RadioEngine>>,
     pub qobuz: Option<Arc<QobuzClient>>,
     pub manager: Arc<QueueManager>,
     pub players: Arc<PlayerRegistry>,
@@ -92,11 +97,20 @@ impl AppState {
             mgr_lib.broadcast("library.updated", &status);
         }));
 
+        let radio = Arc::new(RadioEngine::new(
+            Arc::clone(&catalog),
+            qobuz.clone(),
+            Arc::new(SonicIndex::new()),
+            None,
+        ));
+
         Arc::new(Self {
             catalog,
+            cache: RwLock::new(None),
             auto_scanner: RwLock::new(None),
             enrichment: RwLock::new(None),
             sonic: RwLock::new(None),
+            radio: RwLock::new(radio),
             qobuz,
             manager,
             players,
@@ -130,8 +144,33 @@ impl AppState {
         }
     }
 
+    pub fn set_cache(&self, cache: Arc<Cache>) {
+        *self.cache.write().unwrap_or_else(|e| e.into_inner()) = Some(cache);
+        self.rebuild_radio_engine();
+    }
+
     pub fn set_sonic(&self, worker: Arc<SonicWorker>) {
         *self.sonic.write().unwrap_or_else(|e| e.into_inner()) = Some(worker);
+        self.rebuild_radio_engine();
+    }
+
+    fn rebuild_radio_engine(&self) {
+        let sonic_index = self
+            .sonic()
+            .map(|w| Arc::clone(w.index()))
+            .unwrap_or_else(|| Arc::new(SonicIndex::new()));
+        let cache = self.cache.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let engine = Arc::new(RadioEngine::new(
+            Arc::clone(&self.catalog),
+            self.qobuz.clone(),
+            sonic_index,
+            cache,
+        ));
+        *self.radio.write().unwrap_or_else(|e| e.into_inner()) = engine;
+    }
+
+    pub fn radio(&self) -> Arc<RadioEngine> {
+        Arc::clone(&self.radio.read().unwrap_or_else(|e| e.into_inner()))
     }
 
     pub fn sonic(&self) -> Option<Arc<SonicWorker>> {
@@ -292,6 +331,11 @@ fn zone_and_player_routes() -> Router<Arc<AppState>> {
             "/api/v1/zones/{zoneId}/queue",
             put(handlers_zones::replace_queue).delete(handlers_zones::clear_queue),
         )
+        .route(
+            "/api/v1/zones/{zoneId}/radio",
+            post(handlers_radio::start_zone_radio),
+        )
+        .route("/api/v1/radio/preview", post(handlers_radio::preview_radio))
         .route(
             "/api/v1/zones/{zoneId}/queue/items",
             post(handlers_zones::add_queue_items),

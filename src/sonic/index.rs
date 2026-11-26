@@ -124,6 +124,27 @@ impl SonicIndex {
         scored
     }
 
+    /// Computes a unit-length centroid embedding across all `track_ids` present in the index.
+    /// Useful for Album Radio and Artist Radio sonic queries.
+    pub fn centroid_for_tracks(&self, track_ids: &[String]) -> Option<Int8UnitVec> {
+        let guard = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let mut sum = [0.0f32; super::quantize::EMBEDDING_DIM];
+        let mut count = 0usize;
+        for id in track_ids {
+            if let Some(&idx) = guard.positions.get(id) {
+                let v = &guard.entries[idx].1;
+                for (dst, &q) in sum.iter_mut().zip(v.data.iter()) {
+                    *dst += f32::from(q) * v.scale;
+                }
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return None;
+        }
+        Int8UnitVec::from_raw_f32(&sum)
+    }
+
     /// Computes a smooth multi-step path ("Sonic Adventure") from `start_id` to `end_id`
     /// by linearly interpolating target vectors in cosine space and picking nearest unvisited
     /// library tracks at each step.
@@ -228,5 +249,17 @@ mod tests {
 
         idx.upsert_track("t2".into(), basis_vec(1));
         assert_eq!(idx.sonic_adventure("t1", "t2", 0), vec!["t1", "t2"]);
+
+        // Centroid of basis(0) + basis(1) should be closest to blend(0, 1, 0.5)
+        idx.upsert_track("t_mid".into(), blend_vec(0, 1, 0.5));
+        idx.upsert_track("t_far".into(), basis_vec(2));
+        let centroid = idx
+            .centroid_for_tracks(&["t1".into(), "t2".into(), "missing".into()])
+            .unwrap();
+        let exclude: HashSet<String> = ["t1".into(), "t2".into()].into_iter().collect();
+        let neighbors = idx.similar_to_vector(&centroid, &exclude, 2);
+        assert_eq!(neighbors[0].0, "t_mid");
+        assert!(neighbors[0].1 > 0.95);
+        assert!(idx.centroid_for_tracks(&["missing".into()]).is_none());
     }
 }

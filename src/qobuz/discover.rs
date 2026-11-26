@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::library::Album;
+use crate::library::{Album, Track};
 
 use super::client::Client;
 use super::types::{
     Artist, DiscoverFeed, DiscoverGenre, DiscoverShelf, DiscoverShelfPage, QAlbum, QArtist,
-    QDiscoverAlbum, QobuzError, Result, convert_discover_albums,
+    QDiscoverAlbum, QTracksList, QobuzError, Result, convert_discover_albums,
 };
 
 const DISCOVER_GENRES_TTL: Duration = Duration::from_secs(24 * 3600);
@@ -354,4 +354,55 @@ impl Client {
             .filter(|a| a.id > 0 && !a.name.is_empty())
             .collect())
     }
+
+    /// Calls Qobuz's `POST /dynamic/suggest` radio/autoplay endpoint.
+    /// All four fields (`track_id`, `artist_id`, `genre_id`, `label_id`) are sent
+    /// in `track_to_analyse`; omitting artist/genre/label causes Qobuz to ignore the seed.
+    pub async fn dynamic_suggest(
+        &self,
+        seeds: &[DynamicSuggestSeed],
+        listened_track_ids: &[i64],
+        limit: i32,
+    ) -> Result<Vec<Track>> {
+        self.require_auth()?;
+        let valid_seeds: Vec<&DynamicSuggestSeed> = seeds
+            .iter()
+            .filter(|s| s.track_id > 0 && s.artist_id > 0 && s.genre_id > 0 && s.label_id > 0)
+            .collect();
+        if valid_seeds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = if limit <= 0 { 20 } else { limit.min(50) };
+        #[derive(Serialize)]
+        struct Req<'a> {
+            limit: i32,
+            listened_tracks_ids: &'a [i64],
+            track_to_analyse: &'a [&'a DynamicSuggestSeed],
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            #[serde(default)]
+            tracks: Option<QTracksList>,
+        }
+        let body = Req {
+            limit,
+            listened_tracks_ids: listened_track_ids,
+            track_to_analyse: &valid_seeds,
+        };
+        let resp: Resp = self.post_json("/dynamic/suggest", &body).await?;
+        let items = resp.tracks.map(|t| t.items).unwrap_or_default();
+        Ok(items
+            .into_iter()
+            .filter(|qt| qt.id > 0)
+            .map(|qt| qt.to_library_track(None))
+            .collect())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DynamicSuggestSeed {
+    pub track_id: i64,
+    pub artist_id: i64,
+    pub genre_id: i64,
+    pub label_id: i64,
 }

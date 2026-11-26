@@ -799,3 +799,150 @@ async fn history_and_stats_endpoints_filter_and_validate() {
     assert_eq!(stats["totalListenedSec"], 250);
     assert_eq!(stats["topArtists"][0]["artist"], "M83");
 }
+
+fn seed_radio_test_catalog(cat: &Arc<Catalog>) {
+    let tracks_data = [
+        (
+            "local:a1",
+            "local:t1",
+            "Miles Davis",
+            "Kind of Blue",
+            "So What",
+            "Jazz",
+        ),
+        (
+            "local:a2",
+            "local:t2",
+            "Bill Evans",
+            "Sunday",
+            "Gloria's Step",
+            "Jazz",
+        ),
+        (
+            "local:a3",
+            "local:t3",
+            "John Coltrane",
+            "Blue Train",
+            "Blue Train",
+            "Jazz",
+        ),
+    ];
+    for (aid, tid, artist, album_title, title, genre) in tracks_data {
+        let alb = crate::library::Album {
+            id: aid.into(),
+            source: crate::library::SOURCE_LOCAL.into(),
+            source_type: crate::library::SOURCE_TYPE_LOCAL.into(),
+            provider: crate::library::SOURCE_LOCAL.into(),
+            external_id: aid.into(),
+            title: album_title.into(),
+            artist: artist.into(),
+            genre: genre.into(),
+            available: true,
+            ..Default::default()
+        };
+        let tr = crate::library::Track {
+            id: tid.into(),
+            album_id: aid.into(),
+            source: crate::library::SOURCE_LOCAL.into(),
+            source_type: crate::library::SOURCE_TYPE_LOCAL.into(),
+            provider: crate::library::SOURCE_LOCAL.into(),
+            external_id: tid.into(),
+            title: title.into(),
+            artist: artist.into(),
+            album_artist: artist.into(),
+            album: album_title.into(),
+            genre: genre.into(),
+            duration_sec: 240,
+            available: true,
+            ..Default::default()
+        };
+        cat.store()
+            .upsert_album_with_tracks(&alb, std::slice::from_ref(&tr))
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn radio_preview_and_zone_radio_endpoints_work_and_validate() {
+    let cat = Catalog::open(":memory:", vec![]).unwrap();
+    seed_radio_test_catalog(&cat);
+    let mgr = QueueManager::new(Arc::clone(&cat), None, 4320, StreamMode::Relay);
+    let state = AppState::new(Arc::clone(&cat), None, mgr, None, String::new());
+
+    let app = build_router(Arc::clone(&state));
+
+    // Register an auto-acking browser player zone
+    let (zone_id, _token, ack_handle) =
+        register_ack_player(&app, &state.players, "Radio Test", "radio_1").await;
+
+    // 1. Validation errors
+    let bad_kind = send(
+        &app,
+        Method::POST,
+        "/api/v1/radio/preview",
+        r#"{"kind":"playlist","id":"local:t1"}"#,
+    )
+    .await;
+    assert_eq!(bad_kind.status(), StatusCode::BAD_REQUEST);
+
+    let missing = send(
+        &app,
+        Method::POST,
+        "/api/v1/radio/preview",
+        r#"{"kind":"track","id":"local:missing"}"#,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    // 2. Preview Track Radio
+    let preview = json_body(
+        send(
+            &app,
+            Method::POST,
+            "/api/v1/radio/preview",
+            r#"{"kind":"track","id":"local:t1","limit":3,"scope":"local"}"#,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(preview["seedKind"], "track");
+    assert_eq!(preview["seedTrackId"], "local:t1");
+    assert_eq!(preview["tracks"][0]["id"], "local:t1");
+    assert_eq!(preview["tracks"].as_array().unwrap().len(), 3);
+
+    // 3. Start Zone Track Radio -> seed at index 0, queue populated
+    let started = json_body(
+        send(
+            &app,
+            Method::POST,
+            &format!("/api/v1/zones/{zone_id}/radio"),
+            r#"{"kind":"track","id":"local:t1","limit":3,"scope":"local"}"#,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(started["station"]["seedKind"], "track");
+    assert_eq!(started["station"]["trackCount"], 3);
+    assert_eq!(started["zone"]["currentIndex"], 0);
+    assert_eq!(started["zone"]["queue"][0]["track"]["id"], "local:t1");
+
+    // 4. Starting Track Radio again on the already-active seed keeps the same itemId playing seamlessly
+    let first_item_id = started["zone"]["queue"][0]["itemId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let seamless = json_body(
+        send(
+            &app,
+            Method::POST,
+            &format!("/api/v1/zones/{zone_id}/radio"),
+            r#"{"kind":"track","id":"local:t1","limit":3,"scope":"local"}"#,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(seamless["zone"]["queue"][0]["itemId"], first_item_id);
+    assert_eq!(seamless["zone"]["queue"].as_array().unwrap().len(), 3);
+
+    ack_handle.abort();
+}

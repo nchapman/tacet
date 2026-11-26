@@ -1,10 +1,10 @@
 import { keepPreviousData, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ListPlus, Play, SkipForward } from "lucide-react";
+import { ListPlus, Play, Radio, SkipForward } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router";
 import { tacetClient } from "@/api/client";
 import { fmtCount, fmtDuration, fmtQuality } from "@/api/format";
-import type { GenreSummary, QueuePosition, QueueSource, Track } from "@/api/types";
+import type { GenreSummary, QueuePosition, QueueSource, RadioSeedKind, Track } from "@/api/types";
 import { AlbumArt } from "@/components/ui/artwork";
 import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -32,6 +32,7 @@ interface SongsViewProps {
   onOpenArtist: (artist: string) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
+  onStartRadio?: (kind: RadioSeedKind, id: string) => void;
 }
 
 function trackPageQueryOptions(genre: string, sort: TrackSort, dir: "asc" | "desc", page: number) {
@@ -69,6 +70,7 @@ export const SongsView = memo(function SongsView({
   onOpenArtist,
   onPlay,
   onAdd,
+  onStartRadio,
 }: SongsViewProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -252,6 +254,7 @@ export const SongsView = memo(function SongsView({
                       onOpenArtist={onOpenArtist}
                       onPlay={onPlay}
                       onAdd={onAdd}
+                      onStartRadio={onStartRadio}
                     />
                   );
                 })}
@@ -271,6 +274,7 @@ interface SongRowProps {
   onOpenArtist: (artist: string) => void;
   onPlay: (source: QueueSource, startIndex?: number) => void;
   onAdd: (source: QueueSource, position?: QueuePosition) => void;
+  onStartRadio?: (kind: RadioSeedKind, id: string) => void;
 }
 
 const SongRow = memo(function SongRow({
@@ -280,6 +284,7 @@ const SongRow = memo(function SongRow({
   onOpenArtist,
   onPlay,
   onAdd,
+  onStartRadio,
 }: SongRowProps) {
   const qual = fmtQuality(tr);
   const artistPrefetch = useArtistHoverPrefetch(tr.artist);
@@ -355,6 +360,17 @@ const SongRow = memo(function SongRow({
 
       {/* Actions */}
       <div className="flex items-center justify-end gap-0.5">
+        {onStartRadio && (
+          <button
+            type="button"
+            title="Start Radio"
+            aria-label={`Start Radio from ${tr.title}`}
+            onClick={() => onStartRadio("track", tr.id)}
+            className="rounded-full p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors cursor-pointer md:opacity-0 md:group-hover:opacity-100"
+          >
+            <Radio className="h-3.5 w-3.5" />
+          </button>
+        )}
         <button
           type="button"
           title="Play Next"
