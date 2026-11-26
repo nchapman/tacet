@@ -60,6 +60,9 @@ impl Catalog {
                 None
             }
         };
+        if wait_notify.is_none() {
+            self.notify_change();
+        }
 
         if let Some(n) = wait_notify {
             n.notified().await;
@@ -116,11 +119,9 @@ impl Catalog {
         if let Some(n) = notify {
             n.notify_waiters();
         }
+        self.notify_change();
 
-        if let Ok((count, changed)) = &res {
-            if *changed {
-                self.notify_change();
-            }
+        if let Ok((count, _changed)) = &res {
             return Ok(*count);
         }
         Err(res.unwrap_err())

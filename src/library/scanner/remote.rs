@@ -18,13 +18,20 @@ impl Catalog {
         }
 
         struct SyncingGuard<'a> {
-            map: &'a std::sync::Mutex<std::collections::HashMap<String, bool>>,
+            catalog: &'a Catalog,
             prov: String,
         }
         impl Drop for SyncingGuard<'_> {
             fn drop(&mut self) {
-                let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
-                map.insert(self.prov.clone(), false);
+                {
+                    let mut map = self
+                        .catalog
+                        .syncing_provs
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    map.insert(self.prov.clone(), false);
+                }
+                self.catalog.notify_change();
             }
         }
 
@@ -32,12 +39,12 @@ impl Catalog {
             let mut map = self.syncing_provs.lock().unwrap_or_else(|e| e.into_inner());
             map.insert(prov.clone(), true);
         }
+        self.notify_change();
         let _sync_guard = SyncingGuard {
-            map: &self.syncing_provs,
+            catalog: self,
             prov: prov.clone(),
         };
         let res = src.sync_collection().await;
-        drop(_sync_guard);
 
         let coll = match res {
             Ok(c) => c,
@@ -53,7 +60,6 @@ impl Catalog {
         let track_count = tracks.len();
         self.store
             .replace_provider(&prov, SOURCE_TYPE_REMOTE, &albums, &tracks, true)?;
-        self.notify_change();
         Ok(track_count)
     }
 

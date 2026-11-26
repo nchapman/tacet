@@ -775,6 +775,7 @@ async fn run_sync_for_provider(st: &AppState, prov: &str) -> ApiResult<()> {
         }
     }
     st.trigger_enrichment();
+    st.trigger_sonic();
     Ok(())
 }
 
