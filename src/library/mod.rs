@@ -10,8 +10,8 @@ pub use probe::{AudioProps, probe_audio};
 pub use scanner::Catalog;
 pub use store::{
     AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, ListeningStats, PlayContext,
-    PlayEventRecord, PlayHistoryEntry, PlayOutcome, RecentCooldowns, SonicStats, SonicTagEntry,
-    StoredSonicEmbedding, TopArtistEntry, TrackEnrichmentPatch, TrackFeedback,
+    PlayEventRecord, PlayHistoryEntry, PlayOutcome, RecentCooldowns, RecentPlayRecency, SonicStats,
+    SonicTagEntry, StoredSonicEmbedding, TopArtistEntry, TrackEnrichmentPatch, TrackFeedback,
     TrackSonicHeadsWrite, TrackSonicWrite,
 };
 pub use types::*;

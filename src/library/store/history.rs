@@ -5,7 +5,9 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use super::{LibraryStore, unix_to_dt};
-use crate::library::types::{Album, HeavyRotationAlbum, LibraryError, Result, Track};
+use crate::library::types::{
+    Album, HeavyRotationAlbum, LibraryError, Result, Track, normalize_isrc,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -120,6 +122,34 @@ pub struct PlayHistoryEntry {
     pub listened_sec: i32,
     pub duration_sec: i32,
     pub outcome: PlayOutcome,
+}
+
+/// Cross-provider most-recent `played_at` timestamps for freshness-aware shuffle.
+#[derive(Debug, Clone, Default)]
+pub struct RecentPlayRecency {
+    pub track_last_played: HashMap<String, i64>,
+    pub isrc_last_played: HashMap<String, i64>,
+    pub qobuz_last_played: HashMap<i64, i64>,
+}
+
+impl RecentPlayRecency {
+    /// Returns the most recent `played_at` unix timestamp matching this track across
+    /// `track.id`, normalized `isrc`, or `qobuz_track_id`.
+    pub fn last_played_at(&self, track: &Track) -> Option<i64> {
+        let mut best = self.track_last_played.get(&track.id).copied();
+        let isrc = normalize_isrc(&track.isrc);
+        if !isrc.is_empty()
+            && let Some(&ts) = self.isrc_last_played.get(&isrc)
+        {
+            best = Some(best.map_or(ts, |b| b.max(ts)));
+        }
+        if track.qobuz_track_id > 0
+            && let Some(&ts) = self.qobuz_last_played.get(&track.qobuz_track_id)
+        {
+            best = Some(best.map_or(ts, |b| b.max(ts)));
+        }
+        best
+    }
 }
 
 /// Cross-provider cooldown sets built from recent `play_events`.
@@ -722,6 +752,51 @@ impl LibraryStore {
         for row in rows {
             let (id, fb) = row?;
             out.insert(id, fb);
+        }
+        Ok(out)
+    }
+
+    /// Most recent `played_at` unix timestamp per track/ISRC/Qobuz ID since `since_unix`
+    /// (used by freshness-aware "Fewer Repeats" shuffle).
+    pub fn recent_play_recency(&self, since_unix: i64) -> Result<RecentPlayRecency> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = inner.conn.as_ref().ok_or(LibraryError::NotFound)?;
+        let mut stmt = conn.prepare(
+            "SELECT track_id, isrc, COALESCE(qobuz_track_id, 0), MAX(played_at)
+             FROM play_events
+             WHERE played_at >= ?1
+             GROUP BY track_id, isrc, COALESCE(qobuz_track_id, 0)",
+        )?;
+        let rows = stmt.query_map(params![since_unix], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut out = RecentPlayRecency::default();
+        for row in rows {
+            let (tid, isrc, qid, ts) = row?;
+            if !tid.is_empty() {
+                out.track_last_played
+                    .entry(tid)
+                    .and_modify(|e| *e = (*e).max(ts))
+                    .or_insert(ts);
+            }
+            let norm_isrc = normalize_isrc(&isrc);
+            if !norm_isrc.is_empty() {
+                out.isrc_last_played
+                    .entry(norm_isrc)
+                    .and_modify(|e| *e = (*e).max(ts))
+                    .or_insert(ts);
+            }
+            if qid > 0 {
+                out.qobuz_last_played
+                    .entry(qid)
+                    .and_modify(|e| *e = (*e).max(ts))
+                    .or_insert(ts);
+            }
         }
         Ok(out)
     }

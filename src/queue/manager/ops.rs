@@ -2,12 +2,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use rand::seq::SliceRandom;
 
-use crate::library::{PlayContext, PlayEventRecord, SOURCE_LOCAL, Track};
+use crate::library::{PlayContext, PlayEventRecord, RecentPlayRecency, SOURCE_LOCAL, Track};
 use crate::upnp::Controller;
 
 use super::listen::{FlushReason, flush_active_listen, sync_active_listen};
+use super::shuffle::{FRESH_SHUFFLE_WINDOW_SECS, fresh_shuffle};
 use super::{Manager, Zone, current_item_pair};
 use crate::queue::types::{
     AudioQuality, Item, PlaybackState, QueueError, RepeatMode, Result, VolumeEvent, ZoneSnapshot,
@@ -995,6 +995,14 @@ impl Manager {
             .get_zone(zone_id)
             .ok_or_else(|| QueueError::ZoneNotFound(zone_id.into()))?;
         let _op = z.op_mu.lock().await;
+        let now_unix = Utc::now().timestamp();
+        let recency = if enabled {
+            self.catalog
+                .recent_play_recency(now_unix - FRESH_SHUFFLE_WINDOW_SECS)
+                .unwrap_or_else(|_| RecentPlayRecency::default())
+        } else {
+            RecentPlayRecency::default()
+        };
         let (ctrl, changed, prev_len, old_cur_idx, tail_tracks, quality, q_ev, pb_ev) = {
             let mut zi = z.inner.lock().unwrap_or_else(|e| e.into_inner());
             let prev_len = zi.queue.len();
@@ -1005,20 +1013,22 @@ impl Manager {
                 let cur_id = current_item_pair(&zi).0;
                 if enabled {
                     zi.original_queue = zi.queue.clone();
-                    let mut rest: Vec<Item> = zi
+                    let cur_item = zi.queue.iter().find(|it| it.item_id == cur_id).cloned();
+                    let cur_artist = cur_item.as_ref().map(|it| it.track.artist.as_str());
+                    let rest: Vec<Item> = zi
                         .queue
                         .iter()
                         .filter(|it| it.item_id != cur_id)
                         .cloned()
                         .collect();
                     let mut rng = rand::rng();
-                    rest.shuffle(&mut rng);
+                    let shuffled = fresh_shuffle(rest, cur_artist, &recency, now_unix, &mut rng);
                     let mut next_q = Vec::with_capacity(zi.queue.len());
-                    if let Some(cur) = zi.queue.iter().find(|it| it.item_id == cur_id).cloned() {
+                    if let Some(cur) = cur_item {
                         next_q.push(cur);
                         zi.current_index = 0;
                     }
-                    next_q.extend(rest);
+                    next_q.extend(shuffled);
                     zi.queue = next_q;
                 } else {
                     let mut restored = zi.original_queue.clone();

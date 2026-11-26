@@ -12,7 +12,7 @@ use tokio::sync::Notify;
 
 use super::store::{
     AlbumEnrichmentUpdate, EnrichmentStats, EntityTag, LibraryStore, ListeningStats,
-    PlayEventRecord, PlayHistoryEntry, PlayOutcome, RecentCooldowns, SonicStats,
+    PlayEventRecord, PlayHistoryEntry, PlayOutcome, RecentCooldowns, RecentPlayRecency, SonicStats,
     StoredSonicEmbedding, TrackFeedback, TrackSonicWrite,
 };
 use super::types::{
@@ -296,6 +296,10 @@ impl Catalog {
 
     pub fn recent_cooldowns(&self, since_unix: i64) -> Result<RecentCooldowns> {
         self.store.recent_cooldowns(since_unix)
+    }
+
+    pub fn recent_play_recency(&self, since_unix: i64) -> Result<RecentPlayRecency> {
+        self.store.recent_play_recency(since_unix)
     }
 
     pub fn recent_played_track_ids(&self, since_unix: i64) -> Result<HashSet<String>> {

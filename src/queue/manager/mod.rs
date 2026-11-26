@@ -1,5 +1,6 @@
 mod listen;
 mod ops;
+mod shuffle;
 mod sync;
 
 use std::collections::HashMap;
