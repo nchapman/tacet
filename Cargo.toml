@@ -72,6 +72,8 @@ socket2 = "0.6"
 if-addrs = "0.13"
 oxicast = { version = "0.0.5", default-features = false, features = ["discovery"] }
 mdns-sd = "0.20"
+openhome-client = { git = "https://github.com/nchapman/openhome-rs", branch = "main" }
+openhome-core = { git = "https://github.com/nchapman/openhome-rs", branch = "main" }
 
 # Local sonic analysis (ONNX Runtime + FFT)
 ort = { version = "2.0.0-rc.15", default-features = false, features = ["std", "tracing", "download-binaries", "tls-rustls"] }
@@ -79,6 +81,7 @@ rustfft = "6"
 
 [dev-dependencies]
 tempfile = "3"
+openhome-server = { git = "https://github.com/nchapman/openhome-rs", branch = "main" }
 
 [profile.release]
 lto = "thin"

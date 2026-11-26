@@ -16,6 +16,7 @@ use tacet::library::{
 };
 use tacet::linkplay;
 use tacet::media::detect_transcoder;
+use tacet::openhome::{self, OpenHomeMonitor, OpenHomeMonitorCallbacks};
 use tacet::qobuz::{
     Client as QobuzClient, Config as QobuzConfig, FORMAT_FLAC_192, PersistedCredentials,
 };
@@ -168,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     start_background_workers(&catalog, &state, &data_dir);
     let auto_scanner = start_autoscan(&catalog, &state);
     spawn_manual_renderers(&catalog, &manager, &cli.renderer_url);
-    let (upnp_monitor, cast_monitor) = start_device_monitors(&manager);
+    let (upnp_monitor, cast_monitor, openhome_monitor) = start_device_monitors(&manager);
 
     // 6. Start Axum HTTP server with coordinated shutdown token so SSE/media streams close promptly
     let router = build_router(Arc::clone(&state));
@@ -181,6 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("shutting down tacet...");
     upnp_monitor.stop();
     cast_monitor.stop();
+    openhome_monitor.stop();
     auto_scanner.stop();
     state.close_async().await;
     catalog.close();
@@ -423,9 +425,25 @@ fn spawn_manual_renderers(catalog: &Catalog, manager: &Arc<QueueManager>, render
     let mgr_m = Arc::clone(manager);
     tokio::spawn(async move {
         for u in manual_urls {
-            match tokio::time::timeout(Duration::from_secs(5), upnp::connect_by_url(&u)).await {
-                Ok(Ok(r)) => {
-                    let ctrl = linkplay::wrap(r);
+            let connected: Result<Arc<dyn upnp::Controller>, String> =
+                match tokio::time::timeout(Duration::from_secs(5), async {
+                    match openhome::try_connect_by_url(&u).await {
+                        Ok(Some(oh)) => Ok(oh as Arc<dyn upnp::Controller>),
+                        Ok(None) => upnp::connect_by_url(&u)
+                            .await
+                            .map(linkplay::wrap)
+                            .map_err(|e| e.to_string()),
+                        Err(e) => Err(e.to_string()),
+                    }
+                })
+                .await
+                {
+                    Ok(res) => res,
+                    Err(_) => Err("timed out after 5s".into()),
+                };
+
+            match connected {
+                Ok(ctrl) => {
                     let id = ctrl.info().id;
                     mgr_m.register_renderer(ctrl);
                     if let Some(q_str) = saved_qualities.get(&id)
@@ -434,18 +452,17 @@ fn spawn_manual_renderers(catalog: &Catalog, manager: &Arc<QueueManager>, render
                         let _ = mgr_m.set_audio_quality(&id, q).await;
                     }
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     tracing::warn!(url = %u, error = %e, "manual renderer connect failed");
-                }
-                Err(_) => {
-                    tracing::warn!(url = %u, "manual renderer connect timed out after 5s");
                 }
             }
         }
     });
 }
 
-fn start_device_monitors(manager: &Arc<QueueManager>) -> (Arc<Monitor>, Arc<CastMonitor>) {
+fn start_device_monitors(
+    manager: &Arc<QueueManager>,
+) -> (Arc<Monitor>, Arc<CastMonitor>, Arc<OpenHomeMonitor>) {
     let mgr_u1 = Arc::clone(manager);
     let mgr_u2 = Arc::clone(manager);
     let mgr_u3 = Arc::clone(manager);
@@ -490,7 +507,25 @@ fn start_device_monitors(manager: &Arc<QueueManager>) -> (Arc<Monitor>, Arc<Cast
         },
     );
     cast_monitor.start();
-    (upnp_monitor, cast_monitor)
+
+    let mgr_oh1 = Arc::clone(manager);
+    let mgr_oh2 = Arc::clone(manager);
+    let mgr_oh3 = Arc::clone(manager);
+    let mgr_oh4 = Arc::clone(manager);
+    let openhome_monitor = OpenHomeMonitor::new(
+        Duration::from_secs(30),
+        OpenHomeMonitorCallbacks {
+            list_openhome: Arc::new(move || mgr_oh1.list_renderers_by_kind("openhome")),
+            is_active: Arc::new(move |id| mgr_oh2.is_zone_active(id)),
+            on_found: Arc::new(move |r| mgr_oh3.register_renderer(r)),
+            on_removed: Arc::new(move |id, name| {
+                tracing::info!(id, name, "removing unreachable OpenHome renderer");
+                mgr_oh4.remove_renderer(id);
+            }),
+        },
+    );
+    openhome_monitor.start();
+    (upnp_monitor, cast_monitor, openhome_monitor)
 }
 
 async fn serve_with_drain(

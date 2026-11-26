@@ -16,7 +16,7 @@ use crate::library::{PREF_MANUAL_RENDERERS, PREF_ZONE_QUALITIES, Track};
 use crate::linkplay;
 use crate::player::{RegisterRequest, StateReport, UpdateRequest};
 use crate::queue::{AudioQuality, RepeatMode};
-use crate::upnp::{self, Controller};
+use crate::upnp;
 
 use super::AppState;
 use super::errors::{ApiError, ApiResult, parse_strict_json};
@@ -42,8 +42,13 @@ pub async fn discover_zones(State(st): State<Arc<AppState>>) -> ApiResult<Json<s
         st.manager.register_renderer(linkplay::wrap(dev));
     }
     let cast_found = crate::cast::discover_cast(Duration::from_secs(2)).await;
-    let total = count + cast_found.len();
+    let cast_count = cast_found.len();
     for dev in cast_found {
+        st.manager.register_renderer(dev);
+    }
+    let oh_found = crate::openhome::discover_openhome(Duration::from_secs(2)).await;
+    let total = count + cast_count + oh_found.len();
+    for dev in oh_found {
         st.manager.register_renderer(dev);
     }
     Ok(Json(serde_json::json!({
@@ -66,14 +71,18 @@ pub async fn connect_zone(
     if req.url.trim().is_empty() {
         return Err(ApiError::bad_request("url is required"));
     }
-    let dev = upnp::connect_by_url(&req.url).await?;
-    let info = dev.info();
+    let ctrl: Arc<dyn upnp::Controller> =
+        match crate::openhome::try_connect_by_url(&req.url).await? {
+            Some(oh) => oh,
+            None => linkplay::wrap(upnp::connect_by_url(&req.url).await?),
+        };
+    let info = ctrl.info();
     let loc = if info.location.is_empty() {
         req.url.trim().to_string()
     } else {
         info.location.clone()
     };
-    st.manager.register_renderer(linkplay::wrap(dev));
+    st.manager.register_renderer(ctrl);
     remember_manual_renderer(&st, &loc);
     let zone = st.manager.zone_snapshot(&info.id)?;
     Ok(Json(serde_json::json!({

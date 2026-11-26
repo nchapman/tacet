@@ -327,7 +327,9 @@ export function SettingsView({
                       ? "Remote Player"
                       : z.renderer.kind === "cast"
                         ? "Google Cast"
-                        : "UPnP / DLNA";
+                        : z.renderer.kind === "openhome"
+                          ? "OpenHome"
+                          : "UPnP / DLNA";
                   const model = [z.renderer.manufacturer, z.renderer.model].filter(Boolean).join(" ");
                   const meta = [kindLabel, model, z.renderer.host].filter(Boolean).join(" · ");
                   return (

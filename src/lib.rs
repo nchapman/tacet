@@ -4,6 +4,7 @@ pub mod cast;
 pub mod library;
 pub mod linkplay;
 pub mod media;
+pub mod openhome;
 pub mod player;
 pub mod qobuz;
 pub mod queue;

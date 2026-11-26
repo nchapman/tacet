@@ -1564,6 +1564,47 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "openhome-client"
+version = "0.1.0"
+source = "git+https://github.com/nchapman/openhome-rs?branch=main#1e7042a7e56ab1b890fc75ece3f4e36448312190"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "openhome-core",
+ "socket2",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "openhome-core"
+version = "0.1.0"
+source = "git+https://github.com/nchapman/openhome-rs?branch=main#1e7042a7e56ab1b890fc75ece3f4e36448312190"
+dependencies = [
+ "quick-xml",
+ "thiserror",
+]
+
+[[package]]
+name = "openhome-server"
+version = "0.1.0"
+source = "git+https://github.com/nchapman/openhome-rs?branch=main#1e7042a7e56ab1b890fc75ece3f4e36448312190"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "openhome-core",
+ "socket2",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "openssl-probe"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2276,6 +2317,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2465,6 +2512,9 @@ dependencies = [
  "mdns-sd",
  "mime_guess",
  "notify",
+ "openhome-client",
+ "openhome-core",
+ "openhome-server",
  "ort",
  "oxicast",
  "percent-encoding",
@@ -2828,6 +2878,18 @@ name = "utf_types"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6"
+
+[[package]]
+name = "uuid"
+version = "1.29.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c14b15dffa2f4bd712103e857140aa04a4f2ff6e955c77d7eb8e53ee02a3b64"
+dependencies = [
+ "getrandom 0.4.3",
+ "js-sys",
+ "sha1_smol",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "valuable"
