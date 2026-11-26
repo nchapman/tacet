@@ -218,6 +218,10 @@ export function useTacet(options?: UseTacetOptions | string | null) {
         });
       },
       onQueue: (ev) => {
+        if (ev.zoneId === activeZoneIdRef.current && radioLoadingKeyRef.current) {
+          radioLoadingKeyRef.current = null;
+          setRadioLoadingKey(null);
+        }
         setZones((prev) => {
           const idx = prev.findIndex((z) => z.zoneId === ev.zoneId);
           if (idx === -1 || ev.revision < prev[idx].revision) return prev;
