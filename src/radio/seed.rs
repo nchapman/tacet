@@ -95,11 +95,7 @@ async fn resolve_track_seed(
     let mut exclude = HashSet::new();
     exclude.insert(track.id.clone());
 
-    let label = if track.artist.is_empty() {
-        track.title.clone()
-    } else {
-        format!("{} — {}", track.title, track.artist)
-    };
+    let label = track.title.clone();
 
     Ok(ResolvedSeed {
         kind: "track",
@@ -175,11 +171,7 @@ async fn resolve_album_seed(
             .map_or_else(String::new, |t| t.genre.clone())
     };
 
-    let label = if album.artist.is_empty() {
-        album.title.clone()
-    } else {
-        format!("{} — {}", album.title, album.artist)
-    };
+    let label = album.title.clone();
 
     Ok(ResolvedSeed {
         kind: "album",
