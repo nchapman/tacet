@@ -1304,7 +1304,11 @@ pub async fn discover_feed(
             .catalog
             .prefer_local_albums(std::mem::take(&mut shelf.items));
     }
-    Ok(Json(serde_json::to_value(feed).unwrap_or_default()))
+    Ok(Json(serde_json::json!({
+        "connected": true,
+        "genres": feed.genres,
+        "shelves": feed.shelves,
+    })))
 }
 
 pub async fn discover_shelf(
