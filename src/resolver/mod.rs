@@ -16,16 +16,16 @@ pub use client::{
     DEFAULT_RESOLVER_API_KEY, DEFAULT_RESOLVER_URL, ResolverClient, ResolverConfig, ResolverError,
 };
 pub use types::{
-    EnrichmentStatus, ResolveAlbumRequest, ResolveAlbumResponse, ResolveAlbumTrackInput,
-    ResolveTrackInput, ResolveTracksRequest, ResolveTracksResponse, ResolvedAlbumInfo,
-    ResolvedAlbumTrack, ResolvedLooseTrack,
+    EnrichmentStatus, RecordingBatchResolveRequest, RecordingBatchResolveResponse,
+    RecordingResolveInput, ReleaseResolveRequest, ReleaseResolveResponse, ResolvedRecording,
+    ResolvedRelease,
 };
 
 const MAX_ALBUM_TRACKS: usize = 250;
 const MAX_LOOSE_TRACKS_BATCH: usize = 50;
 const BATCH_QUERY_LIMIT: usize = 50;
 const LOOSE_TRACK_MIN_CONFIDENCE: f64 = 0.85;
-const LOOSE_TRACK_MAX_DURATION_DELTA_SEC: i32 = 15;
+const LOOSE_TRACK_MAX_DURATION_DELTA_MS: i64 = 15_000;
 const ERROR_RETRY_SECS: i64 = 3_600;
 const UNMATCHED_RETRY_SECS: i64 = 30 * 86_400;
 const MAX_RATE_LIMIT_RETRIES: usize = 3;
@@ -289,16 +289,18 @@ impl EnrichmentWorker {
         }
 
         let album_slice = &tracks[..tracks.len().min(MAX_ALBUM_TRACKS)];
-        let req = build_album_request(album, album_slice);
-        let resp = self.call_resolve_album_with_retry(&req).await?;
+        let req = build_release_request(album, album_slice);
+        let resp = self.call_resolve_release_with_retry(&req).await?;
 
-        let mut patches = build_album_track_patches(album_slice, &resp);
+        let mut patches = build_release_recording_patches(album_slice, &resp);
 
-        // Collect stragglers (unmatched indices from the album call + any overflow tracks > 250)
-        // and attempt loose-track resolution with strict confidence + duration guards.
+        // Collect stragglers (unmatched indices from the release call + any overflow tracks > 250)
+        // and attempt standalone recording resolution with strict confidence + duration guards.
         let straggler_indices = collect_straggler_indices(tracks.len(), &resp);
         if !straggler_indices.is_empty() {
-            let extra = self.resolve_stragglers(&tracks, &straggler_indices).await?;
+            let extra = self
+                .resolve_stragglers(album, &tracks, &straggler_indices)
+                .await?;
             merge_track_patches(&mut patches, extra);
         }
 
@@ -308,17 +310,17 @@ impl EnrichmentWorker {
             .map_err(|e| ResolverError::Transport(format!("save enrichment: {e}")))
     }
 
-    async fn call_resolve_album_with_retry(
+    async fn call_resolve_release_with_retry(
         &self,
-        req: &ResolveAlbumRequest,
-    ) -> Result<ResolveAlbumResponse, ResolverError> {
+        req: &ReleaseResolveRequest,
+    ) -> Result<ReleaseResolveResponse, ResolverError> {
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
-            match self.client.resolve_album(req).await {
+            match self.client.resolve_release(req).await {
                 Ok(resp) => return Ok(resp),
                 Err(ResolverError::RateLimited { retry_after })
                     if attempt < MAX_RATE_LIMIT_RETRIES =>
                 {
-                    tracing::debug!(?retry_after, attempt, "resolver 429 on /v1/resolve/album");
+                    tracing::debug!(?retry_after, attempt, "resolver 429 on /v1/resolve/release");
                     if !self.sleep_interruptible(retry_after).await {
                         return Err(ResolverError::Transport("shutdown during backoff".into()));
                     }
@@ -329,17 +331,21 @@ impl EnrichmentWorker {
         Err(ResolverError::Transport("exhausted retries".into()))
     }
 
-    async fn call_resolve_tracks_with_retry(
+    async fn call_resolve_recordings_with_retry(
         &self,
-        req: &ResolveTracksRequest,
-    ) -> Result<ResolveTracksResponse, ResolverError> {
+        req: &RecordingBatchResolveRequest,
+    ) -> Result<RecordingBatchResolveResponse, ResolverError> {
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
-            match self.client.resolve_tracks(req).await {
+            match self.client.resolve_recordings(req).await {
                 Ok(resp) => return Ok(resp),
                 Err(ResolverError::RateLimited { retry_after })
                     if attempt < MAX_RATE_LIMIT_RETRIES =>
                 {
-                    tracing::debug!(?retry_after, attempt, "resolver 429 on /v1/resolve/tracks");
+                    tracing::debug!(
+                        ?retry_after,
+                        attempt,
+                        "resolver 429 on /v1/resolve/recordings"
+                    );
                     if !self.sleep_interruptible(retry_after).await {
                         return Err(ResolverError::Transport("shutdown during backoff".into()));
                     }
@@ -352,6 +358,7 @@ impl EnrichmentWorker {
 
     async fn resolve_stragglers(
         &self,
+        album: &Album,
         tracks: &[Track],
         indices: &[usize],
     ) -> Result<Vec<TrackEnrichmentPatch>, ResolverError> {
@@ -360,20 +367,24 @@ impl EnrichmentWorker {
             if self.shutdown.is_cancelled() {
                 break;
             }
-            let inputs: Vec<ResolveTrackInput> = chunk
+            let inputs: Vec<RecordingResolveInput> = chunk
                 .iter()
-                .filter_map(|&idx| tracks.get(idx).map(|t| build_loose_track_input(idx, t)))
+                .filter_map(|&idx| {
+                    tracks
+                        .get(idx)
+                        .map(|t| build_loose_recording_input(idx, album, t))
+                })
                 .collect();
             if inputs.is_empty() {
                 continue;
             }
-            let req = ResolveTracksRequest { tracks: inputs };
-            let resp = self.call_resolve_tracks_with_retry(&req).await?;
-            for rt in resp.tracks {
+            let req = RecordingBatchResolveRequest { recordings: inputs };
+            let resp = self.call_resolve_recordings_with_retry(&req).await?;
+            for rt in resp.recordings {
                 let Some(orig) = tracks.get(rt.index) else {
                     continue;
                 };
-                if accept_loose_track_match(orig, &rt) {
+                if accept_loose_recording_match(orig, &rt) {
                     out.push(TrackEnrichmentPatch {
                         track_id: orig.id.clone(),
                         isrc: rt.isrc,
@@ -416,56 +427,77 @@ impl EnrichmentWorker {
     }
 }
 
-fn build_album_request(album: &Album, tracks: &[Track]) -> ResolveAlbumRequest {
+fn build_release_request(album: &Album, tracks: &[Track]) -> ReleaseResolveRequest {
     let year = (album.year > 0).then_some(album.year);
-    let track_inputs = tracks
+    let recording_inputs = tracks
         .iter()
         .enumerate()
-        .map(|(index, t)| ResolveAlbumTrackInput {
+        .map(|(index, t)| RecordingResolveInput {
             index,
             disc: (t.disc_number > 0).then_some(t.disc_number),
             track: (t.track_number > 0).then_some(t.track_number),
             title: t.title.clone(),
-            duration_sec: (t.duration_sec > 0).then_some(t.duration_sec),
+            artist_name: t.artist.clone(),
+            release: String::new(),
+            year: None,
+            duration_ms: (t.duration_sec > 0).then_some(i64::from(t.duration_sec) * 1_000),
             isrc: t.isrc.clone(),
+            recording_mbid: t.mb_recording_id.clone(),
             fingerprint: String::new(),
         })
         .collect();
-    ResolveAlbumRequest {
-        artist: album.artist.clone(),
-        album: album.title.clone(),
+    ReleaseResolveRequest {
+        artist_name: album.artist.clone(),
+        title: album.title.clone(),
         year,
-        upc: album.upc.clone(),
-        tracks: track_inputs,
+        barcode: album.upc.clone(),
+        release_mbid: album.mb_release_id.clone(),
+        recordings: recording_inputs,
     }
 }
 
-fn build_loose_track_input(index: usize, t: &Track) -> ResolveTrackInput {
-    ResolveTrackInput {
+fn build_loose_recording_input(index: usize, album: &Album, t: &Track) -> RecordingResolveInput {
+    let year = if t.year > 0 {
+        Some(t.year)
+    } else if album.year > 0 {
+        Some(album.year)
+    } else {
+        None
+    };
+    RecordingResolveInput {
         index,
-        isrc: t.isrc.clone(),
-        artist: if t.artist.is_empty() {
+        disc: None,
+        track: None,
+        title: t.title.clone(),
+        artist_name: if t.artist.is_empty() {
             t.album_artist.clone()
         } else {
             t.artist.clone()
         },
-        title: t.title.clone(),
-        duration_sec: (t.duration_sec > 0).then_some(t.duration_sec),
+        release: if t.album.is_empty() {
+            album.title.clone()
+        } else {
+            t.album.clone()
+        },
+        year,
+        duration_ms: (t.duration_sec > 0).then_some(i64::from(t.duration_sec) * 1_000),
+        isrc: t.isrc.clone(),
+        recording_mbid: t.mb_recording_id.clone(),
         fingerprint: String::new(),
     }
 }
 
-fn build_album_track_patches(
+fn build_release_recording_patches(
     album_slice: &[Track],
-    resp: &ResolveAlbumResponse,
+    resp: &ReleaseResolveResponse,
 ) -> HashMap<String, TrackEnrichmentPatch> {
-    let album_artist_mbid = resp
-        .album
+    let release_artist_mbid = resp
+        .release
         .as_ref()
-        .map(|a| a.artist_mbid.as_str())
+        .map(|r| r.artist_mbid.as_str())
         .unwrap_or("");
     let mut map = HashMap::new();
-    for rt in &resp.tracks {
+    for rt in &resp.recordings {
         if !rt.matched {
             continue;
         }
@@ -473,7 +505,7 @@ fn build_album_track_patches(
             continue;
         };
         let artist_mbid = if rt.artist_mbid.is_empty() {
-            album_artist_mbid.to_string()
+            release_artist_mbid.to_string()
         } else {
             rt.artist_mbid.clone()
         };
@@ -491,7 +523,7 @@ fn build_album_track_patches(
     map
 }
 
-fn collect_straggler_indices(total_tracks: usize, resp: &ResolveAlbumResponse) -> Vec<usize> {
+fn collect_straggler_indices(total_tracks: usize, resp: &ReleaseResolveResponse) -> Vec<usize> {
     let mut indices: Vec<usize> = resp
         .unmatched_indices
         .iter()
@@ -506,14 +538,15 @@ fn collect_straggler_indices(total_tracks: usize, resp: &ResolveAlbumResponse) -
     indices
 }
 
-fn accept_loose_track_match(orig: &Track, rt: &ResolvedLooseTrack) -> bool {
+fn accept_loose_recording_match(orig: &Track, rt: &ResolvedRecording) -> bool {
     if !rt.matched || rt.confidence < LOOSE_TRACK_MIN_CONFIDENCE {
         return false;
     }
     if orig.duration_sec > 0
-        && let Some(resolved_dur) = rt.duration_sec
-        && resolved_dur > 0
-        && (orig.duration_sec - resolved_dur).abs() > LOOSE_TRACK_MAX_DURATION_DELTA_SEC
+        && let Some(resolved_ms) = rt.duration_ms
+        && resolved_ms > 0
+        && (i64::from(orig.duration_sec) * 1_000 - resolved_ms).abs()
+            > LOOSE_TRACK_MAX_DURATION_DELTA_MS
     {
         return false;
     }
@@ -530,7 +563,7 @@ fn merge_track_patches(
 }
 
 fn build_enrichment_update(
-    resp: &ResolveAlbumResponse,
+    resp: &ReleaseResolveResponse,
     total_tracks: usize,
     patches: HashMap<String, TrackEnrichmentPatch>,
 ) -> AlbumEnrichmentUpdate {
@@ -548,13 +581,13 @@ fn build_enrichment_update(
         0
     };
     let (upc, mb_release_id, mb_release_group_id, mb_artist_id, album_genres) =
-        if let Some(alb) = &resp.album {
+        if let Some(rel) = &resp.release {
             (
-                alb.upc.clone(),
-                alb.release_mbid.clone(),
-                alb.release_group_mbid.clone(),
-                alb.artist_mbid.clone(),
-                alb.genres.clone(),
+                rel.barcode.clone(),
+                rel.release_mbid.clone(),
+                rel.release_group_mbid.clone(),
+                rel.artist_mbid.clone(),
+                rel.genres.clone(),
             )
         } else {
             (
@@ -599,12 +632,16 @@ mod tests {
         fail_first_with_429: bool,
     }
 
-    async fn mock_resolve_album(
+    async fn mock_resolve_release(
         State(st): State<MockResolverState>,
         headers: HeaderMap,
         Json(req): Json<serde_json::Value>,
     ) -> Response {
-        if headers.get("x-api-key").and_then(|v| v.to_str().ok()) != Some("test-key") {
+        if headers
+            .get(reqwest::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            != Some("Bearer test-key")
+        {
             return (StatusCode::UNAUTHORIZED, "bad key").into_response();
         }
         let n = st.album_calls.fetch_add(1, Ordering::SeqCst);
@@ -616,64 +653,77 @@ mod tests {
             )
                 .into_response();
         }
-        let title = req["album"].as_str().unwrap_or("");
+        let title = req["title"].as_str().unwrap_or("");
+        assert_eq!(req["artist_name"].as_str(), Some("Adele"));
+        assert_eq!(req["recordings"][0]["duration_ms"].as_i64(), Some(220_000));
         if title == "19" {
             Json(serde_json::json!({
                 "matched": true,
                 "confidence": 1.0,
-                "matchedBy": ["metadata"],
-                "album": {
-                    "releaseMbid": "rel-19",
-                    "releaseGroupMbid": "rg-19",
-                    "artistMbid": "art-adele",
+                "matched_by": ["metadata"],
+                "release": {
+                    "release_mbid": "rel-19",
+                    "release_group_mbid": "rg-19",
+                    "artist_mbid": "art-adele",
                     "title": "19",
-                    "artist": "Adele",
+                    "artist_name": "Adele",
                     "year": 2008,
-                    "upc": "634904031329",
+                    "barcode": "634904031329",
                     "genres": ["Pop", "Blue-Eyed Soul"]
                 },
-                "tracks": [
+                "recordings": [
                     {
                         "index": 0,
                         "matched": true,
                         "confidence": 1.0,
-                        "matchedBy": ["metadata"],
-                        "recordingMbid": "rec-daydreamer",
+                        "matched_by": ["metadata"],
+                        "recording_mbid": "rec-daydreamer",
                         "isrc": "GB-BKS-07-00581",
                         "title": "Daydreamer"
                     }
                 ],
-                "unmatchedIndices": [1]
+                "unmatched_indices": [1]
             }))
             .into_response()
         } else {
             Json(serde_json::json!({
                 "matched": false,
                 "confidence": 0.0,
-                "matchedBy": [],
-                "tracks": [],
-                "unmatchedIndices": [0]
+                "matched_by": [],
+                "recordings": [],
+                "unmatched_indices": [0]
             }))
             .into_response()
         }
     }
 
-    async fn mock_resolve_tracks(
+    async fn mock_resolve_recordings(
         State(st): State<MockResolverState>,
-        Json(_req): Json<serde_json::Value>,
+        headers: HeaderMap,
+        Json(req): Json<serde_json::Value>,
     ) -> Response {
+        if headers
+            .get(reqwest::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            != Some("Bearer test-key")
+        {
+            return (StatusCode::UNAUTHORIZED, "bad key").into_response();
+        }
         st.track_calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(req["recordings"][0]["artist_name"].as_str(), Some("Adele"));
+        assert_eq!(req["recordings"][0]["release"].as_str(), Some("19"));
+        assert_eq!(req["recordings"][0]["duration_ms"].as_i64(), Some(220_000));
         Json(serde_json::json!({
-            "tracks": [
+            "recordings": [
                 {
                     "index": 1,
                     "matched": true,
                     "confidence": 0.95,
-                    "matchedBy": ["metadata"],
-                    "recordingMbid": "rec-chasing",
-                    "artistMbid": "art-adele",
+                    "matched_by": ["metadata"],
+                    "recording_mbid": "rec-chasing",
+                    "artist_mbid": "art-adele",
                     "isrc": "ATW050700190",
-                    "durationSec": 223,
+                    "duration_ms": 223_000,
                     "genres": ["Soul"]
                 }
             ]
@@ -683,8 +733,8 @@ mod tests {
 
     async fn spawn_mock_resolver(state: MockResolverState) -> String {
         let app = Router::new()
-            .route("/v1/resolve/album", post(mock_resolve_album))
-            .route("/v1/resolve/tracks", post(mock_resolve_tracks))
+            .route("/v1/resolve/release", post(mock_resolve_release))
+            .route("/v1/resolve/recordings", post(mock_resolve_recordings))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -794,33 +844,33 @@ mod tests {
     }
 
     #[test]
-    fn loose_track_match_rejects_low_confidence_or_duration_mismatch() {
+    fn loose_recording_match_rejects_low_confidence_or_duration_mismatch() {
         let orig = Track {
             duration_sec: 159,
             ..Default::default()
         };
-        let live_version = ResolvedLooseTrack {
+        let live_version = ResolvedRecording {
             matched: true,
             confidence: 0.90,
-            duration_sec: Some(678),
+            duration_ms: Some(678_000),
             ..Default::default()
         };
-        assert!(!accept_loose_track_match(&orig, &live_version));
+        assert!(!accept_loose_recording_match(&orig, &live_version));
 
-        let low_conf = ResolvedLooseTrack {
+        let low_conf = ResolvedRecording {
             matched: true,
             confidence: 0.80,
-            duration_sec: Some(160),
+            duration_ms: Some(160_000),
             ..Default::default()
         };
-        assert!(!accept_loose_track_match(&orig, &low_conf));
+        assert!(!accept_loose_recording_match(&orig, &low_conf));
 
-        let good = ResolvedLooseTrack {
+        let good = ResolvedRecording {
             matched: true,
             confidence: 0.90,
-            duration_sec: Some(165),
+            duration_ms: Some(165_000),
             ..Default::default()
         };
-        assert!(accept_loose_track_match(&orig, &good));
+        assert!(accept_loose_recording_match(&orig, &good));
     }
 }

@@ -6,7 +6,8 @@ use serde::de::DeserializeOwned;
 use thiserror::Error;
 
 use super::types::{
-    ResolveAlbumRequest, ResolveAlbumResponse, ResolveTracksRequest, ResolveTracksResponse,
+    RecordingBatchResolveRequest, RecordingBatchResolveResponse, ReleaseResolveRequest,
+    ReleaseResolveResponse,
 };
 
 pub const DEFAULT_RESOLVER_URL: &str = "https://tacet-resolver.68a117ca.tryvamos.dev";
@@ -131,18 +132,18 @@ impl ResolverClient {
         }
     }
 
-    pub async fn resolve_album(
+    pub async fn resolve_release(
         &self,
-        req: &ResolveAlbumRequest,
-    ) -> Result<ResolveAlbumResponse, ResolverError> {
-        self.post_json("/v1/resolve/album", req).await
+        req: &ReleaseResolveRequest,
+    ) -> Result<ReleaseResolveResponse, ResolverError> {
+        self.post_json("/v1/resolve/release", req).await
     }
 
-    pub async fn resolve_tracks(
+    pub async fn resolve_recordings(
         &self,
-        req: &ResolveTracksRequest,
-    ) -> Result<ResolveTracksResponse, ResolverError> {
-        self.post_json("/v1/resolve/tracks", req).await
+        req: &RecordingBatchResolveRequest,
+    ) -> Result<RecordingBatchResolveResponse, ResolverError> {
+        self.post_json("/v1/resolve/recordings", req).await
     }
 
     async fn post_json<Req: Serialize, Resp: DeserializeOwned>(
@@ -157,7 +158,7 @@ impl ResolverClient {
             .header(reqwest::header::ACCEPT, "application/json")
             .json(body);
         if !self.api_key.is_empty() {
-            builder = builder.header("X-API-Key", &self.api_key);
+            builder = builder.bearer_auth(&self.api_key);
         }
 
         let resp = builder
