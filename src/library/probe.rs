@@ -1,11 +1,14 @@
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::Duration;
 
-use lofty::file::AudioFile;
+use lofty::config::ParseOptions;
+use lofty::file::{AudioFile, FileType, TaggedFile};
 use lofty::prelude::TaggedFileExt;
 use lofty::probe::Probe;
+
+const MAX_DSF_METADATA_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AudioProps {
@@ -55,9 +58,54 @@ pub fn probe_audio(path: &Path) -> AudioProps {
     AudioProps::default()
 }
 
+/// Read metadata tags from `path` using `lofty`, with DSF ID3v2 support
+/// (`lofty 0.22` does not natively recognize the `.dsf` container, so we seek to
+/// the DSF header's `metadata_offset` and parse the trailing ID3v2 block).
+pub fn read_tagged_file(path: &Path) -> Option<TaggedFile> {
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("dsf"))
+    {
+        return read_dsf_tagged_file(path);
+    }
+    Probe::open(path).ok()?.read().ok()
+}
+
+fn read_dsf_tagged_file(path: &Path) -> Option<TaggedFile> {
+    let mut f = File::open(path).ok()?;
+    let mut hdr = [0u8; 28];
+    f.read_exact(&mut hdr).ok()?;
+    if &hdr[0..4] != b"DSD " {
+        return None;
+    }
+    let metadata_offset = u64::from_le_bytes(hdr[20..28].try_into().ok()?);
+    if metadata_offset < 28 {
+        return None;
+    }
+    let file_len = f.metadata().ok()?.len();
+    if metadata_offset >= file_len {
+        return None;
+    }
+    let remaining = file_len - metadata_offset;
+    if remaining > MAX_DSF_METADATA_BYTES {
+        return None;
+    }
+    f.seek(SeekFrom::Start(metadata_offset)).ok()?;
+    let mut buf = Vec::with_capacity(remaining as usize);
+    f.take(remaining).read_to_end(&mut buf).ok()?;
+    if !buf.starts_with(b"ID3") {
+        return None;
+    }
+    Probe::with_file_type(Cursor::new(buf), FileType::Mpeg)
+        .options(ParseOptions::new().read_properties(false))
+        .read()
+        .ok()
+}
+
 /// Extract embedded picture bytes and MIME type using `lofty`.
 pub fn read_embedded_art(path: &Path, max_bytes: usize) -> Option<(Vec<u8>, String)> {
-    let tagged = Probe::open(path).ok()?.read().ok()?;
+    let tagged = read_tagged_file(path)?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
     let pic = tag.pictures().first()?;
     let data = pic.data();

@@ -7,7 +7,6 @@ use std::time::UNIX_EPOCH;
 
 use chrono::{DateTime, Utc};
 use lofty::prelude::{Accessor, TaggedFileExt};
-use lofty::probe::Probe;
 use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 use walkdir::WalkDir;
@@ -268,6 +267,7 @@ fn collect_audio_files(
                 && cached.mtime_ns == mtime_ns
                 && cached.track.available
                 && !cached.track.artwork_url.starts_with("/media/art/local:")
+                && !(ext == ".dsf" && cached.track.artist == "Unknown Artist")
             {
                 reused.push(cached.track.clone());
                 continue;
@@ -360,10 +360,7 @@ fn scan_file_with_art(
 }
 
 fn apply_lofty_tags(path: &Path, t: &mut Track) -> String {
-    let Ok(probe) = Probe::open(path) else {
-        return String::new();
-    };
-    let Ok(tagged) = probe.read() else {
+    let Some(tagged) = crate::library::probe::read_tagged_file(path) else {
         return String::new();
     };
     let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {

@@ -208,6 +208,91 @@ mod tests {
         assert_eq!(props.duration, std::time::Duration::ZERO);
     }
 
+    #[tokio::test]
+    async fn scan_local_dsf_reads_id3v2_tags_and_embedded_art() {
+        use lofty::config::WriteOptions;
+        use lofty::id3::v2::Id3v2Tag;
+        use lofty::picture::{MimeType, Picture, PictureType};
+        use lofty::prelude::{Accessor, TagExt};
+        use lofty::tag::{ItemKey, Tag};
+
+        let dir = tempfile::tempdir().unwrap();
+        let alb_dir = dir.path().join("Keith Jarrett - Standards (Vol. 1)");
+        std::fs::create_dir_all(&alb_dir).unwrap();
+        let dsf_path = alb_dir.join("01 Meaning Of The Blues.dsf");
+
+        // Build a valid ID3v2 tag using lofty.
+        let mut tag = Tag::new(lofty::tag::TagType::Id3v2);
+        tag.set_title("Meaning Of The Blues".into());
+        tag.set_artist("Keith Jarrett".into());
+        tag.insert_text(ItemKey::AlbumArtist, "Keith Jarrett".into());
+        tag.set_album("Standards (Vol. 1)".into());
+        tag.set_genre("Jazz".into());
+        tag.set_track(1);
+        tag.set_year(1983);
+        tag.insert_text(ItemKey::Isrc, "DEB338325501".into());
+        let fake_jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
+        tag.push_picture(Picture::new_unchecked(
+            PictureType::CoverFront,
+            Some(MimeType::Jpeg),
+            None,
+            fake_jpeg.clone(),
+        ));
+        let id3: Id3v2Tag = tag.into();
+        let mut id3_bytes = Vec::new();
+        id3.dump_to(&mut id3_bytes, WriteOptions::default())
+            .unwrap();
+
+        // Build a minimal DSF file: 28-byte DSD chunk + 52-byte fmt chunk + 12-byte data chunk + ID3v2.
+        let metadata_offset: u64 = 28 + 52 + 12;
+        let total_size: u64 = metadata_offset + id3_bytes.len() as u64;
+        let mut buf = Vec::with_capacity(total_size as usize);
+        // DSD chunk (28 bytes)
+        buf.extend_from_slice(b"DSD ");
+        buf.extend_from_slice(&28u64.to_le_bytes());
+        buf.extend_from_slice(&total_size.to_le_bytes());
+        buf.extend_from_slice(&metadata_offset.to_le_bytes());
+        // fmt chunk (52 bytes)
+        let mut fmt = [0u8; 52];
+        fmt[0..4].copy_from_slice(b"fmt ");
+        fmt[4..12].copy_from_slice(&52u64.to_le_bytes());
+        fmt[24..28].copy_from_slice(&2u32.to_le_bytes()); // stereo
+        fmt[28..32].copy_from_slice(&2_822_400u32.to_le_bytes()); // DSD64
+        fmt[32..36].copy_from_slice(&1u32.to_le_bytes()); // 1-bit
+        fmt[36..44].copy_from_slice(&(2_822_400u64 * 570).to_le_bytes()); // 570s
+        buf.extend_from_slice(&fmt);
+        // data chunk (12 bytes, 0 payload)
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&12u64.to_le_bytes());
+        // ID3v2 metadata at metadata_offset
+        buf.extend_from_slice(&id3_bytes);
+        std::fs::write(&dsf_path, &buf).unwrap();
+
+        let cat = Catalog::new_in_memory(vec![dir.path().to_path_buf()]);
+        cat.scan().await.unwrap();
+
+        let (albums, total) = cat.query_albums(&AlbumFilter::default()).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(albums[0].title, "Standards (Vol. 1)");
+        assert_eq!(albums[0].artist, "Keith Jarrett");
+        assert_eq!(albums[0].year, 1983);
+        assert_eq!(albums[0].genre, "Jazz");
+
+        let detail = cat.album(&albums[0].id).unwrap();
+        assert_eq!(detail.tracks.len(), 1);
+        let tr = &detail.tracks[0];
+        assert_eq!(tr.title, "Meaning Of The Blues");
+        assert_eq!(tr.artist, "Keith Jarrett");
+        assert_eq!(tr.track_number, 1);
+        assert_eq!(tr.isrc, "DEB338325501");
+        assert_eq!(tr.sample_rate, 2_822_400);
+        assert!(tr.has_embed_art);
+
+        let (art, mime) = probe::read_embedded_art(&dsf_path, 1_000_000).unwrap();
+        assert_eq!(art, fake_jpeg);
+        assert_eq!(mime, "image/jpeg");
+    }
+
     #[test]
     fn soft_delete_fts_track_search_and_partial_in_library_parity() {
         let store = super::store::LibraryStore::open(":memory:").unwrap();
